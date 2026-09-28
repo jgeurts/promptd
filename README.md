@@ -66,17 +66,17 @@ It finds your `node` and `claude`, runs `npm install` if `node_modules` is missi
 
 Overrides, if you need them:
 
-| Variable | Default                  |                                                                                                              |
-| -------- | ------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `PORT`   | `4321`                   | Port the server listens on                                                                                   |
-| `HOST`   | `127.0.0.1`              | Bind address. `0.0.0.0` accepts connections from your network — read [Network access](#network-access) first |
-| `LABEL`  | `local.promptd` | launchd service name of the hub                                                                              |
-| `NODE_LABEL` | `$LABEL.node`        | launchd service name of the node                                                                             |
-| `NODE_ONLY`  | unset                | Register only the node, for a Mac that joins a hub elsewhere                                                 |
-| `HUB_URL`    | this Mac's hub       | Where the node finds the hub                                                                                 |
-| `NODE_TOKEN` | read from the hub's storage folder | The hub's node token, needed when the hub is on another machine                                 |
-| `NODE_ID`, `NODE_NAME` | the hostname | How the node names itself                                                                                    |
-| `FORCE`  | unset                    | Replace agents that are already registered                                                                   |
+| Variable               | Default                            |                                                                                                              |
+| ---------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `PORT`                 | `4321`                             | Port the server listens on                                                                                   |
+| `HOST`                 | `127.0.0.1`                        | Bind address. `0.0.0.0` accepts connections from your network — read [Network access](#network-access) first |
+| `LABEL`                | `local.promptd`                    | launchd service name of the hub                                                                              |
+| `NODE_LABEL`           | `$LABEL.node`                      | launchd service name of the node                                                                             |
+| `NODE_ONLY`            | unset                              | Register only the node, for a Mac that joins a hub elsewhere                                                 |
+| `HUB_URL`              | this Mac's hub                     | Where the node finds the hub                                                                                 |
+| `NODE_TOKEN`           | read from the hub's storage folder | The hub's node token, needed when the hub is on another machine                                              |
+| `NODE_ID`, `NODE_NAME` | the hostname                       | How the node names itself                                                                                    |
+| `FORCE`                | unset                              | Replace agents that are already registered                                                                   |
 
 ```bash
 PORT=5000 ./scripts/register-app-mac-os.sh     # a different port
@@ -167,13 +167,13 @@ Set `HOST` to `0.0.0.0` in that plist to accept connections from your network �
 
 Each command takes the hub's label, `local.promptd`, or the node's, `local.promptd.node`.
 
-| Task                        | Command                                                                                                           |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| Start (and enable at login) | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.promptd.plist`                            |
-| Stop (and disable at login) | `launchctl bootout gui/$(id -u)/local.promptd`                                                           |
-| Restart after changing code | `launchctl kickstart -k gui/$(id -u)/local.promptd`                                                      |
-| Is it running?              | `launchctl print gui/$(id -u)/local.promptd \| grep -E "state =\|pid ="`                                 |
-| Logs                        | `tail -f ~/Library/Logs/promptd/server.log ~/Library/Logs/promptd/node.log`                              |
+| Task                        | Command                                                                                         |
+| --------------------------- | ----------------------------------------------------------------------------------------------- |
+| Start (and enable at login) | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.promptd.plist`                   |
+| Stop (and disable at login) | `launchctl bootout gui/$(id -u)/local.promptd`                                                  |
+| Restart after changing code | `launchctl kickstart -k gui/$(id -u)/local.promptd`                                             |
+| Is it running?              | `launchctl print gui/$(id -u)/local.promptd \| grep -E "state =\|pid ="`                        |
+| Logs                        | `tail -f ~/Library/Logs/promptd/server.log ~/Library/Logs/promptd/node.log`                     |
 | Remove entirely             | `launchctl bootout gui/$(id -u)/local.promptd && rm ~/Library/LaunchAgents/local.promptd.plist` |
 
 `bootout` both stops the server and stops it coming back at login, so it is the pair to `bootstrap` rather than a temporary pause. Editing the plist requires a `bootout` then `bootstrap`; `kickstart -k` only restarts the process with the plist launchd already has.
@@ -201,18 +201,18 @@ Model discovery is slower on the first run after login, around 14 seconds agains
 
 The **One-time Execution** tab holds prompts that run once, at a date and time you pick, instead of on a repeating schedule. Everything else about them is a cron: the same working directory, model, effort, usage delay, prompt, `Is Active` checkbox, prompt preamble, log, statistics block and Stop button.
 
-The form is the cron form with **Runs at** where the Cron field was: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a *Select datetime* calendar that opens on whatever Runs at already says. A new one defaults to tomorrow at 8am; editing keeps the time it was scheduled for. The server stores it as UTC.
+The form is the cron form with **Runs at** where the Cron field was: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a _Select datetime_ calendar that opens on whatever Runs at already says. A new one defaults to tomorrow at 8am; editing keeps the time it was scheduled for. The server stores it as UTC.
 
 The list shows the ten most recent, newest first, and **Load 10 older** goes back through the rest. A finished one stays in the list as history, so the tab is both what is coming and what has already gone.
 
 ### Its life
 
-| Status      | What it means                                                                 |
-| ----------- | ----------------------------------------------------------------------------- |
-| `scheduled` | Armed, waiting for its date                                                   |
-| `running`   | Its run is in flight                                                          |
-| `done`      | It has had its run. The Outcome column says how that run ended                |
-| `cancelled` | Its trigger was waiting on usage and you dropped it with **Stop**             |
+| Status      | What it means                                                     |
+| ----------- | ----------------------------------------------------------------- |
+| `scheduled` | Armed, waiting for its date                                       |
+| `running`   | Its run is in flight                                              |
+| `done`      | It has had its run. The Outcome column says how that run ended    |
+| `cancelled` | Its trigger was waiting on usage and you dropped it with **Stop** |
 
 `done` and `cancelled` are ends: nothing re-fires on its own. Two things arm one again — **Run now**, which runs it on the spot, and a save that moves its date, which puts it back to `scheduled`. **Reschedule** appears on a finished one whose date is still in the future and arms it again without opening the form.
 
@@ -220,7 +220,7 @@ The list shows the ten most recent, newest first, and **Load 10 older** goes bac
 
 A one-time execution has no second chance the way a cron does, so a missed trigger is made up rather than lost. On boot, and whenever a pause lifts, anything still `scheduled` whose time has passed is run immediately. It goes through the same door as any other trigger: the pause, the usage delay and the already-running check all apply, and several due at once are run one after another rather than all at once.
 
-Saving one with a time already in the past is allowed for the same reason, and the form says so before you save: *That time has passed — saving this runs it now.*
+Saving one with a time already in the past is allowed for the same reason, and the form says so before you save: _That time has passed — saving this runs it now._
 
 A run its node was restarted out from under is a different thing. When the node comes back it is closed as `interrupted` rather than started again — the work may have been half done, and re-running something because the machine rebooted is worse than leaving it for the **Run now** button.
 
@@ -228,12 +228,12 @@ A run its node was restarted out from under is a different thing. When the node 
 
 **Pause triggers for…** sits above the tabs on the home page, because it is not a property of either list: one pause holds every cron and every one-time execution at once. Pick a length:
 
-| Option        | Held until                                     |
-| ------------- | ---------------------------------------------- |
-| 30 minutes    | 30 minutes from now                            |
-| 1 hour        | an hour from now                               |
-| 3 hours       | three hours from now                           |
-| Until restart | the pause is cancelled, or the hub restarts    |
+| Option        | Held until                                  |
+| ------------- | ------------------------------------------- |
+| 30 minutes    | 30 minutes from now                         |
+| 1 hour        | an hour from now                            |
+| 3 hours       | three hours from now                        |
+| Until restart | the pause is cancelled, or the hub restarts |
 
 While paused, the dropdown is replaced by **Cancel pause**, which resumes immediately. Every status reads `Paused 30 minutes` (or whichever length you chose), and hovering one says when it lifts.
 
@@ -253,16 +253,16 @@ When the time is up, or you cancel, the crons and one-time executions are re-rea
 
 Each cron has a **Delay for usage** section on its form: four checkboxes, all off by default. Each one holds the trigger while its limit is at or above a percentage, shown in parentheses next to the checkbox.
 
-| Checkbox        | Watches                                   | Default |
-| --------------- | ----------------------------------------- | ------- |
-| Session         | the 5-hour session limit                  | 90%     |
-| Weekly          | the rolling 7-day limit, all models       | 95%     |
-| Fable           | the Fable weekly limit                    | 95%     |
-| Monthly Credits | spending on extra usage credits           | 90%     |
+| Checkbox        | Watches                             | Default |
+| --------------- | ----------------------------------- | ------- |
+| Session         | the 5-hour session limit            | 90%     |
+| Weekly          | the rolling 7-day limit, all models | 95%     |
+| Fable           | the Fable weekly limit              | 95%     |
+| Monthly Credits | spending on extra usage credits     | 90%     |
 
 The percentages are set on the Settings page, under **Job Settings** → **Delay for usage**, and apply to every cron and one-time execution that ticks the box. A change reaches the next trigger; a trigger already waiting is re-checked at once, so raising a percentage can release it.
 
-These are the same limits the header meters draw, matched on what a limit *is* rather than on its label, so nothing has to change here when the wording does. Tick none and the cron behaves exactly as it always has.
+These are the same limits the header meters draw, matched on what a limit _is_ rather than on its label, so nothing has to change here when the wording does. Tick none and the cron behaves exactly as it always has.
 
 When a cron with at least one box ticked triggers, usage is read and every ticked limit is checked. If any is at or above its percentage the run does not start: the cron goes to `delayed`, and the trigger waits.
 
@@ -339,7 +339,12 @@ The **⚙** button at the right of the header opens a page for everything below.
   "lastUpdateLaunchedAt": null,
   "lastUpdateFromCommit": null,
   "maxConcurrentJobs": 8,
-  "usageDelayThresholds": { "session": 90, "weekly": 95, "fable": 95, "credits": 90 },
+  "usageDelayThresholds": {
+    "session": 90,
+    "weekly": 95,
+    "fable": 95,
+    "credits": 90
+  },
   "defaultWorkingDirectory": "~/",
   "defaultPrompt": "",
   "commonCommands": "",
@@ -456,7 +461,12 @@ A cron file:
   "cleanupWorktree": false,
   "model": "claude-sonnet-4-5",
   "effort": "",
-  "usageDelay": { "session": true, "weekly": false, "fable": false, "credits": true },
+  "usageDelay": {
+    "session": true,
+    "weekly": false,
+    "fable": false,
+    "credits": true
+  },
   "prompt": "Write a two line summary of today.",
   "isActive": true,
   "nodeId": "",
@@ -485,7 +495,12 @@ A one-time execution file is the same shape with `scheduledAt` where `cron` was,
   "cleanupWorktree": true,
   "model": "",
   "effort": "",
-  "usageDelay": { "session": true, "weekly": false, "fable": false, "credits": false },
+  "usageDelay": {
+    "session": true,
+    "weekly": false,
+    "fable": false,
+    "credits": false
+  },
   "prompt": "Backfill the September invoices and write a summary.",
   "isActive": true,
   "status": "done",
@@ -625,14 +640,14 @@ The bell at the right of the header carries a count of what has not been read, a
 
 **Most of it arrives already read.** A cron that ran and succeeded is not news. What is left unread is what you would have wanted to be told:
 
-| Left unread                         | Arrives read                                              |
-| ----------------------------------- | --------------------------------------------------------- |
-| A run that did not succeed          | A run that started, succeeded, was stopped or was skipped |
-| A trigger held for usage            | A held trigger that cleared and ran                       |
-| Anything the updater did            | A pause, a resume, and the triggers a pause dropped       |
-| A cron file that will not parse     | A cron file added, changed, deleted or fixed              |
-| A failed `.worktreeinclude` write   |                                                           |
-| A failed worktree clean up          |                                                           |
+| Left unread                       | Arrives read                                              |
+| --------------------------------- | --------------------------------------------------------- |
+| A run that did not succeed        | A run that started, succeeded, was stopped or was skipped |
+| A trigger held for usage          | A held trigger that cleared and ran                       |
+| Anything the updater did          | A pause, a resume, and the triggers a pause dropped       |
+| A cron file that will not parse   | A cron file added, changed, deleted or fixed              |
+| A failed `.worktreeinclude` write |                                                           |
+| A failed worktree clean up        |                                                           |
 
 **Reading is not clicking.** An unread notification is marked read once it has been on screen for three seconds — the list is the acknowledgement, not a button. Scrolling past something faster than that leaves it unread. What has been seen is reported in one request rather than one per item, and the count travels to your other open tabs.
 
@@ -666,12 +681,12 @@ Samples are pushed over `/api/events`, so the page holds its own copy of the win
 
 The service also watches for trouble and writes a notification when it finds it. Each alert names the crons that were running when it fired, and how far into their runs they were, because "the CPU was pinned" is only half an answer.
 
-| Alert                   | Fires when                                                        | Clears below     |
-| ----------------------- | ----------------------------------------------------------------- | ---------------- |
-| **High CPU**            | 80% of all cores or more, averaged over a minute                  | 70%              |
-| **High memory**         | 80% of memory or more in use, averaged over a minute              | 72%              |
-| **Unusual storage I/O** | 4x this disk's usual rate over a minute, and at least 50 MB/s     | 60% of that bar  |
-| **Low disk space**      | Less than 20% of the volume free                                  | More than 25%    |
+| Alert                   | Fires when                                                    | Clears below    |
+| ----------------------- | ------------------------------------------------------------- | --------------- |
+| **High CPU**            | 80% of all cores or more, averaged over a minute              | 70%             |
+| **High memory**         | 80% of memory or more in use, averaged over a minute          | 72%             |
+| **Unusual storage I/O** | 4x this disk's usual rate over a minute, and at least 50 MB/s | 60% of that bar |
+| **Low disk space**      | Less than 20% of the volume free                              | More than 25%   |
 
 Three rules keep these from becoming noise, and all three matter:
 
@@ -681,7 +696,7 @@ Three rules keep these from becoming noise, and all three matter:
 
 The clear level sits below the threshold on purpose. A metric hovering at the line would otherwise alternate between firing and clearing.
 
-**On the I/O alert**, which is the one with no obvious threshold: throughput has no natural ceiling, so "high" means high *for this machine*. The baseline is the median of everything in the window older than the last minute — a median rather than a mean, because a mean would be dragged upward by the very burst being looked for and would talk itself out of alerting. The 50 MB/s floor is what stops an idle disk alerting because 0.05 MB/s became 0.4 MB/s. There is no verdict until five minutes of history exist, because before that there is no "usual" to compare against.
+**On the I/O alert**, which is the one with no obvious threshold: throughput has no natural ceiling, so "high" means high _for this machine_. The baseline is the median of everything in the window older than the last minute — a median rather than a mean, because a mean would be dragged upward by the very burst being looked for and would talk itself out of alerting. The 50 MB/s floor is what stops an idle disk alerting because 0.05 MB/s became 0.4 MB/s. There is no verdict until five minutes of history exist, because before that there is no "usual" to compare against.
 
 In practice that means a disk that normally idles alerts at 320 MB/s, and a disk that normally runs at 150 MB/s does not alert at 300 MB/s but does at 900 MB/s.
 
@@ -698,23 +713,23 @@ Two Server-Sent Event streams, no polling loops in the UI:
 
 ## Configuration
 
-| Variable                  | Default                         | Purpose                                                                                                                                          |
-| ------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `PORT`                    | `4321`                          | HTTP port                                                                                                                                        |
-| `HOST`                    | `127.0.0.1`                     | Bind address. Localhost only by default; `0.0.0.0` accepts connections from your network, with the caveats in [Network access](#network-access). |
-| `PROMPTD_HOME`          | `~/.claude/promptd`    | Storage root                                                                                                                                     |
-| `CLAUDE_BIN`              | `claude`                        | Binary to spawn. Set an absolute path if `claude` is not on the server's `PATH`.                                                                 |
-| `WATCH_INTERVAL_MS`       | `3000`                          | How often the crons folder is polled for outside changes. `0` disables it.                                                                       |
-| `SYSTEM_SAMPLE_MS`        | `5000`                          | How often machine stats are sampled. `0` disables the service and its meters. Floored at `1000`.                                                 |
-| `PROMPTD_LAUNCHD_LABEL` | `local.promptd`        | The hub's launchd service, which the updater restarts                                                                                            |
-| `PROMPTD_NODE_LAUNCHD_LABEL` | `$PROMPTD_LAUNCHD_LABEL.node` | The local node's launchd service, which the updater restarts first                                                                     |
-| `PROMPTD_HUB_URL`       | `http://127.0.0.1:$PORT` | Node: where the hub is                                                                                                                         |
-| `PROMPTD_NODE_TOKEN`    | read from `node-token`  | Node: the hub's token, when the hub is on another machine                                                                                       |
-| `PROMPTD_NODE_ID`       | the hostname, lowercased | Node: its id. Must be unique across nodes                                                                                                      |
-| `PROMPTD_NODE_NAME`     | the hostname            | Node: the name the page shows                                                                                                                   |
-| `PROMPTD_NODE_HOME`     | `$PROMPTD_HOME/node`    | Node: where it keeps its state and unsent logs                                                                                                  |
-| `PROMPTD_SYNC_MS`       | `2000`                  | Node: how often it reports and fetches work                                                                                                     |
-| `PROMPTD_PROJECT_DIR`   | the checkout this code lives in | Which repository the update check looks at                                                                                                       |
+| Variable                     | Default                         | Purpose                                                                                                                                          |
+| ---------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `PORT`                       | `4321`                          | HTTP port                                                                                                                                        |
+| `HOST`                       | `127.0.0.1`                     | Bind address. Localhost only by default; `0.0.0.0` accepts connections from your network, with the caveats in [Network access](#network-access). |
+| `PROMPTD_HOME`               | `~/.claude/promptd`             | Storage root                                                                                                                                     |
+| `CLAUDE_BIN`                 | `claude`                        | Binary to spawn. Set an absolute path if `claude` is not on the server's `PATH`.                                                                 |
+| `WATCH_INTERVAL_MS`          | `3000`                          | How often the crons folder is polled for outside changes. `0` disables it.                                                                       |
+| `SYSTEM_SAMPLE_MS`           | `5000`                          | How often machine stats are sampled. `0` disables the service and its meters. Floored at `1000`.                                                 |
+| `PROMPTD_LAUNCHD_LABEL`      | `local.promptd`                 | The hub's launchd service, which the updater restarts                                                                                            |
+| `PROMPTD_NODE_LAUNCHD_LABEL` | `$PROMPTD_LAUNCHD_LABEL.node`   | The local node's launchd service, which the updater restarts first                                                                               |
+| `PROMPTD_HUB_URL`            | `http://127.0.0.1:$PORT`        | Node: where the hub is                                                                                                                           |
+| `PROMPTD_NODE_TOKEN`         | read from `node-token`          | Node: the hub's token, when the hub is on another machine                                                                                        |
+| `PROMPTD_NODE_ID`            | the hostname, lowercased        | Node: its id. Must be unique across nodes                                                                                                        |
+| `PROMPTD_NODE_NAME`          | the hostname                    | Node: the name the page shows                                                                                                                    |
+| `PROMPTD_NODE_HOME`          | `$PROMPTD_HOME/node`            | Node: where it keeps its state and unsent logs                                                                                                   |
+| `PROMPTD_SYNC_MS`            | `2000`                          | Node: how often it reports and fetches work                                                                                                      |
+| `PROMPTD_PROJECT_DIR`        | the checkout this code lives in | Which repository the update check looks at                                                                                                       |
 
 ## Model
 
@@ -775,44 +790,44 @@ As the field changes, a green line below it shows when the expression next fires
 
 ## API
 
-| Method           | Path                               | Purpose                                                                                                                                                                        |
-| ---------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GET              | `/api/crons`                       | List, with next run time and live-run state                                                                                                                                    |
-| POST             | `/api/crons`                       | Create                                                                                                                                                                         |
-| GET, PUT, DELETE | `/api/crons/:id`                   | Read, update, delete                                                                                                                                                           |
-| POST             | `/api/crons/:id/run`               | Ask the cron's node to run it. 202 with `requested: true`; the node picks it up on its next sync, and may still hold it for usage or a free slot. 409 if already running, if crons are paused, if a trigger is already waiting, or if the node is offline |
-| POST             | `/api/crons/:id/stop`              | Ask the node to kill the in-flight run, or drop a waiting trigger (409 if neither)                                                                                             |
-| GET              | `/api/crons/:id/logs`              | Run history newest first, plus the cron's lifetime totals and per-run averages                                                                                                 |
-| GET              | `/api/crons/:id/logs/:file`        | One log as JSON                                                                                                                                                                |
-| GET              | `/api/crons/:id/logs/:file/stream` | One log as an SSE stream                                                                                                                                                       |
-| GET              | `/api/events`                      | Activity stream                                                                                                                                                                |
-| GET              | `/api/nodes`                       | Every node that has connected, whether it is online, which is the default, and where the node token is kept                                                                     |
-| DELETE           | `/api/nodes/:id`                   | Forget a node (409 while it is online)                                                                                                                                          |
-| POST             | `/api/node/report`, `/api/node/leave` | Node API, bearer token required: a node's status, log output, run results and events; and its sign-off on shutdown                                                          |
-| GET              | `/api/node/work`                   | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                     |
-| GET              | `/api/config`                      | Storage paths, the log and notification retention limits, effort levels, the usage-delay categories, and the default concurrent job limit                                        |
-| GET              | `/api/system`                      | Machine stats: the current reading, the last fifteen minutes behind it, what each meter means, and this machine's cores, memory and storage path                                |
-| GET              | `/api/notifications?before=&limit=` | One page of notifications, newest first, plus the unread count and the cursor for the next page                                                                                 |
-| POST             | `/api/notifications/read`          | Mark notifications read. Body `{"ids":[...]}`; answers with what is still unread                                                                                               |
-| GET              | `/api/health`                      | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, and `usage` with a percentage and reset time per subscription limit |
-| GET, PUT         | `/api/settings`                    | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `maxConcurrentJobs`, `usageDelayThresholds`, `defaultNodeId`, `defaultWorkingDirectory`, `defaultPrompt`, `commonCommands` and `defaultWorktreeInclude`                                   |
-| GET              | `/api/queue`                       | The concurrent job limit, what is running under it with each job's average run length, and what is queued behind it with each one's position and estimated start                |
-| GET              | `/api/pause`                       | Pause state, the offered lengths, how many runs are still in flight, and how many triggers this pause has dropped                                                               |
-| POST             | `/api/pause`                       | Hold every schedule. Body `{"option":"30m"\|"1h"\|"3h"\|"restart"}`                                                                                                            |
-| DELETE           | `/api/pause`                       | Resume (409 if not paused, or if the pause belongs to an update)                                                                                                               |
-| GET              | `/api/update/check`                | Whether `main` is behind. Read-only, never pulls                                                                                                                               |
-| POST             | `/api/update/run`                  | Apply a pending update now. 202 with the updater's pid, or `waiting: true` and a null pid while runs drain. 409 and the reason if there is nothing to do. Ignores `selfUpdate` |
-| GET              | `/api/browse?path=`                | Subdirectories matching a partial path, for the Working Directory field                                                                                                        |
-| GET              | `/api/next-run?cron=`              | Whether an expression parses, and when it next fires                                                                                                                           |
-| GET              | `/api/models`                      | Discovered models, plus whether discovery is running                                                                                                                           |
-| POST             | `/api/models/refresh`              | Re-run discovery                                                                                                                                                               |
-| GET              | `/api/executions?before=&limit=`   | One page of one-time executions, newest first, plus the total, how many are still scheduled, and the cursor for the next page                                                   |
-| POST             | `/api/executions`                  | Create. A `scheduledAt` already in the past is accepted and runs at once                                                                                                       |
-| GET, PUT, DELETE | `/api/executions/:id`              | Read, update, delete. A PUT that moves `scheduledAt` arms it again                                                                                                             |
-| POST             | `/api/executions/:id/rearm`        | Put a finished or cancelled one back to `scheduled` on its own date (409 while it is running)                                                                                   |
-| POST             | `/api/executions/:id/run`          | Same contract as `/api/crons/:id/run`                                                                                                                                          |
-| POST             | `/api/executions/:id/stop`         | Same contract as `/api/crons/:id/stop`                                                                                                                                         |
-| GET              | `/api/executions/:id/logs[/:file[/stream]]` | Same three log routes as a cron's                                                                                                                                     |
+| Method           | Path                                        | Purpose                                                                                                                                                                                                                                                                                                                  |
+| ---------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET              | `/api/crons`                                | List, with next run time and live-run state                                                                                                                                                                                                                                                                              |
+| POST             | `/api/crons`                                | Create                                                                                                                                                                                                                                                                                                                   |
+| GET, PUT, DELETE | `/api/crons/:id`                            | Read, update, delete                                                                                                                                                                                                                                                                                                     |
+| POST             | `/api/crons/:id/run`                        | Ask the cron's node to run it. 202 with `requested: true`; the node picks it up on its next sync, and may still hold it for usage or a free slot. 409 if already running, if crons are paused, if a trigger is already waiting, or if the node is offline                                                                |
+| POST             | `/api/crons/:id/stop`                       | Ask the node to kill the in-flight run, or drop a waiting trigger (409 if neither)                                                                                                                                                                                                                                       |
+| GET              | `/api/crons/:id/logs`                       | Run history newest first, plus the cron's lifetime totals and per-run averages                                                                                                                                                                                                                                           |
+| GET              | `/api/crons/:id/logs/:file`                 | One log as JSON                                                                                                                                                                                                                                                                                                          |
+| GET              | `/api/crons/:id/logs/:file/stream`          | One log as an SSE stream                                                                                                                                                                                                                                                                                                 |
+| GET              | `/api/events`                               | Activity stream                                                                                                                                                                                                                                                                                                          |
+| GET              | `/api/nodes`                                | Every node that has connected, whether it is online, which is the default, and where the node token is kept                                                                                                                                                                                                              |
+| DELETE           | `/api/nodes/:id`                            | Forget a node (409 while it is online)                                                                                                                                                                                                                                                                                   |
+| POST             | `/api/node/report`, `/api/node/leave`       | Node API, bearer token required: a node's status, log output, run results and events; and its sign-off on shutdown                                                                                                                                                                                                       |
+| GET              | `/api/node/work`                            | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                                                                                                                                                              |
+| GET              | `/api/config`                               | Storage paths, the log and notification retention limits, effort levels, the usage-delay categories, and the default concurrent job limit                                                                                                                                                                                |
+| GET              | `/api/system`                               | Machine stats: the current reading, the last fifteen minutes behind it, what each meter means, and this machine's cores, memory and storage path                                                                                                                                                                         |
+| GET              | `/api/notifications?before=&limit=`         | One page of notifications, newest first, plus the unread count and the cursor for the next page                                                                                                                                                                                                                          |
+| POST             | `/api/notifications/read`                   | Mark notifications read. Body `{"ids":[...]}`; answers with what is still unread                                                                                                                                                                                                                                         |
+| GET              | `/api/health`                               | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, and `usage` with a percentage and reset time per subscription limit |
+| GET, PUT         | `/api/settings`                             | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `maxConcurrentJobs`, `usageDelayThresholds`, `defaultNodeId`, `defaultWorkingDirectory`, `defaultPrompt`, `commonCommands` and `defaultWorktreeInclude`                                                                      |
+| GET              | `/api/queue`                                | The concurrent job limit, what is running under it with each job's average run length, and what is queued behind it with each one's position and estimated start                                                                                                                                                         |
+| GET              | `/api/pause`                                | Pause state, the offered lengths, how many runs are still in flight, and how many triggers this pause has dropped                                                                                                                                                                                                        |
+| POST             | `/api/pause`                                | Hold every schedule. Body `{"option":"30m"\|"1h"\|"3h"\|"restart"}`                                                                                                                                                                                                                                                      |
+| DELETE           | `/api/pause`                                | Resume (409 if not paused, or if the pause belongs to an update)                                                                                                                                                                                                                                                         |
+| GET              | `/api/update/check`                         | Whether `main` is behind. Read-only, never pulls                                                                                                                                                                                                                                                                         |
+| POST             | `/api/update/run`                           | Apply a pending update now. 202 with the updater's pid, or `waiting: true` and a null pid while runs drain. 409 and the reason if there is nothing to do. Ignores `selfUpdate`                                                                                                                                           |
+| GET              | `/api/browse?path=`                         | Subdirectories matching a partial path, for the Working Directory field                                                                                                                                                                                                                                                  |
+| GET              | `/api/next-run?cron=`                       | Whether an expression parses, and when it next fires                                                                                                                                                                                                                                                                     |
+| GET              | `/api/models`                               | Discovered models, plus whether discovery is running                                                                                                                                                                                                                                                                     |
+| POST             | `/api/models/refresh`                       | Re-run discovery                                                                                                                                                                                                                                                                                                         |
+| GET              | `/api/executions?before=&limit=`            | One page of one-time executions, newest first, plus the total, how many are still scheduled, and the cursor for the next page                                                                                                                                                                                            |
+| POST             | `/api/executions`                           | Create. A `scheduledAt` already in the past is accepted and runs at once                                                                                                                                                                                                                                                 |
+| GET, PUT, DELETE | `/api/executions/:id`                       | Read, update, delete. A PUT that moves `scheduledAt` arms it again                                                                                                                                                                                                                                                       |
+| POST             | `/api/executions/:id/rearm`                 | Put a finished or cancelled one back to `scheduled` on its own date (409 while it is running)                                                                                                                                                                                                                            |
+| POST             | `/api/executions/:id/run`                   | Same contract as `/api/crons/:id/run`                                                                                                                                                                                                                                                                                    |
+| POST             | `/api/executions/:id/stop`                  | Same contract as `/api/crons/:id/stop`                                                                                                                                                                                                                                                                                   |
+| GET              | `/api/executions/:id/logs[/:file[/stream]]` | Same three log routes as a cron's                                                                                                                                                                                                                                                                                        |
 
 ## Notes
 
@@ -833,4 +848,4 @@ promptd is an independent project. It is not affiliated with, endorsed by, or sp
 
 ## License
 
-Copyright 2026 Tyler Neal. Licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Promptilicious. Licensed under the [Apache License, Version 2.0](LICENSE).
