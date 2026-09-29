@@ -1058,6 +1058,7 @@ label {
 }
 
 input[type="text"],
+input[type="search"],
 textarea {
   background: #12151b;
   border: 1px solid var(--border);
@@ -1449,6 +1450,13 @@ input.narrow {
   grid-template-columns: 290px 1fr;
   gap: 16px;
   align-items: start;
+}
+
+.run-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
 }
 
 .run-list {

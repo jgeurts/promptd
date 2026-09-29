@@ -166,6 +166,21 @@ export async function readLog(cronId: string, file: string): Promise<string> {
   return fs.readFile(logPath(cronId, file), 'utf8');
 }
 
+/** The logs whose text contains `query`, ignoring case. A blank query keeps them all. */
+export async function filterLogs(cronId: string, logs: LogFile[], query: string): Promise<LogFile[]> {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return logs;
+  const matches = await Promise.all(
+    logs.map((log) =>
+      readLog(cronId, log.file).then(
+        (text) => text.toLowerCase().includes(needle),
+        () => false,
+      ),
+    ),
+  );
+  return logs.filter((_, i) => matches[i]);
+}
+
 /** Keeps the newest MAX_LOGS_PER_CRON runs for one cron, deleting the rest. */
 export async function pruneLogs(cronId: string, keep = MAX_LOGS_PER_CRON): Promise<number> {
   const logs = await listLogs(cronId);

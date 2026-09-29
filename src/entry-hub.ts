@@ -32,6 +32,7 @@ import {
   MAX_LOGS_PER_CRON,
   createCron,
   deleteCron,
+  filterLogs,
   getCron,
   listCrons,
   listLogs,
@@ -698,7 +699,8 @@ app.post('/api/:kind(crons|executions)/:id/stop', async (req: JobRequest, res, n
 /**
  * The run history of one job. Crons and one-time executions write into the same
  * logs folder, each under its own id, so this route serves both — only where the
- * lifetime totals are written back differs.
+ * lifetime totals are written back differs. `?q=` keeps only the runs whose log
+ * contains it, ignoring case; `total` still counts every run kept.
  */
 app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, next) => {
   try {
@@ -706,6 +708,8 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     if (!found) return res.status(404).json({ error: `${noun(req)} not found` });
     const cron = found.record;
     const logs = await listLogs(cron.id);
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const shown = await filterLogs(cron.id, logs, query);
     // Read here rather than on the cron list: the first read scans the log
     // folder, and this is the one page that draws the result.
     const stats = await lifetimeStats(cron, found.kind === 'execution' ? patchExecution : undefined);
@@ -713,7 +717,8 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     res.json({
       cron: found.view(cron),
       stats,
-      logs: logs.map((log) => ({ ...log, isRunning: hub.isRunningLog(cron.id, log.file) })),
+      total: logs.length,
+      logs: shown.map((log) => ({ ...log, isRunning: hub.isRunningLog(cron.id, log.file) })),
     });
   } catch (err) {
     next(err);

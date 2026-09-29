@@ -2546,7 +2546,15 @@ async function renderSettings() {
 
 // ---- logs -------------------------------------------------------------
 
-const logsState = { cronId: null, kind: 'cron', selected: null, atBottom: true };
+const logsState = {
+  cronId: null,
+  kind: 'cron',
+  selected: null,
+  atBottom: true,
+  query: '', // the run list shows only logs containing this, ignoring case
+  searchTimer: null,
+  renderSeq: 0, // a slow search response must not overwrite a newer one
+};
 
 /**
  * Lifetime totals for one cron, drawn under its name on the logs page.
@@ -2598,9 +2606,14 @@ function statStrip(stats) {
  */
 async function renderLogs(id, kind = 'cron') {
   const base = kind === 'execution' ? 'executions' : 'crons';
-  const [{ cron, logs, stats }, pause] = await Promise.all([api(`/api/${base}/${id}/logs`), api('/api/pause')]);
+  if (logsState.cronId !== id || logsState.kind !== kind) logsState.query = '';
   logsState.cronId = id;
   logsState.kind = kind;
+  const seq = ++logsState.renderSeq;
+  const query = logsState.query.trim();
+  const logsUrl = `/api/${base}/${id}/logs${query ? `?q=${encodeURIComponent(query)}` : ''}`;
+  const [{ cron, logs, stats, total }, pause] = await Promise.all([api(logsUrl), api('/api/pause')]);
+  if (seq !== logsState.renderSeq) return;
 
   // Default to the live run if there is one, else the newest run.
   if (!logsState.selected || !logs.some((log) => log.file === logsState.selected)) {
@@ -2633,8 +2646,25 @@ async function renderLogs(id, kind = 'cron') {
             ],
           ),
         )
-      : [el('div', { class: 'empty', text: 'No runs yet' })],
+      : [el('div', { class: 'empty', text: query ? 'No runs match' : 'No runs yet' })],
   );
+
+  const search = el('input', {
+    type: 'search',
+    class: 'log-search',
+    placeholder: 'Search all runs',
+    'aria-label': 'Search all runs of this job',
+    value: logsState.query,
+    oninput: (event) => {
+      logsState.query = event.target.value;
+      clearTimeout(logsState.searchTimer);
+      logsState.searchTimer = setTimeout(() => renderLogs(id, kind).catch(() => {}), 250);
+    },
+  });
+  // Live activity redraws this page; keep the caret in the box while typing.
+  const typing = document.activeElement?.classList.contains('log-search')
+    ? [document.activeElement.selectionStart, document.activeElement.selectionEnd]
+    : null;
 
   const body = el('pre', { class: 'log-body', text: logsState.selected ? 'Loading…' : 'Select a run' });
   body.addEventListener('scroll', () => {
@@ -2688,7 +2718,11 @@ async function renderLogs(id, kind = 'cron') {
         el('h1', { text: `Logs · ${cron.name}` }),
         el('p', {
           class: 'sub',
-          text: `${scheduleLine}${scheduleLine ? ' ' : ''}${logs.length} run${logs.length === 1 ? '' : 's'} kept, newest first. Oldest are pruned past 50.`,
+          text: `${scheduleLine}${scheduleLine ? ' ' : ''}${
+            query
+              ? `${logs.length} of ${total} run${total === 1 ? '' : 's'} match "${query}", newest first.`
+              : `${logs.length} run${logs.length === 1 ? '' : 's'} kept, newest first. Oldest are pruned past 50.`
+          }`,
         }),
         statStrip(stats),
       ]),
@@ -2704,8 +2738,13 @@ async function renderLogs(id, kind = 'cron') {
         }),
       ]),
     ]),
-    el('div', { class: 'logs-layout' }, [runList, panel]),
+    el('div', { class: 'logs-layout' }, [el('div', { class: 'run-sidebar' }, [search, runList]), panel]),
   );
+
+  if (typing) {
+    search.focus();
+    search.setSelectionRange(...typing);
+  }
 
   if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base);
 }
@@ -2777,6 +2816,7 @@ function parseHash() {
 
 async function route() {
   closeLogStream();
+  clearTimeout(logsState.searchTimer);
   repaintQueue = null;
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);

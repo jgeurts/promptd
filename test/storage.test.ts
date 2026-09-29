@@ -145,3 +145,18 @@ describe.each(targets)('storage on $name', ({ url }) => {
     fs.rmSync(path.join(home, 'settings.json'));
   });
 });
+
+describe('log search', () => {
+  it('keeps only the runs whose log contains the query, ignoring case', async () => {
+    fs.mkdirSync(store.logDir('search-cron'), { recursive: true });
+    fs.writeFileSync(store.logPath('search-cron', '2026-01-01T00-00-00.000Z.txt'), 'Build FAILED at step 3');
+    fs.writeFileSync(store.logPath('search-cron', '2026-01-02T00-00-00.000Z.txt'), 'all good');
+    const logs = await store.listLogs('search-cron');
+
+    const files = async (query: string) => (await store.filterLogs('search-cron', logs, query)).map((log) => log.file);
+    expect(await files('failed')).toEqual(['2026-01-01T00-00-00.000Z.txt']);
+    expect(await files('  GOOD ')).toEqual(['2026-01-02T00-00-00.000Z.txt']);
+    expect(await files('nowhere')).toEqual([]);
+    expect(await files('')).toHaveLength(2);
+  });
+});
