@@ -7,7 +7,6 @@ import type { NextFunction, Request, Response } from 'express';
 import { bus, sseInit, sseSend } from './events.js';
 import { assertAuthConfigured, authRouter, requireLogin } from './auth.js';
 import { databaseTarget, migrate, openDatabase } from './db.js';
-import { importLegacyFiles } from './legacyImport.js';
 import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs } from './paths.js';
 import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
 import { HubError, hub } from './hub.js';
@@ -24,7 +23,6 @@ import {
 } from './executions.js';
 import { feedbackExecution, readFeedbackForm } from './feedback.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './settings.js';
-import { migrateLogDirs } from './logsMigration.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
 import { normalizeUsageDelay, usageDelayOptions } from './usage.js';
 import { lifetimeStats } from './stats.js';
@@ -841,22 +839,15 @@ try {
   console.error(`[auth] ${errorMessage(err)}`);
   process.exit(1);
 }
-// Before the first settings read, which would otherwise write defaults over
-// an install that still has its settings.json.
-await importLegacyFiles();
 // Subscribes to the event bus before anything can emit, and reads the table
 // behind the server coming up.
 notificationCenter.start();
-await loadSettings(); // writes the defaults on first run
-// Before any node can upload a log: after this the folders are cron ids.
-await migrateLogDirs().catch((err: unknown) => console.error(`[logs] migration failed: ${errorMessage(err)}`));
 runningCommit = await currentCommit();
-await hub.start(await loadSettings());
+await hub.start(await loadSettings()); // writes the defaults on first run
 if (SELF_UPDATE) selfUpdater.start();
 
 app.listen(PORT, HOST, () => {
   console.log(`promptd listening on http://${HOST}:${PORT}${runningCommit ? ` (${runningCommit})` : ''}`);
   const database = databaseTarget();
   console.log(`Storage: ${ROOT}; ${database.dialect} database at ${database.location}`);
-  hub.ensureLocalNodeAgent().catch((err: unknown) => console.error(`[hub] local node agent check failed: ${errorMessage(err)}`));
 });

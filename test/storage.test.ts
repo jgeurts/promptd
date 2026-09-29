@@ -5,7 +5,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type * as DbModule from '../src/db.js';
 import type * as ExecutionsModule from '../src/executions.js';
-import type * as LegacyModule from '../src/legacyImport.js';
 import type * as SettingsModule from '../src/settings.js';
 import type * as StoreModule from '../src/store.js';
 import type { CronInput } from '../src/types.js';
@@ -17,14 +16,12 @@ let dbModule: typeof DbModule;
 let store: typeof StoreModule;
 let executions: typeof ExecutionsModule;
 let settings: typeof SettingsModule;
-let legacy: typeof LegacyModule;
 
 beforeAll(async () => {
   dbModule = await import('../src/db.js');
   store = await import('../src/store.js');
   executions = await import('../src/executions.js');
   settings = await import('../src/settings.js');
-  legacy = await import('../src/legacyImport.js');
 });
 
 afterAll(async () => {
@@ -121,24 +118,6 @@ describe.each(targets)('storage on $name', ({ url }) => {
     await settings.patchSettings({ serverName: 'Office' });
     await settings.patchSettings({ updateCheckIntervalHours: 6 });
     expect(await settings.loadSettings()).toMatchObject({ serverName: 'Office', updateCheckIntervalHours: 6, selfUpdate: true });
-  });
-
-  it('imports an install from before the database, once', async () => {
-    fs.mkdirSync(path.join(home, 'crons'), { recursive: true });
-    fs.mkdirSync(path.join(home, 'executions'), { recursive: true });
-    fs.writeFileSync(path.join(home, 'crons', 'c1.json'), JSON.stringify({ id: 'c1', name: 'Old cron', cron: '*/5 * * * *', isActive: true, lifetimeRuns: 7 }));
-    fs.writeFileSync(path.join(home, 'executions', 'e1.json'), JSON.stringify({ id: 'e1', name: 'Old once', scheduledAt: '2026-01-01T00:00:00.000Z', status: 'scheduled' }));
-    fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ serverName: 'Legacy', maxConcurrentJobs: 2 }));
-
-    expect(await legacy.importLegacyFiles()).toMatchObject({ crons: 1, executions: 1, settings: true });
-    expect(await store.getCron('c1')).toMatchObject({ name: 'Old cron', cron: '*/5 * * * *', isActive: true, lifetimeRuns: 7, nodeId: '' });
-    expect(await executions.getExecution('e1')).toMatchObject({ status: 'scheduled', cleanupWorktree: true });
-    expect(await settings.loadSettings()).toMatchObject({ serverName: 'Legacy', maxConcurrentJobs: 2 });
-    expect(await legacy.importLegacyFiles()).toBeNull();
-
-    fs.rmSync(path.join(home, 'crons'), { recursive: true });
-    fs.rmSync(path.join(home, 'executions'), { recursive: true });
-    fs.rmSync(path.join(home, 'settings.json'));
   });
 });
 

@@ -465,8 +465,6 @@ The paths in use are listed on the Settings page, under **Storage**.
 
 Set `DATABASE_URL=postgres://user:password@host:5432/db` to keep the same tables in Postgres instead; the log files stay on disk either way. The schema is created and migrated when the hub starts.
 
-An install from before the database has `crons/`, `executions/`, `notifications/`, `settings.json` and `nodes.json` here. The first time the hub starts on an empty database it copies all of them in, once, and leaves the files where they are.
-
 A cron, as the API returns it:
 
 ```json

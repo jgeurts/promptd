@@ -5,9 +5,6 @@ import { normalizeMaxConcurrentJobs } from './settings.js';
 export const DEFAULT_WORKING_DIRECTORY = '~/';
 
 
-/** Settings keys that were hub-wide before each node had its own. */
-export const LEGACY_NODE_KEYS = ['maxConcurrentJobs', 'usageDelayThresholds', 'defaultWorkingDirectory'] as const;
-
 export interface EffectiveNodeConfig {
   maxConcurrentJobs: number;
   usageDelayThresholds: UsageThresholds;
@@ -89,21 +86,4 @@ export function effectiveNodeConfig(config: NodeConfig, processors: number): Eff
     usageDelayThresholds: config.usageDelayThresholds ?? DEFAULT_USAGE_THRESHOLDS,
     defaultWorkingDirectory: config.defaultWorkingDirectory ?? DEFAULT_WORKING_DIRECTORY,
   };
-}
-
-/**
- * What the old hub-wide settings carry over to a node. A value still at its old
- * default is left behind: the limit defaulted to the hub's processor count,
- * which on a hosted hub says nothing about the machine running the jobs.
- */
-export function legacyNodeConfig(settings: Record<string, unknown>, hubProcessors: number): NodeConfig {
-  const config = readNodeConfig({
-    maxConcurrentJobs: settings.maxConcurrentJobs,
-    usageDelayThresholds: settings.usageDelayThresholds,
-    defaultWorkingDirectory: settings.defaultWorkingDirectory,
-  });
-  if (config.maxConcurrentJobs === hubProcessors) delete config.maxConcurrentJobs;
-  if (config.usageDelayThresholds && sameThresholds(config.usageDelayThresholds, DEFAULT_USAGE_THRESHOLDS)) delete config.usageDelayThresholds;
-  if (config.defaultWorkingDirectory === DEFAULT_WORKING_DIRECTORY) delete config.defaultWorkingDirectory;
-  return config;
 }
