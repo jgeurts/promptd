@@ -509,6 +509,7 @@ class Hub {
         maxConcurrentJobs: this.settings.maxConcurrentJobs,
         usageDelayThresholds: this.settings.usageDelayThresholds,
         defaultWorktreeInclude: this.settings.defaultWorktreeInclude ?? '',
+        retrospectivePrompt: this.settings.retrospectivePrompt ?? '',
       },
       pause: this.pauseState,
       commands,

@@ -43,6 +43,7 @@ const cronInput: CronInput = {
   workingDirectory: '~/code',
   useWorktree: true,
   cleanupWorktree: false,
+  retrospective: true,
   model: 'sonnet',
   effort: 'high',
   usageDelay: { credits: false, fable: false, session: true, weekly: false },

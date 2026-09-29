@@ -39,8 +39,10 @@ import {
   listLogs,
   logPath,
   readLog,
+  retrospectiveLogs,
   updateCron,
 } from './store.js';
+import { DEFAULT_RETROSPECTIVE_PROMPT } from './retrospective.js';
 import type { BusEvent, Cron, CronInput, Execution, ExecutionInput, JobKind, Settings } from './types.js';
 
 /** When this process came up, which is what the Settings page calls the last boot. */
@@ -109,6 +111,7 @@ function readForm(body: Record<string, unknown> | undefined): { errors: string[]
       workingDirectory: String(body?.workingDirectory ?? '').trim(),
       useWorktree: Boolean(body?.useWorktree),
       cleanupWorktree: Boolean(body?.cleanupWorktree),
+      retrospective: Boolean(body?.retrospective),
       model: String(body?.model ?? '').trim(),
       effort,
       // Unknown keys are dropped and missing ones read as off, so the cron file
@@ -154,6 +157,7 @@ function readExecutionForm(body: Record<string, unknown> | undefined): { errors:
       useWorktree: Boolean(body?.useWorktree),
       // Whatever was sent: a job that runs once would only leave its worktree behind.
       cleanupWorktree: true,
+      retrospective: Boolean(body?.retrospective),
       model: String(body?.model ?? '').trim(),
       effort,
       usageDelay: normalizeUsageDelay(body?.usageDelay),
@@ -336,7 +340,14 @@ app.get('/api/browse', async (req, res, next) => {
 
 app.get('/api/settings', async (_req, res, next) => {
   try {
-    res.json({ ...(await loadSettings()), database: databaseTarget(), projectDir: PROJECT_DIR, updateLog: UPDATE_LOG });
+    res.json({
+      ...(await loadSettings()),
+      // What a blank Retrospective prompt runs, so the page can show it.
+      defaultRetrospectivePrompt: DEFAULT_RETROSPECTIVE_PROMPT,
+      database: databaseTarget(),
+      projectDir: PROJECT_DIR,
+      updateLog: UPDATE_LOG,
+    });
   } catch (err) {
     next(err);
   }
@@ -404,6 +415,12 @@ app.put('/api/settings', async (req: JsonRequest, res, next) => {
     if ('defaultWorktreeInclude' in (req.body ?? {})) {
       if (typeof req.body.defaultWorktreeInclude !== 'string') return res.status(400).json({ error: 'defaultWorktreeInclude must be a string' });
       patch.defaultWorktreeInclude = req.body.defaultWorktreeInclude;
+    }
+    if ('retrospectivePrompt' in (req.body ?? {})) {
+      if (typeof req.body.retrospectivePrompt !== 'string') return res.status(400).json({ error: 'retrospectivePrompt must be a string' });
+      // The default saved back unchanged is stored blank, so it keeps following the default.
+      const text = req.body.retrospectivePrompt.trim();
+      patch.retrospectivePrompt = text === DEFAULT_RETROSPECTIVE_PROMPT.trim() ? '' : req.body.retrospectivePrompt;
     }
     if ('defaultNodeId' in (req.body ?? {})) {
       const id = String(req.body.defaultNodeId ?? '').trim();
@@ -728,6 +745,7 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     const logs = await listLogs(cron.id);
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     const shown = await filterLogs(cron.id, logs, query);
+    const withRetrospective = await retrospectiveLogs(cron.id, shown);
     // Read here rather than on the cron list: the first read scans the log
     // folder, and this is the one page that draws the result.
     const stats = await lifetimeStats(cron, found.kind === 'execution' ? patchExecution : undefined);
@@ -736,7 +754,11 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
       cron: found.view(cron),
       stats,
       total: logs.length,
-      logs: shown.map((log) => ({ ...log, isRunning: hub.isRunningLog(cron.id, log.file) })),
+      logs: shown.map((log) => ({
+        ...log,
+        isRunning: hub.isRunningLog(cron.id, log.file),
+        hasRetrospective: withRetrospective.has(log.file),
+      })),
     });
   } catch (err) {
     next(err);

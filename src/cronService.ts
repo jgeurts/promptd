@@ -24,6 +24,7 @@ import {
 import { TTL_MS as USAGE_CHECK_MS, hasUsageDelay, normalizeUsageDelay, usageBlockers, usageMonitor } from './usage.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS } from './settings.js';
 import { validateCronExpression } from './schedule.js';
+import { RetrospectiveSplitter, retrospectiveAddendum, retrospectivePrompt, retrospectiveSection, substantiveRetrospective } from './retrospective.js';
 import { WORKTREE_INCLUDE_FILE, pathInRepo, removeWorktree, writeWorktreeInclude } from './worktree.js';
 import type {
   BusyJob,
@@ -164,10 +165,15 @@ function worktreeNotice(job: Pick<JobBase, 'cleanupWorktree'>, subfolder: string
     .join(' ');
 }
 
-/** The prompt as the CLI receives it: the preamble, the worktree notice if any, then what the job says. */
-function promptFor(job: Pick<JobBase, 'prompt'>, notice: string | null = null): string {
+/**
+ * The prompt as the CLI receives it: the preamble, the worktree notice if any,
+ * what the job says, then the retrospective addendum if the job asks for one.
+ */
+function promptFor(job: Pick<JobBase, 'prompt'>, notice: string | null = null, retrospective: string | null = null): string {
   const prompt = job.prompt ?? '';
-  return [PROMPT_PREFIX, notice, prompt.trim() ? prompt : null].filter(Boolean).join('\n\n');
+  return [PROMPT_PREFIX, notice, prompt.trim() ? prompt : null, retrospective && retrospectiveAddendum(retrospective)]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
@@ -1429,6 +1435,13 @@ class CronService {
     let worktreeIncludeText: string | null = null;
     // What the prompt was told about the worktree, shown above the prompt. Null leaves it out.
     let worktreeNoticeText: string | null = null;
+    // The retrospective prompt, read once so the run and its check use the same text.
+    const retroPrompt = cron.retrospective ? retrospectivePrompt(jobSettings().retrospectivePrompt) : null;
+    // Holds back what the model writes after the retrospective marker, so the
+    // log gets it as a section of its own rather than mixed into the output.
+    const retroSplitter = retroPrompt === null ? null : new RetrospectiveSplitter();
+    // Set in `finish` when the retrospective said something.
+    let wroteRetrospective = false;
 
     // Written once the child exists, so the header can carry its pid.
     const writeHeader = (pid: number | null | undefined): void => {
@@ -1449,6 +1462,7 @@ class CronService {
           `Use worktree      ${Boolean(cron.useWorktree)}`,
           `Cleanup worktree  ${Boolean(cron.cleanupWorktree)}`,
           `.worktreeinclude  ${worktreeIncludeNote}`,
+          `Retrospective     ${Boolean(cron.retrospective)}`,
           `command    ${CLAUDE_BIN} -p <prompt> ${[...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs].join(' ')}`,
           ...(worktreeNoticeText === null ? [] : ['--- worktree notice ---', worktreeNoticeText]),
           ...(worktreeIncludeText === null ? [] : ['--- .worktreeinclude ---', worktreeIncludeText.replace(/\n$/, '')]),
@@ -1470,6 +1484,16 @@ class CronService {
       // nothing is still writing in the folder being removed. The run keeps its
       // slot until this is done, so its next trigger cannot race the removal.
       const cleanupLine = `Worktree cleanup: ${await cleanUpWorktree(cron, cwd)}`;
+      if (retroSplitter && retroPrompt !== null) {
+        const held = retroSplitter.flush();
+        if (held) stream.write(held);
+        // A retrospective that reports nothing leaves no trace in the log.
+        const retro = substantiveRetrospective(retroSplitter.retrospective, retroPrompt);
+        if (retro) {
+          stream.write(retrospectiveSection(retro));
+          wroteRetrospective = true;
+        }
+      }
       stream.write(resultEvent ? statsBlock(resultEvent, [cleanupLine]) : `\n${cleanupLine}\n`);
       await new Promise<void>((resolve) => {
         stream.end(`\n--- ${status} after ${seconds}s${detail ? ` (${detail})` : ''} ---\n`, resolve);
@@ -1509,6 +1533,7 @@ class CronService {
       }).catch((err: unknown) => console.error(`[cron] could not record last run: ${err instanceof Error ? err.message : String(err)}`));
       console.log(`[cron] "${cron.name}" ${status} in ${seconds}s -> ${file}`);
       emit('run:finished', { cronId: cron.id, cronName: cron.name, kind, logFile: file, status, seconds: Number(seconds) });
+      if (wroteRetrospective) emit('run:retrospective', { cronId: cron.id, cronName: cron.name, kind, logFile: file });
       // The execution has had its run, so the one-shot timer it was armed with
       // is spent. Rebuild the schedules to drop it rather than leave something
       // counted as scheduled that the guard above would only refuse later — and
@@ -1553,7 +1578,7 @@ class CronService {
 
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
-      child = spawn(CLAUDE_BIN, ['-p', promptFor(cron, worktreeNoticeText), ...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs], {
+      child = spawn(CLAUDE_BIN, ['-p', promptFor(cron, worktreeNoticeText, retroPrompt), ...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs], {
         cwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -1582,7 +1607,8 @@ class CronService {
     const writeText = (text: string): void => {
       sawText = true;
       textTail = (textTail + text).slice(-2);
-      stream.write(text);
+      const output = retroSplitter ? retroSplitter.push(text) : text;
+      if (output) stream.write(output);
     };
 
     const handleLine = (line: string): void => {
@@ -1613,7 +1639,7 @@ class CronService {
       if (event.type === 'result') {
         resultEvent = event;
         // No deltas arrived (older CLI, or a non-streaming reply): fall back to the whole result.
-        if (!sawText && typeof event.result === 'string' && event.result) stream.write(event.result);
+        if (!sawText && typeof event.result === 'string' && event.result) writeText(event.result);
         if (event.is_error) stream.write(`\nCLI reported an error: ${event.api_error_status ?? event.subtype ?? 'unknown'}\n`);
       }
     };
