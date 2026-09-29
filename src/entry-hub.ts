@@ -22,6 +22,7 @@ import {
   patchExecution,
   updateExecution,
 } from './executions.js';
+import { feedbackExecution, readFeedbackForm } from './feedback.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, normalizeMaxConcurrentJobs, patchSettings } from './settings.js';
 import { migrateLogDirs } from './logsMigration.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
@@ -599,6 +600,23 @@ app.post('/api/executions', async (req, res, next) => {
     const execution = await createExecution(value);
     // A date already past is armed and run by the same reload that arms the
     // rest, so saving one is how you say "run this now, behind the queue".
+    hub.jobsChanged();
+    res.status(201).json(decorateExecution(execution));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * The header's bug and suggestion button. Saves a one-time execution dated now
+ * that has claude file a GitHub issue from the project checkout, and answers
+ * with it so the page can point at its run.
+ */
+app.post('/api/feedback', async (req: JsonRequest, res, next) => {
+  try {
+    const { errors, value } = readFeedbackForm(req.body);
+    if (!value) return res.status(400).json({ error: errors.join(' ') });
+    const execution = await createExecution(feedbackExecution(value.kind, value.details, PROJECT_DIR));
     hub.jobsChanged();
     res.status(201).json(decorateExecution(execution));
   } catch (err) {

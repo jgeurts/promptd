@@ -3024,6 +3024,55 @@ function setServerColor(hex) {
   root.setProperty('--accent-ink', 0.2126 * lr + 0.7152 * lg + 0.0722 * lb > 0.2 ? '#1b1207' : '#ffffff');
 }
 
+// ---- feedback ---------------------------------------------------------
+
+/**
+ * The header's bug and suggestion button. The hub turns what is typed here into
+ * a one-time execution, dated now, that has claude file the GitHub issue, so
+ * the run is followed like any other on the One-time Execution tab.
+ */
+const feedbackEl = document.getElementById('feedback');
+const feedbackFormEl = document.getElementById('feedback-form');
+const feedbackDetailsEl = document.getElementById('feedback-details');
+const feedbackErrorEl = document.getElementById('feedback-error');
+const feedbackSubmitEl = document.getElementById('feedback-submit');
+
+function openFeedback() {
+  feedbackFormEl.reset();
+  feedbackErrorEl.hidden = true;
+  feedbackSubmitEl.disabled = false;
+  feedbackEl.showModal();
+  feedbackDetailsEl.focus();
+}
+
+document.getElementById('feedback-open').addEventListener('click', openFeedback);
+document.getElementById('feedback-close').addEventListener('click', () => feedbackEl.close());
+document.getElementById('feedback-cancel').addEventListener('click', () => feedbackEl.close());
+// A click on the backdrop lands on the dialog itself, outside its form.
+feedbackEl.addEventListener('click', (event) => {
+  if (event.target === feedbackEl) feedbackEl.close();
+});
+
+feedbackFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData(feedbackFormEl);
+  feedbackErrorEl.hidden = true;
+  feedbackSubmitEl.disabled = true;
+  try {
+    const execution = await api('/api/feedback', {
+      method: 'POST',
+      body: JSON.stringify({ kind: form.get('kind'), details: form.get('details') }),
+    });
+    feedbackEl.close();
+    toast(`Sent. Claude is filing "${execution.name}" as a GitHub issue.`);
+    if (parseHash().section === 'list') refreshCurrentView();
+  } catch (err) {
+    feedbackErrorEl.textContent = err.message;
+    feedbackErrorEl.hidden = false;
+    feedbackSubmitEl.disabled = false;
+  }
+});
+
 // ---- notifications ----------------------------------------------------
 
 /**

@@ -23,6 +23,13 @@
         <a id="update-badge" class="badge-update" href="#/settings" hidden>Update available</a>
         <span id="conn" class="conn" title="Live connection">connecting</span>
         <a class="btn small icon" href="#/settings" title="Settings" aria-label="Settings">&#9881;</a>
+        <button id="feedback-open" class="btn small icon" type="button" title="Report a bug or suggestion" aria-label="Report a bug or suggestion">
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" />
+            <path d="M8 5.4v2.2" />
+            <path d="M8 9.1v.01" />
+          </svg>
+        </button>
         <button id="bell" class="btn small icon bell" type="button" title="Notifications" aria-label="Notifications">
           <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 6.6a4 4 0 0 1 8 0c0 3 .9 4 1.4 4.5H2.6C3.1 10.6 4 9.6 4 6.6Z" />
@@ -46,6 +53,33 @@
       <p class="drawer-sub">Anything still unread is marked read once it has been on screen for three seconds.</p>
       <div id="drawer-list" class="drawer-list" tabindex="-1"></div>
     </aside>
+
+    <dialog id="feedback" class="dialog" aria-labelledby="feedback-title">
+      <form id="feedback-form" method="dialog" class="dialog-body">
+        <div class="drawer-head dialog-head">
+          <h2 id="feedback-title">Report a bug or suggestion</h2>
+          <button id="feedback-close" class="btn small icon" type="button" title="Close" aria-label="Close">&times;</button>
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <div class="delay-grid" role="radiogroup">
+            <label class="check"><input type="radio" name="kind" value="bug" checked /> Bug</label>
+            <label class="check"><input type="radio" name="kind" value="suggestion" /> Suggestion</label>
+          </div>
+        </div>
+        <div class="field">
+          <label for="feedback-details">Details</label>
+          <textarea id="feedback-details" name="details" class="compact" maxlength="5000" required placeholder="What happened, or what you would like to see"></textarea>
+          <span class="hint">Claude summarizes this into a GitHub issue on the project's repository. Its run shows on the One-time Execution tab.</span>
+        </div>
+        <div id="feedback-error" class="error" hidden></div>
+        <div class="form-actions">
+          <span class="spacer"></span>
+          <button id="feedback-cancel" class="btn" type="button">Cancel</button>
+          <button id="feedback-submit" class="btn primary" type="submit">Submit</button>
+        </div>
+      </form>
+    </dialog>
 
     <main id="view" class="view"></main>
 
