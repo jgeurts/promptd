@@ -33,6 +33,7 @@ function cronWithCounters(overrides: Partial<Cron> = {}): Cron {
     name: 'nightly',
     description: '',
     cron: '0 9 * * *',
+    timezone: '',
     workingDirectory: '',
     useWorktree: false,
     cleanupWorktree: false,

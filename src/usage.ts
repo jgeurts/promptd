@@ -322,10 +322,10 @@ export function setUsageThresholds(input: unknown): UsageThresholds {
   return thresholds;
 }
 
-/** The categories as the page draws them, with the threshold in force now. */
-export function usageDelayOptions(): UsageDelayOption[] {
+/** The categories as the page draws them, with the given thresholds or the ones in force now. */
+export function usageDelayOptions(given: UsageThresholds = thresholds): UsageDelayOption[] {
   return USAGE_DELAY_CATEGORIES.map((category) => {
-    const threshold = thresholds[category.id];
+    const threshold = given[category.id];
     return {
       id: category.id,
       label: category.label,

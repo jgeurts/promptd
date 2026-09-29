@@ -40,6 +40,7 @@ const cronInput: CronInput = {
   name: 'Nightly digest',
   description: 'Summarize the day',
   cron: '0 9 * * *',
+  timezone: 'America/Chicago',
   workingDirectory: '~/code',
   useWorktree: true,
   cleanupWorktree: false,
@@ -118,13 +119,8 @@ describe.each(targets)('storage on $name', ({ url }) => {
     const defaults = await settings.loadSettings();
     expect(defaults.selfUpdate).toBe(true);
     await settings.patchSettings({ serverName: 'Office' });
-    await settings.patchSettings({ maxConcurrentJobs: 3 });
-    expect(await settings.loadSettings()).toMatchObject({ serverName: 'Office', maxConcurrentJobs: 3, selfUpdate: true });
-  });
-
-  it('fills a threshold missing from the stored set', async () => {
-    await settings.patchSettings({ usageDelayThresholds: { session: 50 } as never });
-    expect((await settings.loadSettings()).usageDelayThresholds).toEqual({ session: 50, weekly: 95, fable: 95, credits: 90 });
+    await settings.patchSettings({ updateCheckIntervalHours: 6 });
+    expect(await settings.loadSettings()).toMatchObject({ serverName: 'Office', updateCheckIntervalHours: 6, selfUpdate: true });
   });
 
   it('imports an install from before the database, once', async () => {

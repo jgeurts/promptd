@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import Database from 'better-sqlite3';
 import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect } from 'kysely';
+import type { Generated } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import type { Migration, MigrationResultSet } from 'kysely/migration';
 import pg from 'pg';
@@ -37,6 +38,7 @@ interface JobColumns {
 
 export interface CronTable extends JobColumns {
   cron: string;
+  timezone: string;
 }
 
 export interface ExecutionTable extends JobColumns {
@@ -75,6 +77,7 @@ export interface NodeTable {
   commit: string | null;
   firstSeenAt: string;
   lastSeenAt: string;
+  settings: Generated<string>;
 }
 
 export interface Tables {
@@ -166,6 +169,16 @@ const MIGRATIONS: Record<string, Migration> = {
         .addColumn('key', 'text', (col) => col.primaryKey())
         .addColumn('value', 'text', (col) => col.notNull())
         .execute();
+    },
+  },
+  '20260929_001_node_settings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('nodes').addColumn('settings', 'text', (col) => col.notNull().defaultTo('{}')).execute();
+    },
+  },
+  '20260929_002_cron_timezone': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('crons').addColumn('timezone', 'text', (col) => col.notNull().defaultTo('')).execute();
     },
   },
 };
