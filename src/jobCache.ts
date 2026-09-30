@@ -5,9 +5,10 @@ import { safeName } from './store.js';
 import { byScheduledAtDesc } from './executions.js';
 import { countRun as countFromRecord, hasLifetimeStats } from './stats.js';
 import type { RunOutcome } from './stats.js';
-import { readJobDefaults, resolveJob } from './jobDefaults.js';
-import type { Cron, Execution, JobKind, JobPatch, LifetimeStats, NodeSettings, NodeWork, Resolved, RunnableCron, RunnableExecution } from './types.js';
+import type { JobKind, JobPatch, LifetimeStats, NodeSettings, NodeWork, RunnableCron as Cron, RunnableExecution as Execution } from './types.js';
 
+// The hub sends each job with its settings already filled in from this
+// node's defaults, so the copy holds them as they run.
 interface JobRecord {
   cron: Cron;
   execution: Execution;
@@ -26,11 +27,6 @@ interface SavedState {
  * Stands in for the hub's store under the same names, so the cron service reads
  * and writes jobs exactly as it did when it owned the files. A write lands in
  * the copy at once and waits in the outbox until a report carries it to the hub.
- *
- * Jobs are kept as the hub sent them, with null for each setting a job leaves
- * to the defaults, and every read fills those in from the defaults the hub sent
- * last. The cron service reads a job afresh when its trigger fires, so a
- * changed default reaches that run.
  */
 
 const STATE_FILE = path.join(NODE_HOME, 'state.json');
@@ -41,30 +37,29 @@ let settings: Partial<NodeSettings> = {};
 let outbox: JobPatch[] = [];
 let saveTimer: NodeJS.Timeout | null = null;
 
-/** A copy of the job as it runs: what it leaves to the defaults filled in from this node's. */
-function resolved<T extends Cron | Execution>(value: T): Resolved<T>;
-function resolved<T extends Cron | Execution>(value: T | undefined): Resolved<T> | null;
-function resolved<T extends Cron | Execution>(value: T | undefined): Resolved<T> | null {
-  return value ? resolveJob(structuredClone(value), readJobDefaults(settings.jobDefaults)) : null;
+function clone<T extends object>(value: T): T;
+function clone<T extends object>(value: T | undefined): T | null;
+function clone<T extends object>(value: T | undefined): T | null {
+  return value ? structuredClone(value) : null;
 }
 
-export async function getCron(id: string): Promise<RunnableCron | null> {
-  return resolved(records.cron.get(id));
+export async function getCron(id: string): Promise<Cron | null> {
+  return clone(records.cron.get(id));
 }
 
-export async function getExecution(id: string): Promise<RunnableExecution | null> {
-  return resolved(records.execution.get(id));
+export async function getExecution(id: string): Promise<Execution | null> {
+  return clone(records.execution.get(id));
 }
 
-export async function listCrons(): Promise<RunnableCron[]> {
-  return [...records.cron.values()].map((cron) => resolved(cron)).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+export async function listCrons(): Promise<Cron[]> {
+  return [...records.cron.values()].map<Cron>(clone).sort((a, b) => String(a.name).localeCompare(String(b.name)));
 }
 
-export async function listExecutions(): Promise<RunnableExecution[]> {
-  return [...records.execution.values()].map((execution) => resolved(execution)).sort(byScheduledAtDesc);
+export async function listExecutions(): Promise<Execution[]> {
+  return [...records.execution.values()].map<Execution>(clone).sort(byScheduledAtDesc);
 }
 
-function patch<K extends JobKind>(kind: K, id: string, fields: Partial<JobRecord[K]>): Resolved<JobRecord[K]> {
+function patch<K extends JobKind>(kind: K, id: string, fields: Partial<JobRecord[K]>): JobRecord[K] {
   const existing: JobRecord[K] | undefined = records[kind].get(id);
   const merged = { ...(existing ?? { id }), ...fields } as JobRecord[K];
   // A job the hub has since taken away still has its run recorded, but it is not
@@ -72,14 +67,14 @@ function patch<K extends JobKind>(kind: K, id: string, fields: Partial<JobRecord
   if (existing) records[kind].set(id, merged);
   outbox.push({ kind, id, patch: fields as JobPatch['patch'] });
   scheduleSave();
-  return resolved(merged);
+  return clone(merged);
 }
 
-export async function patchCron(id: string, fields: Partial<Cron>): Promise<RunnableCron> {
+export async function patchCron(id: string, fields: Partial<Cron>): Promise<Cron> {
   return patch('cron', id, fields);
 }
 
-export async function patchExecution(id: string, fields: Partial<Execution>): Promise<RunnableExecution> {
+export async function patchExecution(id: string, fields: Partial<Execution>): Promise<Execution> {
   return patch('execution', id, fields);
 }
 

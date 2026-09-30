@@ -284,8 +284,6 @@ export interface NodeSettings {
   maxConcurrentJobs: number | null;
   retrospectivePrompt: string;
   usageDelayThresholds: UsageThresholds;
-  /** The cluster's defaults with this node's own changes, which fill in what a job leaves to them. */
-  jobDefaults: JobDefaults;
 }
 
 /** Everything on the event bus has a type and a time; the rest depends on the type. */
@@ -391,10 +389,11 @@ export interface NodeReport {
   status: NodeStatus;
 }
 
+/** A node's share of the jobs, each with its settings filled in from the node's defaults by the hub. */
 export interface NodeWork {
   node: { id: string; isDefault: boolean };
-  crons: Cron[];
-  executions: Execution[];
+  crons: RunnableCron[];
+  executions: RunnableExecution[];
   settings: NodeSettings;
   pause: PauseState | null;
   commands: NodeCommand[];

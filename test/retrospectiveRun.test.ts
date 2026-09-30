@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type * as CronService from '../src/cronService.js';
 import type * as Events from '../src/events.js';
 import type * as JobCache from '../src/jobCache.js';
-import type { BusEvent, Cron } from '../src/types.js';
+import type { BusEvent, RunnableCron as Cron } from '../src/types.js';
 
 /**
  * A stand-in for the claude CLI: writes the prompt it was given next to itself,
@@ -76,7 +76,6 @@ async function run(id: string, reply: string): Promise<{ log: string; types: str
       usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 },
       defaultWorktreeInclude: '',
       retrospectivePrompt: 'Say what went well.',
-      jobDefaults: { useWorktree: true, cleanupWorktree: true, retrospective: false, model: '', effort: '', usageDelay: { session: true, weekly: false, fable: false, credits: false } },
     },
   });
   const seen: BusEvent[] = [];

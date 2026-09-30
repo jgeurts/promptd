@@ -299,7 +299,7 @@ When the time is up, or you cancel, the crons and one-time executions are re-rea
 
 ## Job defaults
 
-Six settings on a job can be left to its node: **Use worktree**, **Clean up worktree**, **Model**, **Effort**, each of the four **Delay for usage** boxes, and **Retrospective**. A job stores only the ones its person changed; the rest are `null` and are filled in when a trigger fires, so changing a default reaches every job that did not set its own from its next run. Each log's header records the values the run actually used.
+Six settings on a job can be left to its node: **Use worktree**, **Clean up worktree**, **Model**, **Effort**, each of the four **Delay for usage** boxes, and **Retrospective**. A job stores only the ones its person changed; the rest are `null`, in the database and the API. The hub fills them in from the job's node's defaults each time it sends that node its jobs, so a node runs exactly what it is sent — a node older than job defaults included — and changing a default reaches every job that did not set its own from its next run. Each log's header records the values the run actually used.
 
 Where a default comes from:
 

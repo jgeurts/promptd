@@ -10,7 +10,7 @@ import { applyInferredTitle, listCrons, logPath, patchCron, pruneLogs } from './
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
-import { readJobDefaults } from './jobDefaults.js';
+import { readJobDefaults, resolveJob } from './jobDefaults.js';
 import { TITLE_PROMPT_LIMIT, cleanTitle } from './naming.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
@@ -37,6 +37,8 @@ import type {
   NodeStatus,
   PauseInfo,
   PauseState,
+  RunnableCron,
+  RunnableExecution,
   Settings,
   SystemSample,
   UsageReading,
@@ -634,10 +636,17 @@ class Hub {
     if (wrote) this.jobsCache = null;
   }
 
+  /**
+   * A node's jobs and settings. Each job goes out with every setting it leaves
+   * to the defaults already filled in from this node's, so a node runs exactly
+   * what it is sent, whatever version it is: one from before job defaults
+   * existed would read a null as off. The stored nulls stay in the database
+   * and the API; a changed default reaches the node as changed jobs.
+   */
   private async work(nodeId: string, instance: string): Promise<{
     node: { id: string; isDefault: boolean };
-    crons: Cron[];
-    executions: Execution[];
+    crons: RunnableCron[];
+    executions: RunnableExecution[];
     settings: NodeSettings;
     pause: PauseState | null;
     commands: NodeCommand[];
@@ -648,17 +657,17 @@ class Hub {
     }
     const { crons, executions } = await this.allJobs();
     const mine = (job: Cron | Execution): boolean => this.nodeIdFor(job) === node.id;
+    const config = this.nodeConfig(node.id);
     const commands = node.commands.slice();
     return {
       node: { id: node.id, isDefault: node.id === this.defaultNodeId() },
-      crons: crons.filter(mine),
-      executions: executions.filter(mine),
+      crons: crons.filter(mine).map((cron) => resolveJob(cron, config.jobDefaults)),
+      executions: executions.filter(mine).map((execution) => resolveJob(execution, config.jobDefaults)),
       settings: {
         maxConcurrentJobs: node.config.maxConcurrentJobs ?? null,
-        usageDelayThresholds: this.nodeConfig(node.id).usageDelayThresholds,
+        usageDelayThresholds: config.usageDelayThresholds,
         defaultWorktreeInclude: this.settings.defaultWorktreeInclude ?? '',
         retrospectivePrompt: this.settings.retrospectivePrompt ?? '',
-        jobDefaults: this.nodeConfig(node.id).jobDefaults,
       },
       pause: this.pauseState,
       commands,

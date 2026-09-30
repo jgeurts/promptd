@@ -66,7 +66,7 @@ async function run(job: RunnableCron): Promise<{ log: string; args: string[] }> 
   cache.replaceJobs({
     crons: [job],
     executions: [],
-    settings: { maxConcurrentJobs: 0, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: 'node_modules/\n', retrospectivePrompt: '', jobDefaults: { useWorktree: true, cleanupWorktree: true, retrospective: false, model: '', effort: '', usageDelay: { session: true, weekly: false, fable: false, credits: false } } },
+    settings: { maxConcurrentJobs: 0, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: 'node_modules/\n', retrospectivePrompt: '' },
   });
   const finished = new Promise<void>((resolve) => {
     const check = (event: BusEvent): void => {
