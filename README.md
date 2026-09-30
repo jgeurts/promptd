@@ -17,6 +17,10 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - A notification centre behind the bell: everything the server announces, kept on disk, with an unread count and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
+![The Crons tab: five scheduled prompts with their status, last run and next run](docs/images/crons.png)
+
+![One run's log: the prompt, Claude's output, and the model, tokens and cost it reported](docs/images/run-log.png)
+
 ## Install
 
 The install script is for macOS; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Node 20 or newer, and Claude Code installed and signed in: `claude --version` should answer.
