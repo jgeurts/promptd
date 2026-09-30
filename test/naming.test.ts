@@ -71,3 +71,24 @@ describe('a job saved without a name', () => {
     expect(readCronForm({ cron: '0 9 * * *' }).errors).toEqual(['Prompt is required.']);
   });
 });
+
+describe('a one-time execution saved as soon as possible', () => {
+  const now = new Date('2026-09-30T18:00:00.000Z');
+
+  it('is dated now and waits for the session limit, whatever the form sent', () => {
+    const { errors, value } = readExecutionForm(
+      { asSoonAsPossible: true, scheduledAt: '', prompt: 'Rotate the staging keys.', usageDelay: { session: false, weekly: true } },
+      now,
+    );
+    expect(errors).toEqual([]);
+    expect(value.scheduledAt).toBe(now.toISOString());
+    expect(value.usageDelay).toEqual({ session: true, weekly: true, fable: null, credits: null });
+  });
+
+  it('leaves a job saved for a time to its own date and to the defaults', () => {
+    const { value } = readExecutionForm({ scheduledAt: '2026-10-01T08:00:00.000Z', prompt: 'Rotate the staging keys.' }, now);
+    expect(value.scheduledAt).toBe('2026-10-01T08:00:00.000Z');
+    expect(value.usageDelay.session).toBeNull();
+    expect(readExecutionForm({ prompt: 'x' }, now).errors).toEqual(['Date and time are required.']);
+  });
+});

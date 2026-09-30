@@ -228,11 +228,28 @@ Model discovery is slower on the first run after login, around 14 seconds agains
 - **`brew services`** manages Homebrew formulae, not arbitrary projects.
 - Running `npm start` in a terminal remains fine for occasional use; it stops when the terminal closes.
 
+## The job forms
+
+The cron and one-time execution forms read in the order you fill them in:
+
+1. **Prompt**, the one thing you have to write. It has the focus when the form opens, and the [common commands](#settings-and-self-update) sit under it as buttons.
+2. **When**: a cron expression for a cron, with its shortcuts; for a one-time execution, **As soon as possible** or **At a time** (see [One-time executions](#one-time-executions)).
+3. **Node** and **Working Directory**, side by side. The note under the folder says whether it is in a git repository. A worktree needs one, so when the folder is not in one the form turns **Use worktree** off and says _Not in a git repository, so no worktree_; moving to a folder that is in one turns it back on, unless you changed the box yourself.
+4. **Name**, which is optional. Left blank, the placeholder shows the name the job will get, and changes as you type the prompt: the prompt's first sentence, cut to about six words. Saving names the job that way at once, then asks the job's node to have Claude title it — `claude -p --model haiku` in a throwaway folder, given _Reply with a 2 to 6 word title for this task, and nothing else._ and the first 4,000 characters of the prompt, with a minute to answer. The title replaces the first words only if the name is still the one taken from the prompt, so a name you type meanwhile wins. If the node is offline, the call fails, or the answer is empty or longer than 60 characters, the first words stay; either way the node's log says what happened, and nothing is sent as a notification.
+5. **More options**, folded away: Worktree, Model, Effort, Delay for usage, Project, Retrospective, Description, and on a cron **Is Active** (_Off keeps the cron but stops it firing_). The line beside it lists what the job sets for itself rather than following its [defaults](#job-defaults), such as `Worktree off · Sonnet · waits for Weekly`, or says **Cluster defaults** when it sets none of them. Editing or duplicating a job opens it when anything inside differs from what a new job would have.
+
+A one-time execution has no Is Active box: the form saves it active. The API still takes `isActive`.
+
 ## One-time executions
 
-The **One-time Execution** tab holds prompts that run once, at a date and time you pick, instead of on a repeating schedule. Everything else about them is a cron: the same working directory, model, effort, usage delay, prompt, `Is Active` checkbox, prompt preamble, log, statistics block and Stop button.
+The **One-time Execution** tab holds prompts that run once instead of on a repeating schedule. Everything else about them is a cron: the same working directory, model, effort, usage delay, prompt, prompt preamble, log, statistics block and Stop button.
 
-The form is the cron form with **Runs at** where the Cron field was: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a _Select datetime_ calendar that opens on whatever Runs at already says. A new one defaults to tomorrow at 8am; editing keeps the time it was scheduled for. The server stores it as UTC.
+The form is the cron form with a choice under **When** where the cron expression was:
+
+- **As soon as possible**, which a new one starts on. It is saved dated now by the hub's clock with the Session wait ticked, whatever the defaults say, so it _runs now, or as soon as the session limit has room_. The API does the same for `"asSoonAsPossible": true` in place of a `scheduledAt`.
+- **At a time**: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a _Select datetime_ calendar that opens on whatever the field already says. It offers tomorrow at 8am until you change it.
+
+Editing one opens on At a time with the time it was scheduled for. The server stores it as UTC.
 
 The list shows the ten most recent, newest first, and **Load 10 older** goes back through the rest. A finished one stays in the list as history, so the tab is both what is coming and what has already gone.
 
@@ -487,25 +504,35 @@ The paths in use are listed on the Settings page, under **Storage**.
 
 Set `DATABASE_URL=postgres://user:password@host:5432/db` to keep the same tables in Postgres instead; the log files stay on disk either way. The schema is created and migrated when the hub starts.
 
-A cron, as the API returns it:
+A cron, as the API returns it. Each of the six [job-default](#job-defaults) settings is as the job stores it, `null` where it follows the defaults, and `effective` says what a run on its node would use:
 
 ```json
 {
   "id": "e628139b-b4dc-4e50-af3f-c439c92515be",
   "name": "Nightly Digest",
+  "nameInferred": false,
   "description": "Summarize the day",
   "cron": "0 9 * * *",
   "timezone": "America/Chicago",
   "workingDirectory": "/Users/you/code/project",
   "useWorktree": false,
-  "cleanupWorktree": false,
+  "cleanupWorktree": null,
+  "retrospective": null,
   "model": "claude-sonnet-4-5",
-  "effort": "",
+  "effort": null,
   "usageDelay": {
-    "session": true,
-    "weekly": false,
-    "fable": false,
+    "session": null,
+    "weekly": null,
+    "fable": null,
     "credits": true
+  },
+  "effective": {
+    "useWorktree": false,
+    "cleanupWorktree": true,
+    "retrospective": false,
+    "model": "claude-sonnet-4-5",
+    "effort": "",
+    "usageDelay": { "session": true, "weekly": false, "fable": false, "credits": true }
   },
   "prompt": "Write a two line summary of today.",
   "isActive": true,
@@ -528,18 +555,20 @@ A one-time execution is the same shape with `scheduledAt` where `cron` was, plus
 {
   "id": "b1a72c6c-f9fd-4341-b723-56630c3bf00e",
   "name": "Backfill September invoices",
+  "nameInferred": true,
   "description": "",
   "scheduledAt": "2026-09-20T13:00:00.000Z",
   "workingDirectory": "/Users/you/code/project",
-  "useWorktree": false,
+  "useWorktree": null,
   "cleanupWorktree": true,
-  "model": "",
-  "effort": "",
+  "retrospective": null,
+  "model": null,
+  "effort": null,
   "usageDelay": {
     "session": true,
-    "weekly": false,
-    "fable": false,
-    "credits": false
+    "weekly": null,
+    "fable": null,
+    "credits": null
   },
   "prompt": "Backfill the September invoices and write a summary.",
   "isActive": true,
@@ -555,7 +584,7 @@ A one-time execution is the same shape with `scheduledAt` where `cron` was, plus
 }
 ```
 
-`useWorktree` and `cleanupWorktree` are the two boxes in the form's Worktree section. A one-time execution is always saved with `cleanupWorktree: true`, whatever the request sent.
+`useWorktree` and `cleanupWorktree` are the two boxes in the form's Worktree section. A one-time execution is always saved with `cleanupWorktree: true`, whatever the request sent. `nameInferred` says the name was taken from the prompt because none was given, so a title from Claude may still replace it.
 
 Both kinds write their logs into `logs/` under their own id, so the folder serves the two without a prefix.
 
@@ -585,7 +614,7 @@ While a run is in flight, that cron's **Run now** button becomes **Stop**. Stopp
 --- stopped after 6.2s (killed by user, signal SIGKILL) ---
 ```
 
-The run's outcome is recorded as `stopped`, distinct from `succeeded` and `failed`. The schedule is left alone: an active cron stays armed and fires again at its next trigger, so stopping one run never disables the cron. Use the Is Active checkbox for that.
+The run's outcome is recorded as `stopped`, distinct from `succeeded` and `failed`. The schedule is left alone: an active cron stays armed and fires again at its next trigger, so stopping one run never disables the cron. Use its Is Active box, under More options, for that.
 
 Stopping a one-time execution works the same way and is documented in two places rather than one: the log carries the `stop requested by user` line and the `killed by user` footer, and the record itself keeps `stoppedBy` alongside a `stopped` outcome. The log is pruned eventually; the record is what the list reads. A stopped one-time execution is `done` — it has had its run — and **Run now** will run it again.
 
@@ -754,7 +783,7 @@ Two Server-Sent Event streams, no polling loops in the UI:
 
 ## Model
 
-The form has a Model dropdown. Leave it on **Default** and nothing is passed, so the run uses whatever the CLI is configured to use. Pick anything else and it is passed as `claude --model <value>`.
+The form has a Model dropdown under More options, which follows the [job defaults](#job-defaults) until you pick something. **CLI default** passes nothing, so the run uses whatever the CLI is configured to use. Anything else is passed as `claude --model <value>`.
 
 The list is discovered from the installed CLI, not hardcoded, so it tracks the version you have:
 
@@ -847,7 +876,7 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/models`                               | Discovered models, plus whether discovery is running                                                                                                                                                                                                                                                                     |
 | POST             | `/api/models/refresh`                       | Re-run discovery                                                                                                                                                                                                                                                                                                         |
 | GET              | `/api/executions?before=&limit=`            | One page of one-time executions, newest first, plus the total, how many are still scheduled, and the cursor for the next page                                                                                                                                                                                            |
-| POST             | `/api/executions`                           | Create. A `scheduledAt` already in the past is accepted and runs at once                                                                                                                                                                                                                                                 |
+| POST             | `/api/executions`                           | Create. A `scheduledAt` already in the past is accepted and runs at once; `"asSoonAsPossible": true` instead dates it now with the Session wait on. A blank `name` is taken from the prompt, then replaced by a title from Claude if it is still that name                                                              |
 | GET, PUT, DELETE | `/api/executions/:id`                       | Read, update, delete. A PUT that moves `scheduledAt` arms it again                                                                                                                                                                                                                                                       |
 | POST             | `/api/executions/:id/rearm`                 | Put a finished or cancelled one back to `scheduled` on its own date (409 while it is running)                                                                                                                                                                                                                            |
 | POST             | `/api/executions/:id/run`                   | Same contract as `/api/crons/:id/run`                                                                                                                                                                                                                                                                                    |

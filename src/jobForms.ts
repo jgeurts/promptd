@@ -88,15 +88,20 @@ export function readCronForm(body: FormBody): FormResult<CronInput> {
  * already in the past is accepted rather than rejected: the same rule that runs
  * a trigger missed over a restart runs this one as soon as it is saved, and a
  * form that refused it would be arguing with a clock the user can see.
+ *
+ * `asSoonAsPossible` is the form's other choice: dated now by the hub's clock,
+ * and waiting for the session limit to have room, whatever the defaults say.
  */
-export function readExecutionForm(body: FormBody): FormResult<ExecutionInput> {
+export function readExecutionForm(body: FormBody, now = new Date()): FormResult<ExecutionInput> {
   const errors: string[] = [];
   const { name, nameInferred } = readName(body, errors);
-  const scheduledAt = parseScheduledAt(body?.scheduledAt);
-  if (!String(body?.scheduledAt ?? '').trim()) errors.push('Date and time are required.');
+  const asSoonAsPossible = body?.asSoonAsPossible === true;
+  const scheduledAt = asSoonAsPossible ? now : parseScheduledAt(body?.scheduledAt);
+  if (!asSoonAsPossible && !String(body?.scheduledAt ?? '').trim()) errors.push('Date and time are required.');
   else if (!scheduledAt) errors.push('Date and time is not a valid date.');
   if (!String(body?.prompt ?? '').trim()) errors.push('Prompt is required.');
   const settings = readSettings(body, errors);
+  if (asSoonAsPossible) settings.usageDelay.session = true;
   return {
     errors,
     value: {

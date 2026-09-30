@@ -51,7 +51,8 @@ const STARTED_AT = new Date().toISOString();
 const PORT = Number(process.env.PORT || 4321);
 const HOST = process.env.HOST || '127.0.0.1';
 const SELF_UPDATE = process.env.PROMPTD_SELF_UPDATE !== '0';
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+const BUILD_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(BUILD_DIR, '..', 'public');
 
 type JsonRequest = Request<Record<string, string>, unknown, Record<string, unknown>>;
 
@@ -85,6 +86,9 @@ app.use(requireLogin());
 app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(PUBLIC_DIR));
+// The rule a blank Name is filled by, compiled from src/naming.ts, so the form's
+// placeholder shows the very name the save will give.
+app.get('/shared/naming.js', (_req, res) => res.sendFile(path.join(BUILD_DIR, 'naming.js')));
 
 async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
   if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');
