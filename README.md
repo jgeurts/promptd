@@ -306,6 +306,8 @@ Where a default comes from:
 1. **The cluster's**, under **New job defaults** on the Settings page, stored as the `jobDefaults` setting. Out of the box: Use worktree and Clean up worktree on, the CLI's own model and effort, the Session wait on, everything else off.
 2. **The node's own**, under **New job defaults** on its page. Each one says **cluster default** until it is changed there, and **Use the cluster default** puts it back.
 
+A worktree needs a git repository, so a run whose folder is not in one goes without, even when Use worktree is on — as it can be for a job that follows a default changed after it was saved. The node checks at launch: no `--worktree`, no worktree notice in the prompt, no `.worktreeinclude` written, and the log header says `Use worktree      false (on for this job, but <folder> is not in a git repository, so this run has none)`.
+
 On a job's form each of the six shows the value it will use. One it follows is marked **default**; one it sets itself has **Use default** beside it, which puts it back to following. Picking another node moves the ones it follows with it.
 
 Jobs saved before this existed were moved over without changing what they run: a blank model or effort, which already meant the CLI's own, now follows the default (the CLI's own, unless you change it), and every other stored value is kept as that job's own.

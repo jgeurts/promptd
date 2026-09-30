@@ -25,7 +25,7 @@ import { TTL_MS as USAGE_CHECK_MS, hasUsageDelay, normalizeUsageDelay, usageBloc
 import { DEFAULT_MAX_CONCURRENT_JOBS } from './settings.js';
 import { validateCronExpression } from './schedule.js';
 import { RetrospectiveSplitter, retrospectiveAddendum, retrospectivePrompt, retrospectiveSection, substantiveRetrospective } from './retrospective.js';
-import { WORKTREE_INCLUDE_FILE, pathInRepo, removeWorktree, writeWorktreeInclude } from './worktree.js';
+import { WORKTREE_INCLUDE_FILE, pathInRepo, removeWorktree, repoRoot, writeWorktreeInclude } from './worktree.js';
 // Every job here comes from the node's cache with its defaults filled in, so
 // these names are the resolved shapes, and each setting is a plain value.
 import type {
@@ -1395,8 +1395,12 @@ class CronService {
     // Same for effort: left off unless the cron names a level.
     const effortArgs = cron.effort?.trim() ? ['--effort', cron.effort.trim()] : [];
     // Named after the job so every run finds the same worktree, and clean up
-    // knows which one to remove.
-    const worktreeArgs = cron.useWorktree ? ['--worktree', cron.id] : [];
+    // knows which one to remove. Dropped below when the folder is not in a
+    // git repository, where `claude --worktree` would fail the run.
+    let useWorktree = Boolean(cron.useWorktree);
+    let worktreeArgs = useWorktree ? ['--worktree', cron.id] : [];
+    // Why a job with Use worktree on runs without one this time, for the header.
+    let worktreeSkipped: string | null = null;
 
     const run: RunInfo = {
       runId: randomUUID(),
@@ -1461,7 +1465,7 @@ class CronService {
             (wait) =>
               `${(wait.kind === 'usage' ? 'held' : 'queued').padEnd(11)}waited ${formatRuntime(startedAt.getTime() - new Date(wait.since).getTime())} for ${wait.detail}`,
           ),
-          `Use worktree      ${Boolean(cron.useWorktree)}`,
+          `Use worktree      ${useWorktree}${worktreeSkipped ? ` (on for this job, but ${worktreeSkipped}, so this run has none)` : ''}`,
           `Cleanup worktree  ${Boolean(cron.cleanupWorktree)}`,
           `.worktreeinclude  ${worktreeIncludeNote}`,
           `Retrospective     ${Boolean(cron.retrospective)}`,
@@ -1559,10 +1563,20 @@ class CronService {
       return run;
     }
 
+    // A worktree needs a git repository. A job that leaves Use worktree to
+    // its defaults can have it turned on for a folder outside one, so the run
+    // goes without: no --worktree, no notice in the prompt, no .worktreeinclude.
+    if (useWorktree && (await repoRoot(cwd)) === null) {
+      useWorktree = false;
+      worktreeArgs = [];
+      worktreeSkipped = `${cwd} is not in a git repository`;
+      worktreeIncludeNote = 'not written: this run has no worktree';
+    }
+
     // Claude Code copies what the file lists when it creates a worktree, so it
     // is rewritten from the setting on every run, before the child starts. A
     // file that cannot be written is noted in the header; the run still goes.
-    if (cron.useWorktree) {
+    if (useWorktree) {
       const { defaultWorktreeInclude } = jobSettings();
       worktreeIncludeNote = await writeWorktreeInclude(cwd, String(defaultWorktreeInclude ?? ''))
         .then((result: WorktreeIncludeOutcome) => {
