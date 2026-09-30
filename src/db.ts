@@ -60,6 +60,8 @@ export interface NotificationTable {
   cronName: string | null;
   jobKind: string;
   logFile: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
 }
 
 export interface SettingTable {
@@ -215,6 +217,14 @@ const MIGRATIONS: Record<string, Migration> = {
       for (const table of ['crons', 'executions']) {
         await db.schema.alterTable(table).addColumn('project_id', 'text').execute();
       }
+    },
+  },
+  // The machine a notification is about. Rows written before this have none,
+  // and are left without one rather than credited to a node that is a guess.
+  '20260930_002_notification_nodes': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('node_id', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('node_name', 'text').execute();
     },
   },
 };

@@ -16,6 +16,9 @@ export interface NotificationRecord {
   jobKind: JobKind;
   /** The run it is about, when it is about one run: the drawer's link opens that log. */
   logFile: string | null;
+  /** The machine it happened on, or null on a record written before nodes were named. */
+  nodeId: string | null;
+  nodeName: string | null;
   writing?: Promise<void> | null;
 }
 
@@ -26,7 +29,17 @@ export interface NotificationPage {
   nextBefore: string | null;
   unread: number;
   total: number;
+  /** Every machine a notification can name, or none when there is only one to name. */
+  nodes: NotificationNode[];
 }
+
+export interface NotificationNode {
+  id: string;
+  name: string;
+}
+
+/** What the hub's own events are credited to: its pauses and its updates happen on no node. */
+export const HUB_NODE: NotificationNode = { id: 'hub', name: 'hub' };
 
 interface NotificationDraft {
   kind: string;
@@ -36,6 +49,8 @@ interface NotificationDraft {
   cronName?: string | null;
   jobKind?: JobKind;
   logFile?: string | null;
+  nodeId?: string | null;
+  nodeName?: string | null;
 }
 
 type DescribableEvent = BusEvent & {
@@ -63,6 +78,9 @@ type DescribableEvent = BusEvent & {
   summary?: string;
   running?: RunningJobSummary[];
   reasons?: UsageBlocker[];
+  /** Stamped by the hub on everything a node reports; absent on the hub's own events. */
+  nodeId?: string;
+  nodeName?: string;
 };
 
 /**
@@ -95,6 +113,8 @@ function toRow(record: NotificationRecord): NotificationTable {
     cronName: record.cronName,
     jobKind: record.jobKind,
     logFile: record.logFile,
+    nodeId: record.nodeId,
+    nodeName: record.nodeName,
   };
 }
 
@@ -127,6 +147,19 @@ function blockerNames(event: DescribableEvent): string {
 }
 
 /**
+ * What one event is worth recording as, credited to the machine it happened on.
+ *
+ * The hub names the node on everything a node reports. Anything without a name
+ * was the hub's own doing — a pause, an update — and is credited to the hub.
+ */
+export function describe(event: DescribableEvent): NotificationDraft[] | null {
+  const described = describeEvent(event);
+  if (!described) return null;
+  const node = { nodeId: event.nodeId ?? HUB_NODE.id, nodeName: event.nodeName ?? event.nodeId ?? HUB_NODE.name };
+  return ([] as NotificationDraft[]).concat(described).map((draft) => ({ ...draft, ...node }));
+}
+
+/**
  * What one event is worth recording as, or null for the ones that are signals
  * rather than news — a redraw hint, a stats sample, this module's own events.
  *
@@ -134,7 +167,7 @@ function blockerNames(event: DescribableEvent): string {
  * written in the client and these on the server, so the two are kept in step by
  * hand; a difference in wording is a bug, not a feature.
  */
-function describe(event: DescribableEvent): NotificationDraft | NotificationDraft[] | null {
+function describeEvent(event: DescribableEvent): NotificationDraft | NotificationDraft[] | null {
   // jobKind, not kind: `kind` on a notification is what sort of notice it is,
   // and this is what sort of thing it happened to.
   const cron: Pick<NotificationDraft, 'cronId' | 'cronName' | 'jobKind'> = { cronId: event.cronId ?? null, cronName: event.cronName ?? null, jobKind: event.kind ?? 'cron' };
@@ -261,7 +294,7 @@ function describe(event: DescribableEvent): NotificationDraft | NotificationDraf
   }
 }
 
-class NotificationCenter {
+export class NotificationCenter {
   public items: NotificationRecord[];
   public ready: Promise<number> | null;
   public listening: boolean;
@@ -310,9 +343,7 @@ class NotificationCenter {
 
   /** Turns one bus event into however many notifications it is worth. */
   public record(event: BusEvent): void {
-    const described = describe(event as DescribableEvent);
-    if (!described) return;
-    for (const one of ([] as NotificationDraft[]).concat(described)) this.add(one);
+    for (const one of describe(event as DescribableEvent) ?? []) this.add(one);
   }
 
   /**
@@ -320,7 +351,17 @@ class NotificationCenter {
    * on: a notification that cannot be written is still worth showing, and the
    * event that produced it must not be held up by a filesystem.
    */
-  public add({ kind, message, read = true, cronId = null, cronName = null, jobKind = 'cron', logFile = null }: NotificationDraft): NotificationRecord {
+  public add({
+    kind,
+    message,
+    read = true,
+    cronId = null,
+    cronName = null,
+    jobKind = 'cron',
+    logFile = null,
+    nodeId = null,
+    nodeName = null,
+  }: NotificationDraft): NotificationRecord {
     const record = {
       id: randomUUID(),
       at: new Date().toISOString(),
@@ -332,6 +373,8 @@ class NotificationCenter {
       // Which page the drawer's link should open: a cron's logs or an execution's.
       jobKind,
       logFile,
+      nodeId,
+      nodeName,
     } as NotificationRecord;
     this.items.unshift(record);
     const pruned = this.items.length > MAX_NOTIFICATIONS ? this.items.splice(MAX_NOTIFICATIONS) : [];
@@ -382,7 +425,8 @@ class NotificationCenter {
     before = null,
     limit = PAGE_SIZE,
     unreadOnly = false,
-  }: { before?: string | null; limit?: unknown; unreadOnly?: boolean } = {}): Promise<NotificationPage> {
+    nodes = [],
+  }: { before?: string | null; limit?: unknown; unreadOnly?: boolean; nodes?: NotificationNode[] } = {}): Promise<NotificationPage> {
     await this.ready;
     const size = Math.max(1, Math.min(100, Number(limit) || PAGE_SIZE));
     let start = 0;
@@ -402,6 +446,9 @@ class NotificationCenter {
       nextBefore: rest.length > size ? items.at(-1)?.id ?? null : null,
       unread: this.unreadCount(),
       total: unreadOnly ? this.unreadCount() : this.items.length,
+      // One node is the drawer as it always was: no names on the rows, nothing
+      // to filter by. The hub is only worth naming beside two or more.
+      nodes: nodes.length > 1 ? [HUB_NODE, ...nodes.map(({ id, name }) => ({ id, name }))] : [],
     };
   }
 

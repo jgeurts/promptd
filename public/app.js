@@ -3549,6 +3549,7 @@ let viewObserver = null; // watches items for the three-second rule
 let moreObserver = null; // watches the end of the list for the next page
 let sentinelEl = null;
 let unreadOnly = false; // the filter button: show only what is still unread
+let drawerNodes = []; // every machine a row can name; empty when there is only one
 
 function setBellBadge(count) {
   if (!bellBadgeEl) return;
@@ -3568,10 +3569,13 @@ function noteKindClass(kind) {
 function renderNotification(record, { arriving = false } = {}) {
   const meta = `${fmtRelative(record.at)} · ${fmtDateTime(record.at)}`;
   const classes = ['note', record.read ? '' : 'unread', arriving ? 'arriving' : ''].filter(Boolean);
+  // With several machines a row says which one it is about. A record from before
+  // nodes were named has no name, and gets none rather than a guess.
+  const named = drawerNodes.length && record.nodeName;
   const node = el('div', { class: classes.join(' '), 'data-id': record.id }, [
     el('span', { class: `note-dot ${noteKindClass(record.kind)}` }),
     el('div', { class: 'note-body' }, [
-      el('div', { class: 'note-message', text: record.message }),
+      el('div', { class: 'note-message' }, [named ? el('span', { class: 'note-node', text: `${record.nodeName} · ` }) : null, record.message]),
       el('div', { class: 'note-meta', text: meta }),
     ]),
   ]);
@@ -3586,6 +3590,13 @@ function renderNotification(record, { arriving = false } = {}) {
         : record.jobKind === 'execution'
           ? `#/one-time/logs/${record.cronId}`
           : `#/logs/${record.cronId}`;
+    });
+  } else if (named && record.nodeId !== 'hub' && drawerNodes.some((known) => known.id === record.nodeId)) {
+    // Not about a job, so about the machine: a disk filling up, a busy CPU.
+    node.classList.add('linked');
+    node.addEventListener('click', () => {
+      closeDrawer();
+      location.hash = `#/nodes/${encodeURIComponent(record.nodeId)}`;
     });
   }
   return node;
@@ -3639,6 +3650,7 @@ async function loadNextPage() {
     const query = params.toString();
     const page = await api(`/api/notifications${query ? `?${query}` : ''}`);
     setBellBadge(page.unread);
+    drawerNodes = page.nodes ?? [];
     for (const record of page.items) {
       if (drawnIds.has(record.id)) continue;
       drawnIds.add(record.id);

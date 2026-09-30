@@ -429,6 +429,11 @@ a {
   font-weight: 600;
 }
 
+/* Which machine, when there is more than one: read first, but quieter than the news. */
+.note-node {
+  color: var(--muted);
+}
+
 .note-meta {
   margin-top: 3px;
   font-size: 11px;

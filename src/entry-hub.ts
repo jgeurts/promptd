@@ -266,7 +266,7 @@ app.get('/api/notifications', async (req, res, next) => {
     const before = String(req.query.before ?? '').trim() || null;
     // `?unread=1` is the drawer's filter: the same pages with the read ones left out.
     const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread ?? '').toLowerCase());
-    res.json(await notificationCenter.page({ before, limit: req.query.limit ?? PAGE_SIZE, unreadOnly }));
+    res.json(await notificationCenter.page({ before, limit: req.query.limit ?? PAGE_SIZE, unreadOnly, nodes: hub.listNodes() }));
   } catch (err) {
     next(err);
   }
