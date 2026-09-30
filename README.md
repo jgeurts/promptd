@@ -14,7 +14,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.
 - Machine stats in the header — CPU, memory, storage throughput and disk space, sampled every 5 seconds, with a 15-minute chart on hover.
-- A notification centre behind the bell: everything the server announces, kept on disk, with an unread count and a drawer that marks what you have actually read.
+- A notification centre behind the bell: everything the server announces, kept on disk, sorted by whether it needs you, named by the machine it happened on, with repeats kept to one row and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
 ## Run it
@@ -634,24 +634,35 @@ Amber and red are the API's own severity for a limit, not a threshold picked her
 
 ## Notifications
 
-The bell at the right of the header carries a count of what has not been read, and opens a drawer of everything the server has announced. A toast is gone in a few seconds and nobody watches a dashboard all day, so the same events are written down: one small JSON file each under `notifications/`, holding the message, when it happened, and whether it has been read.
+The bell at the right of the header opens a drawer of everything the server has announced. A toast is gone in a few seconds and nobody watches a dashboard all day, so the same events are written down: one row each in the database, holding the message, when it happened, the machine it happened on, and whether it has been read.
 
-**Most of it arrives already read.** A cron that ran and succeeded is not news. What is left unread is what you would have wanted to be told:
+**Every notification has a level**, and the level decides what the bell does with it:
 
-| Left unread                       | Arrives read                                              |
-| --------------------------------- | --------------------------------------------------------- |
-| A run that did not succeed        | A run that started, succeeded, was stopped or was skipped |
-| A trigger held for usage          | A held trigger that cleared and ran                       |
-| Anything the updater did          | A pause, a resume, and the triggers a pause dropped       |
-| A cron file that will not parse   | A cron file added, changed, deleted or fixed              |
-| A failed `.worktreeinclude` write |                                                           |
-| A failed worktree clean up        |                                                           |
+| Level                 | Is                                                                                                                                                                                                                      | Arrives                   |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- |
+| **Needs action** `!`  | A run that failed or was interrupted; a failed `.worktreeinclude` write or worktree clean up; an update that failed or gave up; low disk space; a trigger held for usage past the time its limits said they would reset | Unread, and counted       |
+| **Worth knowing** `~` | A retrospective with something in it; a missed one-time execution being made up; high CPU, high memory or unusual storage I/O; a trigger held for usage; an update applied                                              | Unread, as a dot          |
+| **Routine** `·`       | A run that succeeded, was skipped, was dropped by a pause or was stopped by you; a trigger queued for a free slot; a held trigger released or cancelled; a pause and a resume                                           | Already read, not counted |
+
+Some events are not written down at all: a run starting or stopping, an update becoming available or waiting on runs to finish, and the pause and resume an update makes. The page still shows them as they happen.
+
+**The bell counts only what needs action**, as `!2`. Something unread that is worth knowing adds a small hollow dot with no number, and routine never touches it. Its label says both in words — "2 need action, 3 worth knowing" — and a screen reader hears it when either goes up. The drawer opens with a section per level, newest first in each, with Routine folded away. Each row starts with its level's glyph, so the level never rests on colour alone.
+
+**With two or more nodes, each row names its machine**: `studio · Low disk space: 10.5% of the volume is free`. A row about a job opens that job's logs; any other row opens its node's page. Chips under the drawer's buttons show one machine at a time, each with its own needs-action count — `All · hub · studio !2 · air !1` — and the hub's own pauses and updates are credited to `hub`. With one node the drawer names nothing and has no chips. A notification written before nodes were named shows no name rather than a guess.
+
+**Repeats of one thing are one row.** An alert on one machine, one update, and one held trigger each keep to a single row while they last. A repeat replaces the message with the latest, adds one to a count the row shows as `×3 · since Mon`, moves the row to the top, and leaves it read if it had been read. It turns unread again only when there is something new to see:
+
+- the alert got worse: half the free disk space it had is gone, or crons are now running on a CPU that was busy without them;
+- the update failed or gave up, which also makes the row need action;
+- the held trigger ran past the time its limits said they would reset, which does the same.
+
+Once an alert clears, or a held trigger is released or cancelled, the next one is a new row. A node that restarts does not announce again an alert that is still over its line while that alert's row is open.
 
 **Reading is not clicking.** An unread notification is marked read once it has been on screen for three seconds — the list is the acknowledgement, not a button. Scrolling past something faster than that leaves it unread. What has been seen is reported in one request rather than one per item, and the count travels to your other open tabs.
 
-**The drawer pages as you scroll.** Twenty at a time, oldest paging off a cursor rather than an offset, so a notification arriving while you read cannot push one onto the next page and show it twice.
+**The drawer pages as you scroll.** Twenty at a time, a section at a time, off a cursor rather than an offset, so a notification arriving while you read cannot push one onto the next page and show it twice.
 
-**Only the newest 5000 are kept.** The oldest are deleted, file and all, as new ones land, and the folder is swept back down to 5000 at startup in case a restart interrupted that.
+**Only the newest 5000 are kept.** The oldest are deleted as new ones land, and the table is swept back down to 5000 at startup in case a restart interrupted that.
 
 Notifications come from the server's own events, which is every toast except the ones confirming something you just did — "Cron created", "Self update on" and the like are answers to your own click and are not written down.
 
@@ -693,6 +704,8 @@ Three rules keep these from becoming noise, and all three matter:
 3. **At most one per metric per ten minutes**, whatever else happens.
 
 The clear level sits below the threshold on purpose. A metric hovering at the line would otherwise alternate between firing and clearing.
+
+Rule 2 has two refinements. An episode that gets markedly worse says so again, on the same notification: low disk space when half the free space it reported is gone, high CPU when crons start running on a machine that was busy without them. And a restart does not begin a new episode: the first full window after a node starts only picks up where things stand, so an alert still over its line adds nothing while its notification is open.
 
 **On the I/O alert**, which is the one with no obvious threshold: throughput has no natural ceiling, so "high" means high _for this machine_. The baseline is the median of everything in the window older than the last minute — a median rather than a mean, because a mean would be dragged upward by the very burst being looked for and would talk itself out of alerting. The 50 MB/s floor is what stops an idle disk alerting because 0.05 MB/s became 0.4 MB/s. There is no verdict until five minutes of history exist, because before that there is no "usual" to compare against.
 
@@ -811,8 +824,8 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/node/work`                            | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                                                                                                                                                              |
 | GET              | `/api/config`                               | Storage paths, the log and notification retention limits, effort levels, the usage-delay categories with the default node's percentages, and whether self update is on                                                                                                                                                   |
 | GET              | `/api/system`                               | Machine stats: the current reading, the last fifteen minutes behind it, what each meter means, and this machine's cores, memory and storage path                                                                                                                                                                         |
-| GET              | `/api/notifications?before=&limit=`         | One page of notifications, newest first, plus the unread count and the cursor for the next page                                                                                                                                                                                                                          |
-| POST             | `/api/notifications/read`                   | Mark notifications read. Body `{"ids":[...]}`; answers with what is still unread                                                                                                                                                                                                                                         |
+| GET              | `/api/notifications?before=&limit=`         | One page of notifications, newest first; `unread=1`, `level=` and `node=` filter it. With the bell's counts and each level's total                                                                                                                                                                                       |
+| POST             | `/api/notifications/read`                   | Mark notifications read. Body `{"ids":[...]}`; answers with what is still unread and the bell's counts                                                                                                                                                                                                                   |
 | GET              | `/api/health`                               | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, and `usage` with a percentage and reset time per subscription limit |
 | GET, PUT         | `/api/settings`                             | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `defaultNodeId`, `defaultPrompt`, `commonCommands` and `defaultWorktreeInclude`                                                                      |
 | GET              | `/api/queue?node=`                          | The concurrent job limit (every node's, or one node's), what is running under it with each job's average run length, and what is queued behind it with each one's position and estimated start                                                                                                                                                         |
