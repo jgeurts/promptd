@@ -414,6 +414,8 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
  */
 async function followHub(version: string | null | undefined): Promise<void> {
   if (!BINARY_VERSION || !version || version === BINARY_VERSION || unreleasedBuilds.has(version)) return;
+  // A restart under way finishes first, holding what it holds; the next build is followed after it.
+  if (drainStepRunning) return;
   const failedAt = updateFailedAt.get(version);
   if (failedAt !== undefined && Date.now() - failedAt < UPDATE_RETRY_MS) return;
 
@@ -445,8 +447,10 @@ async function followHub(version: string | null | undefined): Promise<void> {
     if (!underLaunchd()) {
       return abandonUpdate(version, `build ${version} is on disk, but launchd is not running this node, so restart it to finish`);
     }
-    updatingTo = { version, since: Date.now(), holding: false };
+    // A newer build replacing one already waited for keeps its hold, so no run starts in between.
+    updatingTo = { version, since: Date.now(), holding: updatingTo?.holding ?? false };
     console.log(`[update] build ${version} installed; restarting into it once nothing is running`);
+    if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = setInterval(() => {
       drainForUpdate().catch((err: Error) => console.error(`[update] ${err.message}`));
     }, SYNC_MS);
