@@ -46,6 +46,8 @@ jobs:
         working-directory: dist/bin
         run: |
           cp ../../scripts/install.sh ../../scripts/register-app-mac-os.sh .
+          # The installer defaults to the repository that published it, so a fork's installs update from the fork.
+          sed -i '' "s|promptilicious/promptd|$GITHUB_REPOSITORY|g" install.sh
           shasum -a 256 promptd-* install.sh register-app-mac-os.sh > sha256sums.txt
       - name: Publish
         run: >

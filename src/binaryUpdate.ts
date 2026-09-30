@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { BINARY_REPO } from './binary.js';
@@ -94,7 +94,13 @@ export async function installVersion(version: string): Promise<void> {
   const actual = createHash('sha256').update(binary).digest('hex');
   if (!expected) throw new Error(`build ${version} lists no checksum for ${name}`);
   if (expected !== actual) throw new Error(`build ${version}'s ${name} does not match its checksum`);
-  const next = `${process.execPath}.new`;
-  await fsp.writeFile(next, binary, { mode: 0o755 });
-  await fsp.rename(next, process.execPath);
+  // A name of its own, so no other install can truncate it before the rename.
+  const next = `${process.execPath}.${randomBytes(6).toString('hex')}.new`;
+  try {
+    await fsp.writeFile(next, binary, { mode: 0o755, flag: 'wx' });
+    await fsp.rename(next, process.execPath);
+  } catch (err) {
+    await fsp.rm(next, { force: true });
+    throw err;
+  }
 }

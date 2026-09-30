@@ -88,6 +88,8 @@ let reconciled = false;
 let appliedPauseKey: string | null = null;
 /** The hub's build this binary is installed as and waiting to restart into. */
 let updatingTo: { version: string; since: number } | null = null;
+/** Checks the wait for runs to finish on its own clock, since the hub may be out of reach. */
+let updateDrainTimer: ReturnType<typeof setInterval> | null = null;
 const updateFailedAt = new Map<string, number>();
 /** A join code the hub refused, which is not sent again. */
 let rejectedCode: string | null = null;
@@ -397,6 +399,8 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
   updateFailedAt.set(version, Date.now());
   if (!updatingTo) return;
   updatingTo = null;
+  if (updateDrainTimer) clearInterval(updateDrainTimer);
+  updateDrainTimer = null;
   appliedPauseKey = null;
   await cronService.resumeAll('update abandoned');
 }
@@ -443,14 +447,24 @@ async function followHub(version: string | null | undefined): Promise<void> {
     updatingTo = { version, since: Date.now() };
     console.log(`[update] build ${version} installed; holding new runs until the running ones finish`);
     await cronService.pauseAll({ mode: 'update', label: 'for update' });
+    updateDrainTimer = setInterval(() => {
+      drainForUpdate().catch((err: Error) => console.error(`[update] ${err.message}`));
+    }, SYNC_MS);
+    await drainForUpdate();
   }
+}
 
+/** Restarts into the new build once no run is left, or gives up after the limit. */
+async function drainForUpdate(): Promise<void> {
+  if (!updatingTo) return;
   const running = cronService.runningCount();
   if (running === 0) {
-    console.log(`[update] exiting for launchd to start build ${version}`);
+    if (updateDrainTimer) clearInterval(updateDrainTimer);
+    updateDrainTimer = null;
+    console.log(`[update] exiting for launchd to start build ${updatingTo.version}`);
     await shutdown('update');
-  } else if (Date.now() - updatingTo!.since >= UPDATE_DRAIN_LIMIT_MS) {
-    await abandonUpdate(version, `${running} run(s) still going after ${UPDATE_DRAIN_LIMIT_MS / 3600000}h`);
+  } else if (Date.now() - updatingTo.since >= UPDATE_DRAIN_LIMIT_MS) {
+    await abandonUpdate(updatingTo.version, `${running} run(s) still going after ${UPDATE_DRAIN_LIMIT_MS / 3600000}h`);
   }
 }
 
