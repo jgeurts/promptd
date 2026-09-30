@@ -6,12 +6,12 @@ import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
-import { getCron, listCrons, logPath, patchCron, pruneLogs } from './store.js';
+import { applyInferredTitle, listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
 import { readJobDefaults } from './jobDefaults.js';
-import { TITLE_PROMPT_LIMIT, titleToApply } from './naming.js';
+import { TITLE_PROMPT_LIMIT, cleanTitle } from './naming.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
@@ -431,12 +431,9 @@ class Hub {
     const askedName = job.name;
     this.ask(this.nodeIdFor(job), 'title', { prompt: job.prompt.slice(0, TITLE_PROMPT_LIMIT) }, TITLE_WAIT_MS)
       .then(async (answer) => {
-        if (!answer.ok) return;
-        const current = kind === 'cron' ? await getCron(job.id) : await getExecution(job.id);
-        const title = titleToApply(current, askedName, answer.result?.title);
+        const title = answer.ok ? cleanTitle(answer.result?.title) : null;
         if (!title) return;
-        await (kind === 'cron' ? patchCron(job.id, { name: title }) : patchExecution(job.id, { name: title }));
-        this.jobsChanged();
+        if (await applyInferredTitle(kind, job.id, { askedName, prompt: job.prompt, title })) this.jobsChanged();
       })
       .catch((err: unknown) => {
         if (!(err instanceof HubError)) console.error(`[hub] could not title "${askedName}": ${errorMessage(err)}`);

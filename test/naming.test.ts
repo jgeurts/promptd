@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { readCronForm, readExecutionForm } from '../src/jobForms.js';
-import { MAX_TITLE_LENGTH, TITLE_INSTRUCTION, TITLE_SYSTEM_PROMPT, cleanTitle, nameFromPrompt, titlePrompt, titleToApply } from '../src/naming.js';
+import { MAX_TITLE_LENGTH, TITLE_INSTRUCTION, TITLE_SYSTEM_PROMPT, cleanTitle, nameFromPrompt, titlePrompt } from '../src/naming.js';
 
 describe('nameFromPrompt', () => {
   it('takes the first sentence, cut to about six words', () => {
@@ -40,18 +40,6 @@ describe('the title from claude', () => {
     expect(cleanTitle('   ')).toBeNull();
     expect(cleanTitle('x'.repeat(MAX_TITLE_LENGTH + 1))).toBeNull();
     expect(cleanTitle(undefined)).toBeNull();
-  });
-
-  it('replaces the name only while it is still the one inferred', () => {
-    const inferred = { name: 'Fix the flaky login test', nameInferred: true };
-    expect(titleToApply(inferred, 'Fix the flaky login test', 'Flaky login fix')).toBe('Flaky login fix');
-    // Someone named it while claude was thinking.
-    expect(titleToApply({ name: 'Login', nameInferred: false }, 'Fix the flaky login test', 'Flaky login fix')).toBeNull();
-    // Saved again with a new prompt, so a newer name was inferred and a newer title asked for.
-    expect(titleToApply({ name: 'Rewrite the docs', nameInferred: true }, 'Fix the flaky login test', 'Flaky login fix')).toBeNull();
-    // Deleted meanwhile, or the answer is not a title.
-    expect(titleToApply(null, 'Fix the flaky login test', 'Flaky login fix')).toBeNull();
-    expect(titleToApply(inferred, 'Fix the flaky login test', '')).toBeNull();
   });
 });
 

@@ -109,6 +109,35 @@ describe.each(targets)('storage on $name', ({ url }) => {
     expect((await store.updateCron(created.id, { ...cronInput, name: 'Mine' }))?.nameInferred).toBe(false);
   });
 
+  it('puts a title in place only while the name is still the inferred one, for both kinds', async () => {
+    const inferred = { ...cronInput, name: 'Rotate the staging keys', nameInferred: true, prompt: 'Rotate the staging keys.' };
+    const title = { askedName: 'Rotate the staging keys', prompt: 'Rotate the staging keys.', title: 'Staging key rotation' };
+
+    const cron = await store.createCron(inferred);
+    expect(await store.applyInferredTitle('cron', cron.id, title)).toBe(true);
+    expect(await store.getCron(cron.id)).toMatchObject({ name: 'Staging key rotation', nameInferred: true });
+
+    const execution = await executions.createExecution({ ...inferred, scheduledAt: '2026-01-01T00:00:00.000Z' });
+    expect(await store.applyInferredTitle('execution', execution.id, title)).toBe(true);
+    expect((await executions.getExecution(execution.id))?.name).toBe('Staging key rotation');
+
+    // A person renamed it while claude was thinking.
+    const renamed = await store.createCron(inferred);
+    await store.updateCron(renamed.id, { ...inferred, name: 'Keys', nameInferred: false });
+    expect(await store.applyInferredTitle('cron', renamed.id, title)).toBe(false);
+    expect((await store.getCron(renamed.id))?.name).toBe('Keys');
+
+    // Saved again with another prompt, so this title is for a prompt it no longer has.
+    const reprompted = await store.createCron(inferred);
+    await store.updateCron(reprompted.id, { ...inferred, prompt: 'Rotate the production keys.' });
+    expect(await store.applyInferredTitle('cron', reprompted.id, title)).toBe(false);
+
+    // Named by a person from the start, under the very same words.
+    const named = await store.createCron({ ...inferred, nameInferred: false });
+    expect(await store.applyInferredTitle('cron', named.id, title)).toBe(false);
+    expect(await store.applyInferredTitle('cron', 'no-such-job', title)).toBe(false);
+  });
+
   it('deletes a cron once', async () => {
     const { id } = await store.createCron(cronInput);
     expect(await store.deleteCron(id)).toBe(true);

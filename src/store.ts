@@ -6,7 +6,7 @@ import { cronToRow, rowToCron } from './jobRows.js';
 import { LOGS_DIR } from './paths.js';
 import { hasRetrospectiveSection } from './retrospective.js';
 import { jobSettingOverrides } from './jobDefaults.js';
-import type { Cron, CronInput } from './types.js';
+import type { Cron, CronInput, JobKind } from './types.js';
 
 export interface LogFile {
   file: string;
@@ -103,6 +103,30 @@ export async function patchCron(id: string, patch: Partial<Cron>): Promise<Cron 
   const cron: Cron = { ...existing, ...patch };
   await writeCron(cron);
   return cron;
+}
+
+/**
+ * Puts a title from claude in place of a name taken from the prompt, in one
+ * statement, so nothing can land between the check and the write: only where
+ * the job still has the inferred name the title was asked for, is still
+ * marked inferred, and still has the prompt it was made from. A person who
+ * renamed the job, or saved another prompt, meanwhile keeps what they saved.
+ * Answers whether a job changed. Serves both kinds, which share the columns.
+ */
+export async function applyInferredTitle(
+  kind: JobKind,
+  id: string,
+  { askedName, prompt, title }: { askedName: string; prompt: string; title: string },
+): Promise<boolean> {
+  const result = await db()
+    .updateTable(kind === 'execution' ? 'executions' : 'crons')
+    .set({ name: title })
+    .where('id', '=', id)
+    .where('name', '=', askedName)
+    .where('nameInferred', '=', 1)
+    .where('prompt', '=', prompt)
+    .executeTakeFirst();
+  return Number(result.numUpdatedRows) > 0;
 }
 
 export async function deleteCron(id: string): Promise<boolean> {

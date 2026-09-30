@@ -3,7 +3,8 @@
  *
  * The hub names it straight away from the prompt's first sentence, and marks
  * the name inferred. It then asks the job's node for a short title from claude,
- * which replaces the name only if it is still that inferred one.
+ * which replaces the name only if it is still that inferred one (see
+ * applyInferredTitle in store.ts).
  *
  * Nothing here imports anything, so the page can load the compiled module and
  * show the name a blank Name field will get, by the same rule.
@@ -75,13 +76,3 @@ export function cleanTitle(answer: unknown): string | null {
   return title;
 }
 
-/**
- * The name a title answer should put on the job, or null to leave it alone.
- * Only a job whose name is still the one inferred when the title was asked for
- * takes it: a person who has since named the job, or saved it with another
- * prompt, keeps what they have.
- */
-export function titleToApply(current: { name: string; nameInferred?: boolean } | null, askedName: string, answer: unknown): string | null {
-  if (!current?.nameInferred || current.name !== askedName) return null;
-  return cleanTitle(answer);
-}
