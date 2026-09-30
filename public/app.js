@@ -3924,32 +3924,55 @@ function nodesChip({ total, online, offline }) {
  * 1160px the email shortens and only the tightest window stays. Both are in
  * the button and the stylesheet picks one, so a resize needs no redraw.
  */
-function accountChip(account) {
-  const stale = account.stale && account.checkedAt;
-  const tightest = windowByKey(account, account.tightest);
+function usageChip({ key, full, short, labelled, usage }) {
+  const stale = usage.stale && usage.checkedAt;
+  const tightest = windowByKey(usage, usage.tightest);
   return chip(
-    `account:${account.id}`,
+    key,
     [
-      el('span', { class: 'chip-email' }, [el('span', { class: 'email-full', text: account.email }), el('span', { class: 'email-short', text: localPart(account.email) })]),
-      el('span', { class: 'chip-wide' }, joined(account.headline.map((key) => windowByKey(account, key)).filter(Boolean).map(windowText))),
+      el('span', { class: `chip-email${labelled ? ' chip-label' : ''}` }, [
+        el('span', { class: 'email-full', text: full }),
+        el('span', { class: 'email-short', text: short }),
+        labelled ? ' ·' : null,
+      ]),
+      el('span', { class: 'chip-wide' }, joined(usage.headline.map((headline) => windowByKey(usage, headline)).filter(Boolean).map(windowText))),
       el('span', { class: 'chip-narrow' }, tightest ? [windowText(tightest)] : []),
-      stale ? el('span', { class: 'chip-stale', text: ` · read ${fmtSpanShort(Date.now() - Date.parse(account.checkedAt))} ago` }) : null,
+      stale ? el('span', { class: 'chip-stale', text: ` · read ${fmtSpanShort(Date.now() - Date.parse(usage.checkedAt))} ago` }) : null,
     ],
     `account${stale ? ' stale' : ''}`,
   );
 }
 
-/** Below 900px the accounts fold into one button that names only the ones at warning or worse. */
-function usageSummaryChip(accounts) {
-  const flagged = accounts
-    .map((account) => ({ account, tightest: windowByKey(account, account.tightest) }))
-    .filter(({ account, tightest }) => account.severity !== 'normal' && tightest);
+/**
+ * What goes in the header for usage: one entry per account, then one per node
+ * that reports usage without naming its account, typically on an older build.
+ * Those are never merged, since they may be on different accounts, and name
+ * their node once there is more than one to tell apart.
+ */
+function usageEntries({ accounts, unknownAccountUsage = [], nodes }) {
+  const several = nodes.total > 1;
+  return [
+    ...accounts
+      .filter((account) => account.windows.length)
+      .map((account) => ({ key: `account:${account.id}`, full: account.email, short: localPart(account.email), folded: `${localPart(account.email)}@…`, labelled: false, usage: account })),
+    ...unknownAccountUsage.map((entry) => {
+      const where = several ? ` (${entry.nodeName})` : '';
+      return { key: `unknown:${entry.nodeId}`, full: `Account unknown${where}`, short: `unknown${where}`, folded: `unknown${where}`, labelled: true, usage: entry };
+    }),
+  ];
+}
+
+/** Below 900px the usage chips fold into one button that names only those at warning or worse. */
+function usageSummaryChip(entries) {
+  const flagged = entries
+    .map((entry) => ({ entry, tightest: windowByKey(entry.usage, entry.usage.tightest) }))
+    .filter(({ entry, tightest }) => entry.usage.severity !== 'normal' && tightest);
   const children = flagged.length
     ? joined(
-        flagged.map(({ account, tightest }) =>
-          el('span', { class: `win ${account.severity}` }, [
-            ...severityMark(account.severity),
-            `${localPart(account.email)}@… `,
+        flagged.map(({ entry, tightest }) =>
+          el('span', { class: `win ${entry.usage.severity}` }, [
+            ...severityMark(entry.usage.severity),
+            `${entry.folded} `,
             el('span', { class: 'num', text: `${Math.round(tightest.usedPercent)}%` }),
           ]),
         ),
@@ -3983,16 +4006,16 @@ function exceptionChip(exceptions) {
 function paintHeader() {
   if (!clusterEl || !clusterState) return;
   const focused = document.activeElement?.closest?.('[data-chip]')?.dataset.chip ?? null;
-  const { nodes, builds, accounts, exceptions } = clusterState;
+  const { nodes, builds, exceptions } = clusterState;
   const behind = builds?.differing?.length ?? 0;
-  const reading = accounts.filter((account) => account.windows.length);
+  const usage = usageEntries(clusterState);
   clusterEl.replaceChildren(
     ...[
       nodesChip(nodes),
       behind ? chip('builds', `${behind} old build${behind === 1 ? '' : 's'}`, 'muted') : null,
       chip('running', [el('span', { class: 'chip-label', text: 'Running ' }), el('span', { class: 'num running-count', text: runningText() })]),
-      ...reading.map(accountChip),
-      reading.length ? usageSummaryChip(reading) : null,
+      ...usage.map(usageChip),
+      usage.length ? usageSummaryChip(usage) : null,
       exceptions.length ? exceptionChip(exceptions) : null,
     ].filter(Boolean),
   );
@@ -4036,6 +4059,7 @@ function syncExpanded() {
 /** Where a chip points inside the panel: its account's group, or the node a machine reading is from. */
 function panelAnchor(key) {
   if (key?.startsWith('account:')) return key;
+  if (key?.startsWith('unknown:')) return `node:${key.slice('unknown:'.length)}`;
   if (key === 'machine' && clusterState?.exceptions?.[0]) return `node:${clusterState.exceptions[0].nodeId}`;
   return null;
 }
@@ -4093,7 +4117,22 @@ function buildCell(node, hubCommit) {
   return el('td', { class: 'mono', 'data-label': 'Build', text: node.commit });
 }
 
-function nodeTable(nodes, metrics, hubCommit) {
+/**
+ * The windows a node with no account named reports, in a row under its own.
+ * They are its numbers alone: the next such node may be on another account.
+ */
+function nodeUsageRow(node, span) {
+  const usage = node.usage;
+  if (!node.online || !usage?.windows?.length) return null;
+  return el('tr', { class: 'node-usage' }, [
+    el('td', { colspan: String(span) }, [
+      el('div', { class: `acct-read${usage.stale ? ' stale' : ''}`, text: `${node.name}'s usage, ${readLine(usage)}` }),
+      el('div', { class: 'acct-windows' }, usage.windows.map(windowRow)),
+    ]),
+  ]);
+}
+
+function nodeTable(nodes, metrics, hubCommit, { usageUnderNodes = false } = {}) {
   const count = (node, key) => (node.online ? String(node[key]) : '—');
   const limit = (node) => {
     const value = node.concurrencyLimit ?? node.config?.maxConcurrentJobs ?? 0;
@@ -4109,7 +4148,7 @@ function nodeTable(nodes, metrics, hubCommit) {
     el(
       'tbody',
       {},
-      nodes.map((node) =>
+      nodes.flatMap((node) => [
         el('tr', { 'data-anchor': `node:${node.id}`, class: node.online ? '' : 'offline' }, [
           el('td', { class: 'node-name', 'data-label': 'Node' }, [
             el('a', { class: 'link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-key': `node:${node.id}`, title: node.name, text: node.name }),
@@ -4123,7 +4162,8 @@ function nodeTable(nodes, metrics, hubCommit) {
           ...metrics.map((metric) => metricCell(metric, node)),
           buildCell(node, hubCommit),
         ]),
-      ),
+        usageUnderNodes ? nodeUsageRow(node, columns.length) : null,
+      ].filter(Boolean)),
     ),
   ]);
 }
@@ -4140,12 +4180,12 @@ function windowRow(window) {
   ]);
 }
 
-/** What the group says about when its numbers were read. */
-function readLine(account) {
-  if (!account) return 'Signed out, or on a build that does not say which account it uses.';
-  if (!account.checkedAt) return account.reason ? `No usage reading: ${account.reason}` : 'No usage reading yet';
-  const read = `read ${fmtAgo(account.checkedAt)}`;
-  return account.stale && account.reason ? `${read}; not refreshed since: ${account.reason}` : read;
+/** When a reading was taken, and why it has not moved since if it is stale. */
+function readLine(usage) {
+  if (!usage) return 'Signed out, or on a build that does not say which account it uses.';
+  if (!usage.checkedAt) return usage.reason ? `No usage reading: ${usage.reason}` : 'No usage reading yet';
+  const read = `read ${fmtAgo(usage.checkedAt)}`;
+  return usage.stale && usage.reason ? `${read}; not refreshed since: ${usage.reason}` : read;
 }
 
 /** One account: its windows, then a row per node signed in to it. Null is the nodes that have not said. */
@@ -4158,7 +4198,8 @@ function accountGroup(account, nodes, metrics, hubCommit) {
       el('span', { class: `acct-read${account?.stale ? ' stale' : ''}`, text: readLine(account) }),
     ]),
     account?.windows.length ? el('div', { class: 'acct-windows' }, account.windows.map(windowRow)) : null,
-    nodeTable(nodes, metrics, hubCommit),
+    // With no account to group them under, each node's own numbers sit under its row.
+    nodeTable(nodes, metrics, hubCommit, { usageUnderNodes: !account }),
   ]);
 }
 

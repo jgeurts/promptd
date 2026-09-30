@@ -27,11 +27,10 @@ export interface ClusterNode {
   intervalMs: number;
 }
 
-export interface AccountSummary {
-  id: string;
-  email: string;
+/** One reading as the header draws it. */
+export interface UsageSummary {
   windows: UsageWindow[];
-  /** Keys of Session and the tightest other window: what the header names the account with. */
+  /** Keys of Session and the tightest other window: what the header names the reading with. */
   headline: string[];
   /** Key of the one window closest to its limit, for a header with room for one. */
   tightest: string | null;
@@ -40,7 +39,22 @@ export interface AccountSummary {
   checkedAt: string | null;
   stale: boolean;
   reason: string | null;
+}
+
+export interface AccountSummary extends UsageSummary {
+  id: string;
+  email: string;
   nodeIds: string[];
+}
+
+/**
+ * Usage from a node that has not said which account it is on, typically one on
+ * an older build. It stays with its node: two such nodes may be on different
+ * accounts, so they are never merged.
+ */
+export interface UnknownAccountUsage extends UsageSummary {
+  nodeId: string;
+  nodeName: string;
 }
 
 /** One node over one metric's alert line. */
@@ -64,6 +78,8 @@ export interface ClusterSummary {
   accounts: AccountSummary[];
   /** Nodes that have not said which account they are on: signed out, or older than the field. */
   unknownAccountNodeIds: string[];
+  /** The readings those nodes do report, one per online node that has one. */
+  unknownAccountUsage: UnknownAccountUsage[];
   /** Worst first. */
   exceptions: MachineException[];
   builds: { hubCommit: string | null; differing: string[] };
@@ -103,10 +119,36 @@ function freshest(readings: Array<UsageReading | null>): UsageReading | null {
   );
 }
 
+function usageSummary(reading: UsageReading | null): UsageSummary {
+  const windows = reading?.windows ?? [];
+  const tightest = tightestWindow(windows);
+  return {
+    windows,
+    headline: headlineWindows(windows).map((window) => window.key),
+    tightest: tightest?.key ?? null,
+    severity: tightest?.severity ?? 'normal',
+    checkedAt: reading?.checkedAt ?? null,
+    stale: Boolean(reading?.stale),
+    reason: reading?.reason ?? null,
+  };
+}
+
+/**
+ * A node's reading, if it may be drawn under the account the node names. A
+ * node that says whose numbers they are and names someone else is between
+ * sign-ins, and its numbers wait until the two agree.
+ */
+function readingOf(node: ClusterNode): UsageReading | null {
+  if (!node.online || !node.usage) return null;
+  if (node.usage.accountId !== undefined && (node.usage.accountId ?? null) !== (node.account?.id ?? null)) return null;
+  return node.usage;
+}
+
 /**
  * One entry per account, however many nodes are signed in to it. Usage comes
  * from online nodes only: an offline one's last reading is as old as the node's
  * silence. Its node still counts towards the account, so the panel can list it.
+ * Only nodes that name their account are merged; see `unknownAccountUsage`.
  */
 export function accountSummaries(nodes: ClusterNode[]): AccountSummary[] {
   const groups = new Map<string, ClusterNode[]>();
@@ -117,24 +159,23 @@ export function accountSummaries(nodes: ClusterNode[]): AccountSummary[] {
   return [...groups.entries()]
     .map(([id, members]) => {
       const online = members.filter((node) => node.online);
-      const reading = freshest(online.map((node) => node.usage));
-      const windows = reading?.windows ?? [];
-      const tightest = tightestWindow(windows);
       return {
         id,
         // An address can change on one account; the one an online node reports is the current one.
         email: (online[0] ?? members[0])!.account!.email,
-        windows,
-        headline: headlineWindows(windows).map((window) => window.key),
-        tightest: tightest?.key ?? null,
-        severity: tightest?.severity ?? 'normal',
-        checkedAt: reading?.checkedAt ?? null,
-        stale: Boolean(reading?.stale),
-        reason: reading?.reason ?? null,
+        ...usageSummary(freshest(members.map(readingOf))),
         nodeIds: members.map((node) => node.id),
       };
     })
     .sort((a, b) => a.email.localeCompare(b.email));
+}
+
+/** Each online node with no account named but a reading to show, kept apart, in node order. */
+export function unknownAccountUsage(nodes: ClusterNode[]): UnknownAccountUsage[] {
+  return nodes
+    .filter((node) => !node.account)
+    .map((node) => ({ nodeId: node.id, nodeName: node.name, ...usageSummary(readingOf(node)) }))
+    .filter((entry) => entry.windows.length > 0);
 }
 
 /** Each node enforces its own limit, so the cluster's is their total, or none (0) when any node has none. */
@@ -189,6 +230,7 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
     concurrencyLimit: clusterLimit(online.map((node) => node.concurrencyLimit)),
     accounts: accountSummaries(nodes),
     unknownAccountNodeIds: nodes.filter((node) => !node.account).map((node) => node.id),
+    unknownAccountUsage: unknownAccountUsage(nodes),
     exceptions: machineExceptions(nodes),
     builds: {
       hubCommit,

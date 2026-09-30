@@ -411,6 +411,20 @@ a {
   white-space: normal;
 }
 
+/* A node with no account named carries its own windows, in a row under its own. */
+.node-table tr:has(+ tr.node-usage) td {
+  border-bottom: none;
+}
+
+.node-table tr.node-usage td {
+  padding-top: 0;
+  white-space: normal;
+}
+
+.node-table tr.node-usage .acct-windows {
+  margin: 6px 0 4px;
+}
+
 .node-table tr:last-child td {
   border-bottom: none;
 }
@@ -513,10 +527,12 @@ a {
     color: var(--muted);
     font-size: 10.5px;
   }
-  .node-table td.node-name {
+  .node-table td.node-name,
+  .node-table tr.node-usage td {
     grid-column: 1 / -1;
   }
-  .node-table td.node-name::before {
+  .node-table td.node-name::before,
+  .node-table tr.node-usage td::before {
     content: none;
   }
 }

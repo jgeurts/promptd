@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { accountSummaries, clusterLimit, clusterSummary, headlineWindows, machineExceptions, tightestWindow } from '../src/cluster.js';
+import { accountSummaries, clusterLimit, clusterSummary, headlineWindows, machineExceptions, tightestWindow, unknownAccountUsage } from '../src/cluster.js';
 import type { ClusterNode } from '../src/cluster.js';
 import type { SystemSample, UsageReading, UsageWindow } from '../src/types.js';
 
@@ -123,6 +123,50 @@ describe('accountSummaries', () => {
 
   it('leaves out nodes that have not said which account they are on', () => {
     expect(accountSummaries([node({ account: null, usage: reading([usageWindow('session', 10)]) })])).toEqual([]);
+  });
+
+  it('holds back a reading the node says is for another account', () => {
+    const [account] = accountSummaries([node({ usage: { ...reading([usageWindow('session', 99, 'critical')]), accountId: SAM.id } })]);
+    expect(account?.windows).toEqual([]);
+  });
+});
+
+describe('unknownAccountUsage', () => {
+  it("keeps the usage of a node that names no account, as an older build's does", () => {
+    const summary = clusterSummary([node({ id: 'mini', account: null, usage: reading([usageWindow('session', 38)]) })], null);
+    expect(summary.accounts).toEqual([]);
+    expect(summary.unknownAccountUsage).toMatchObject([{ nodeId: 'mini', nodeName: 'mini', headline: ['session:0'], severity: 'normal' }]);
+    expect(summary.unknownAccountUsage[0]?.windows[0]?.usedPercent).toBe(38);
+  });
+
+  it('never merges two such nodes, which may be on different accounts', () => {
+    const entries = unknownAccountUsage([
+      node({ id: 'mini', account: null, usage: reading([usageWindow('session', 38)]) }),
+      node({ id: 'air', name: 'air', account: null, usage: reading([usageWindow('session', 38)]) }),
+    ]);
+    expect(entries.map((entry) => entry.nodeId)).toEqual(['mini', 'air']);
+  });
+
+  it('still merges nodes that name the same account beside them', () => {
+    const summary = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 38)]) }),
+        node({ id: 'studio', name: 'studio', usage: reading([usageWindow('session', 38)]) }),
+        node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('session', 71)]) }),
+      ],
+      null,
+    );
+    expect(summary.accounts.map((account) => account.nodeIds)).toEqual([['mini', 'studio']]);
+    expect(summary.unknownAccountUsage.map((entry) => entry.nodeId)).toEqual(['old']);
+  });
+
+  it('leaves out offline nodes and nodes with no windows', () => {
+    expect(
+      unknownAccountUsage([
+        node({ account: null, online: false, usage: reading([usageWindow('session', 38)]) }),
+        node({ id: 'air', account: null, usage: reading([]) }),
+      ]),
+    ).toEqual([]);
   });
 });
 
