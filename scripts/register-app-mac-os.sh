@@ -215,6 +215,13 @@ install_agent() {
   plutil -lint "$plist" >/dev/null 2>&1 || die "generated an invalid plist at $plist"
   ok "wrote $plist"
   launchctl bootstrap "$DOMAIN" "$plist" 2>&1 || die "launchctl bootstrap of $label failed. See $log"
+  # Loading a job does not always start it, RunAtLoad or not, so start it now and see that it ran.
+  launchctl kickstart "$DOMAIN/$label" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    launchctl print "$DOMAIN/$label" 2>/dev/null | grep -qE '^[[:space:]]*runs = [1-9]' && return 0
+    sleep 0.5
+  done
+  die "launchd registered $label but will not start it. Allow promptd under System Settings → General → Login Items & Extensions → Allow in the Background, then run this again."
 }
 
 HUB_INSTALLED=0
@@ -249,7 +256,8 @@ $(env_entry PROMPTD_NODE_NAME "$NODE_NAME")"
   # A token kept from pairing with this or another hub would win over the new code.
   [ -n "$JOIN_CODE" ] && rm -f "${PROMPTD_NODE_HOME:-$STORAGE_ROOT/node}/hub-token"
   # What the node writes from here on is this install's, and so is its start time.
-  NODE_LOG_START="$(wc -c < "$NODE_LOG" 2>/dev/null | tr -d ' ' || echo 0)"
+  NODE_LOG_START=0
+  [ -f "$NODE_LOG" ] && NODE_LOG_START="$(wc -c < "$NODE_LOG" | tr -d ' ')"
   NODE_SINCE="$(date -u +%Y-%m-%dT%H:%M:%S)"
   install_agent "$NODE_LABEL" "$NODE_PLIST" node.js "$NODE_LOG" "$NODE_ENV"
   { [ -n "$NODE_TOKEN" ] || [ -n "$JOIN_CODE" ]; } && chmod 600 "$NODE_PLIST"
@@ -300,6 +308,12 @@ if [ "$NODE_INSTALLED" = "1" ]; then
     ok "node registered; the hub requires a login, so check it under Settings → Nodes"
   else
     since_install="$(tail -c +$((NODE_LOG_START + 1)) "$NODE_LOG" 2>/dev/null)"
+    # A node launchd is not running cannot be trying; say what launchd says.
+    job="$(launchctl print "$DOMAIN/$NODE_LABEL" 2>/dev/null)"
+    if ! printf '%s' "$job" | grep -qE '^[[:space:]]*pid = [0-9]+'; then
+      exit_code="$(printf '%s' "$job" | grep -m1 'last exit code' | sed -E 's/.*= *//')"
+      die "launchd is not running the node (last exit: ${exit_code:-none}). See $NODE_LOG, and launchctl print $DOMAIN/$NODE_LABEL"
+    fi
     case "$since_install" in
       *"refused join code"*)
         die "the hub refused join code $JOIN_CODE: it was used, has expired, or was mistyped. Press Add a Mac on the hub for a new one, and run its command here." ;;
