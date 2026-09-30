@@ -1,7 +1,7 @@
 /**
- * What the one-time execution form sends when it saves. The page loads the
- * compiled module, as it does naming.js, so these rules are tested here
- * rather than only in a browser.
+ * What the one-time execution form sends for its date and for Is Active when
+ * it saves. The page loads the compiled module, as it does naming.js, so
+ * these rules are tested here rather than only in a browser.
  *
  * Nothing here imports anything, for the same reason.
  */
@@ -25,3 +25,12 @@ export function scheduledAtForSave(saved: string | null | undefined, shownAtOpen
   return Number.isNaN(date.getTime()) ? value : date.toISOString();
 }
 
+
+/**
+ * The `isActive` a save sends. The form has no Is Active box for a one-time
+ * execution: a new one is saved active, and an edit keeps what the execution
+ * had, so opening an inactive one and saving it does not set it running.
+ */
+export function isActiveForSave(existing: { isActive: boolean } | null | undefined): boolean {
+  return existing ? Boolean(existing.isActive) : true;
+}

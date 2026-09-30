@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { scheduledAtForSave } from '../src/jobFormRules.js';
+import { isActiveForSave, scheduledAtForSave } from '../src/jobFormRules.js';
 
 /** The field's value for an instant, in this clock's zone, as the page fills it. */
 function shown(iso: string): string {
@@ -25,5 +25,13 @@ describe('the date an edit sends', () => {
     const typed = shown(saved);
     expect(scheduledAtForSave(null, typed, typed)).toBe(new Date(typed).toISOString());
     expect(scheduledAtForSave(null, typed, '')).toBe('');
+  });
+});
+
+describe('Is Active on a one-time execution', () => {
+  it('is on for a new one, and what it was for an edit', () => {
+    expect(isActiveForSave(null)).toBe(true);
+    expect(isActiveForSave({ isActive: false })).toBe(false);
+    expect(isActiveForSave({ isActive: true })).toBe(true);
   });
 });

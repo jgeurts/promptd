@@ -238,7 +238,7 @@ The cron and one-time execution forms read in the order you fill them in:
 4. **Name**, which is optional. Left blank, the placeholder shows the name the job will get, and changes as you type the prompt: the prompt's first sentence, cut to about six words. Saving names the job that way at once, then asks the job's node to have Claude title it — `claude -p --model haiku` in a throwaway folder, given _Reply with a 2 to 6 word title for this task, and nothing else._ and the first 4,000 characters of the prompt, with a minute to answer. The title replaces the first words only if the name is still the one taken from the prompt, so a name you type meanwhile wins. If the node is offline, the call fails, or the answer is empty or longer than 60 characters, the first words stay; either way the node's log says what happened, and nothing is sent as a notification.
 5. **More options**, folded away: Worktree, Model, Effort, Delay for usage, Project, Retrospective, Description, and on a cron **Is Active** (_Off keeps the cron but stops it firing_). The line beside it lists what the job sets for itself rather than following its [defaults](#job-defaults), such as `Worktree off · Sonnet · waits for Weekly`, or says **Cluster defaults** when it sets none of them. Editing or duplicating a job opens it when anything inside differs from what a new job would have.
 
-A one-time execution has no Is Active box: the form saves it active. The API still takes `isActive`.
+A one-time execution has no Is Active box: a new one is saved active, and an edit keeps what it had, so saving an inactive one does not set it running. The API still takes `isActive`.
 
 ## One-time executions
 

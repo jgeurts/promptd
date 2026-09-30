@@ -1,5 +1,5 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
-import { scheduledAtForSave } from '/shared/jobFormRules.js';
+import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 
 const view = document.getElementById('view');
 const connEl = document.getElementById('conn');
@@ -1957,7 +1957,8 @@ const NAMING = import('/shared/naming.js').catch(() => null);
 
 /**
  * Both job forms. They differ in when the job runs, and in Is Active, which
- * only a cron has: a one-time execution is saved active. Everything else reads
+ * only a cron has: a new one-time execution is saved active, and an edit keeps
+ * what it had. Everything else reads
  * the same, in the order a person fills it: the prompt, which has the focus;
  * when; where; an optional name; and the rest folded under More options, with
  * a line saying what in there differs from the defaults.
@@ -2133,7 +2134,7 @@ async function renderJobForm(kind, id, duplicateOf) {
         // full instant rather than the field's bare local string, so the
         // server is not left guessing which clock it was typed on.
         ...(asSoonAsPossible() ? { asSoonAsPossible: true } : { scheduledAt: scheduledAt() }),
-        isActive: true,
+        isActive: isActiveForSave(id ? job : null),
       });
     } else {
       Object.assign(payload, { cron: inputs.cron.value, timezone: schedule.zone(), isActive: inputs.isActive.checked });
