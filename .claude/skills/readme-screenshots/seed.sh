@@ -4,16 +4,18 @@
 # details, so a run costs cents and its output says nothing about the person
 # running it; a cron that fires before the hub is stopped is just as cheap.
 #
-#   seed.sh <hub-url> [demo-dir]
+#   seed.sh <hub-url> <demo-dir>
 #
-# demo-dir is the working directory the demo runs use, and it appears in their
-# logs, so it defaults to a path that says nothing about this machine.
+# demo-dir is the working directory every demo job uses, and it appears in
+# their logs, so make it a fresh folder under /tmp that says nothing about this
+# machine: mktemp -d /tmp/promptd-demo.XXXXXX
 set -euo pipefail
 
-HUB="${1:?usage: seed.sh <hub-url> [demo-dir]}"
+USAGE='usage: seed.sh <hub-url> <demo-dir>'
+HUB="${1:?$USAGE}"
 HUB="${HUB%/}"
-DEMO_DIR="${2:-/tmp/promptd-demo}"
-mkdir -p "$DEMO_DIR"
+DEMO_DIR="${2:?$USAGE}"
+[ -d "$DEMO_DIR" ] || { echo "seed.sh: $DEMO_DIR is not a folder" >&2; exit 1; }
 
 # The browser's own zone, so the list shows no zone label beside each cron.
 ZONE="$(readlink /etc/localtime | sed 's#.*/zoneinfo/##')"
@@ -59,6 +61,7 @@ execution 'Release notes for v2.4' 3 'Draft the release notes for v2.4 from the 
 for id in "$digest" "$changelog"; do
   api POST "/api/crons/$id/run" >/dev/null
   printf 'running %s' "$id"
+  status=''
   for _ in $(seq 1 180); do
     status="$(api GET "/api/crons/$id" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("lastRunStatus") or "")')"
     [ -n "$status" ] && break
@@ -66,4 +69,11 @@ for id in "$digest" "$changelog"; do
     sleep 1
   done
   printf ' %s\n' "${status:-still running}"
+  if [ -z "$status" ]; then
+    echo "seed.sh: the demo run of $id did not finish within 3 minutes; see the node's log" >&2
+    exit 1
+  elif [ "$status" != succeeded ]; then
+    echo "seed.sh: the demo run of $id ended $status; see the node's log" >&2
+    exit 1
+  fi
 done

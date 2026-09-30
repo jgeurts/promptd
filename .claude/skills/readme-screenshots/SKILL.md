@@ -14,21 +14,25 @@ Needs a Mac with Google Chrome, Node 20+, and Claude Code signed in (two demo ru
 
 1. **Build.** `npm ci && npm run build`. Done when `dist/.built` exists.
 
-2. **Start the throwaway hub and node.** Pick a scratch folder `$S` (e.g. `S=$(mktemp -d)`) and a free port; 4390 here.
+2. **Start the throwaway hub and node.** Make a scratch folder and a demo folder, and pick a free port; 4390 here.
 
    ```bash
-   PROMPTD_HOME=$S/home PORT=4390 HOST=127.0.0.1 SYSTEM_SAMPLE_MS=0 PROMPTD_SELF_UPDATE=0 node src/server.js > $S/hub.log 2>&1 &
-   PROMPTD_HOME=$S/home PORT=4390 PROMPTD_NODE_ID=demo-mac PROMPTD_NODE_NAME=demo-mac SYSTEM_SAMPLE_MS=0 node src/node.js > $S/node.log 2>&1 &
+   S=$(mktemp -d)
+   D=$(mktemp -d /tmp/promptd-demo.XXXXXX)
+   DATABASE_URL= PROMPTD_NODE_TOKEN= PROMPTD_HOME=$S/home PORT=4390 HOST=127.0.0.1 SYSTEM_SAMPLE_MS=0 PROMPTD_SELF_UPDATE=0 \
+     node src/server.js > $S/hub.log 2>&1 &
+   PROMPTD_NODE_TOKEN= PROMPTD_HOME=$S/home PROMPTD_NODE_HOME=$S/home/node PROMPTD_HUB_URL=http://127.0.0.1:4390 \
+     PROMPTD_NODE_ID=demo-mac PROMPTD_NODE_NAME=demo-mac SYSTEM_SAMPLE_MS=0 node src/node.js > $S/node.log 2>&1 &
    ```
 
-   `SYSTEM_SAMPLE_MS=0` drops the machine meters from the header, and the node id keeps the hostname out of the job list. Done when `curl -s http://127.0.0.1:4390/api/nodes` shows `"online":true`.
+   Every variable that points promptd at stored state is set here, empty where the default is wanted: an inherited `DATABASE_URL` would put the demo jobs in a real database, and an inherited node home, hub URL or token would join a real hub. `SYSTEM_SAMPLE_MS=0` drops the machine meters from the header, and the node id keeps the hostname out of the job list. Done when `curl -s http://127.0.0.1:4390/api/nodes` shows `"online":true`.
 
-3. **Seed.** `.claude/skills/readme-screenshots/seed.sh http://127.0.0.1:4390`. It names the hub Demo, creates five crons and two one-time executions, and runs Nightly digest and Weekly changelog. Every job works in `/tmp/promptd-demo`, which is the directory their logs print. Done when it prints `succeeded` for both runs.
+3. **Seed.** `.claude/skills/readme-screenshots/seed.sh http://127.0.0.1:4390 "$D"`. It names the hub Demo, creates five crons and two one-time executions, and runs Nightly digest and Weekly changelog. Every job works in `$D`, the directory their logs print. Done when it exits 0; it exits 1 when either run fails or does not finish.
 
 4. **Hide the Claude account.** The header draws usage meters for whichever account the node can read, so restart the node with none:
    - Stop the node (`kill` its pid), then `rm -f $S/home/usage-cache.json`, the reading it saved.
    - `mkdir -p $S/shim && printf '#!/bin/sh\nexit 1\n' > $S/shim/security && chmod +x $S/shim/security`. The node reads the token from the keychain with `security`, and this one finds nothing.
-   - Start the node again as in step 2 with `PATH="$S/shim:$PATH"` in front. When `~/.claude/.credentials.json` exists, also give it `HOME` set to an empty folder, since the node reads that file too.
+   - Start the node again with the same command as in step 2, with `PATH="$S/shim:$PATH"` in front. When `~/.claude/.credentials.json` exists, also give it `HOME` set to an empty folder, since the node reads that file too.
 
    Done when `curl -s http://127.0.0.1:4390/api/health` shows `usage.windows` empty.
 
@@ -43,4 +47,4 @@ Needs a Mac with Google Chrome, Node 20+, and Claude Code signed in (two demo ru
 
 6. **Check every picture.** Open each image and read it as a stranger would. It is **clean** when none of these appears anywhere: header usage meters, the machine's real hostname, a home-folder path, an email address, a token. Also `grep -rE "$(whoami)|$(hostname -s)" $S/home/logs` must print nothing. Retake anything that is not clean.
 
-7. **Clean up.** Stop the hub and node before any demo cron's next run comes round, then `rm -rf "$S" /tmp/promptd-demo`. Done when `lsof -iTCP:4390` prints nothing.
+7. **Clean up.** Stop the hub and node before any demo cron's next run comes round, then `rm -rf "$S" "$D"`. Done when `lsof -iTCP:4390` prints nothing.
