@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { BINARY_VERSION } from './binary.js';
 import { emit } from './events.js';
 import { LOGS_DIR } from './paths.js';
 import { loadSettings, patchSettings } from './settings.js';
@@ -103,6 +104,7 @@ function git(args: string[], timeout = 60000): Promise<GitResult> {
 
 /** The commit the project is checked out at, or null outside a repository. */
 export async function currentCommit(): Promise<string | null> {
+  if (BINARY_VERSION) return BINARY_VERSION;
   const head = await git(['rev-parse', '--short', 'HEAD'], 10000);
   return head.ok && head.out ? head.out : null;
 }

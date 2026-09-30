@@ -5,6 +5,7 @@ import type { FileHandle } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BINARY_VERSION } from './binary.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -355,6 +356,7 @@ async function cycle(): Promise<void> {
 }
 
 function readCommit(): Promise<string | null> {
+  if (BINARY_VERSION) return Promise.resolve(BINARY_VERSION);
   return new Promise((resolve) => {
     execFile('git', ['-C', PROJECT_DIR, 'rev-parse', '--short', 'HEAD'], { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim() || null);

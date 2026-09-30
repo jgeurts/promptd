@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BINARY_VERSION } from './binary.js';
 
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(DIR, '..');
@@ -23,9 +24,9 @@ const compiler: ChildProcess | null = watching
     )
   : null;
 
-const children: ChildProcess[] = ['entry-hub.js', 'entry-node.js'].map((entry) =>
-  spawn(process.execPath, [...watch, path.join(DIR, entry)], { stdio: 'inherit', env: process.env }),
-);
+// A binary runs itself once per role; a checkout runs each compiled entry.
+const roles = BINARY_VERSION ? [['hub'], ['node']] : ['entry-hub.js', 'entry-node.js'].map((entry) => [...watch, path.join(DIR, entry)]);
+const children: ChildProcess[] = roles.map((args) => spawn(process.execPath, args, { stdio: 'inherit', env: process.env }));
 
 let exiting = false;
 function stopAll(code: number): void {

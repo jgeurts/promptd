@@ -8,6 +8,7 @@
   "main": "src/local.js",
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node -e \"require('fs').writeFileSync('dist/.built', new Date().toISOString())\"",
+    "build:binary": "bun scripts/build-binary.ts",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
