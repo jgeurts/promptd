@@ -674,6 +674,18 @@ async function renderHome(tab = 'crons') {
   view.replaceChildren(head, tabBar(tab), panel);
 }
 
+/** A row that opens `href`, except from its own controls or when the click ends a text selection. */
+function linkedRow(href) {
+  return {
+    class: 'linked-row',
+    onclick: (event) => {
+      if (event.target.closest('a, button, input, select, textarea')) return;
+      if (window.getSelection()?.toString()) return;
+      location.hash = href;
+    },
+  };
+}
+
 /** One heading row per project, in name order, with the jobs in no project last. */
 function groupedRows(jobs, projects, row) {
   if (!projects.length) return jobs.map(row);
@@ -721,7 +733,7 @@ async function paintCrons(panel, pause, sub) {
   }
 
   const rows = groupedRows(crons, projects, (cron) =>
-    el('tr', {}, [
+    el('tr', linkedRow(`#/logs/${cron.id}`), [
       el('td', {}, [
         el('div', { class: 'cron-name', text: cron.name }),
         // Two lines on the page, all of it in the tooltip: a paragraph of
@@ -831,7 +843,7 @@ async function paintExecutions(panel, pause, sub) {
   }
 
   const rows = groupedRows(executions, projects, (execution) =>
-    el('tr', {}, [
+    el('tr', linkedRow(`#/one-time/logs/${execution.id}`), [
       el('td', {}, [
         el('div', { class: 'cron-name', text: execution.name }),
         execution.description

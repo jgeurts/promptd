@@ -1806,3 +1806,7 @@ tbody tr.group-row:hover {
     grid-template-columns: 1fr;
   }
 }
+
+tr.linked-row {
+  cursor: pointer;
+}
