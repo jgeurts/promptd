@@ -25,8 +25,7 @@ die() { printf '\n\033[31mFailed:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    # A node install replaces this Mac's node service, so a new join code always takes.
-    --hub) [ $# -ge 2 ] || die "--hub needs the hub's address"; export NODE_ONLY=1 FORCE=1 HUB_URL="$2"; shift 2 ;;
+    --hub) [ $# -ge 2 ] || die "--hub needs the hub's address"; export NODE_ONLY=1 HUB_URL="$2"; shift 2 ;;
     --code) [ $# -ge 2 ] || die "--code needs the join code from the hub"; export JOIN_CODE="$2"; shift 2 ;;
     --token) [ $# -ge 2 ] || die "--token needs the hub's node token"; export NODE_TOKEN="$2"; shift 2 ;;
     *) die "unknown option $1" ;;

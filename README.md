@@ -53,7 +53,7 @@ With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by
    curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://<hub-mac>.<tailnet>.ts.net:4321 --code 1234-5678
    ```
 
-   A join code works once, for 15 minutes, so press **Add a Mac** again for the next one. `promptd join-command` on the hub's Mac prints the same command.
+   A join code works once, within a day, so press **Add a Mac** again for the next one. `promptd join-command` on the hub's Mac prints the same command.
 
 The new node shows under Settings → Nodes within a few seconds, and from then on it runs the same build as the hub. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
 

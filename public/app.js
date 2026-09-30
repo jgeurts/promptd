@@ -2460,7 +2460,7 @@ function nodesList() {
       }
       joinCommand.value = join.command;
       joinRow.hidden = false;
-      const until = new Date(join.expiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const until = new Date(join.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
       joinNote.className = join.hubUrl ? 'hint' : 'hint warn';
       joinNote.replaceChildren(
         ...(join.hubUrl

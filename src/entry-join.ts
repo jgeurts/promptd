@@ -25,7 +25,7 @@ async function main(): Promise<void> {
   const hubUrl = process.argv[2] ?? (await joinUrl({ host: HOST, port: PORT, origin: '' }));
   if (!hubUrl) throw new Error('other Macs cannot reach this hub yet; share it with tailscale serve, or pass the address to use');
   console.log(joinCommand(hubUrl, code, BINARY_REPO));
-  console.error(`The code works once, until ${new Date(expiresAt).toLocaleTimeString()}.`);
+  console.error(`The code works once, until ${new Date(expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`);
 }
 
 try {

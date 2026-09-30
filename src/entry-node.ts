@@ -153,22 +153,26 @@ async function pair(code: string): Promise<string> {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const answer = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
-  if (!res.ok || !answer.token) {
+  if (res.status === 401) {
     // Asking again with the same code would only use up the hub's wrong-code allowance.
     rejectedCode = code;
-    throw new Error(`the hub refused join code ${code}: ${answer.error ?? res.status}`);
+    throw new Error(`the hub refused join code ${code}: ${answer.error ?? 'refused'}`);
   }
+  // Anything else, such as tailscale serve's 502 while the hub restarts, is tried again next sync.
+  if (!res.ok || !answer.token) throw new Error(`pairing got ${res.status} from the hub; trying again`);
   await fsp.writeFile(PAIRED_TOKEN_FILE, `${answer.token}\n`, { mode: 0o600 });
   console.log(`[node] paired with ${HUB_URL}; its token is kept in ${PAIRED_TOKEN_FILE}`);
   return answer.token;
 }
 
-async function readToken(): Promise<string> {
-  if (process.env.PROMPTD_NODE_TOKEN) return process.env.PROMPTD_NODE_TOKEN.trim();
-  const token = (await readFileToken(NODE_TOKEN_FILE)) ?? (await readFileToken(PAIRED_TOKEN_FILE));
-  if (token) return token;
+async function readToken(): Promise<{ token: string; paired: boolean }> {
+  if (process.env.PROMPTD_NODE_TOKEN) return { token: process.env.PROMPTD_NODE_TOKEN.trim(), paired: false };
+  const own = await readFileToken(NODE_TOKEN_FILE);
+  if (own) return { token: own, paired: false };
+  const saved = await readFileToken(PAIRED_TOKEN_FILE);
+  if (saved) return { token: saved, paired: true };
   const code = process.env.PROMPTD_JOIN_CODE?.trim();
-  if (code && code !== rejectedCode) return pair(code);
+  if (code && code !== rejectedCode) return { token: await pair(code), paired: true };
   throw new Error(
     code
       ? `join code ${code} was refused; make a new one on the hub and run the installer again`
@@ -177,7 +181,7 @@ async function readToken(): Promise<string> {
 }
 
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
-  const token = await readToken();
+  const { token, paired } = await readToken();
   const res = await fetch(`${HUB_URL}${route}`, {
     method,
     headers: {
@@ -190,6 +194,11 @@ async function request<T>(method: string, route: string, body?: unknown): Promis
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const payload = (await res.json().catch(() => ({}))) as { error?: string };
+  if (res.status === 401 && paired) {
+    // A token from another hub, or from before this one's token changed: it will never work again.
+    await fsp.rm(PAIRED_TOKEN_FILE, { force: true });
+    throw new Error("the hub no longer takes this node's token; press Add a Mac on the hub and run its command here again");
+  }
   if (!res.ok) throw new Error(`hub answered ${res.status}: ${payload.error ?? res.statusText}`);
   return payload as T;
 }
@@ -447,8 +456,9 @@ async function followHub(version: string | null | undefined): Promise<void> {
     if (!underLaunchd()) {
       return abandonUpdate(version, `build ${version} is on disk, but launchd is not running this node, so restart it to finish`);
     }
-    // A newer build replacing one already waited for keeps its hold, so no run starts in between.
-    updatingTo = { version, since: Date.now(), holding: updatingTo?.holding ?? false };
+    // A newer build replacing one already waited for keeps its hold, so no run starts in between,
+    // and its start, so a stuck run cannot put off giving up for ever.
+    updatingTo = updatingTo?.holding ? { ...updatingTo, version } : { version, since: Date.now(), holding: false };
     console.log(`[update] build ${version} installed; restarting into it once nothing is running`);
     if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = setInterval(() => {

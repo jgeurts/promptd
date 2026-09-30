@@ -5,7 +5,7 @@ import path from 'node:path';
 import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
-import { NODE_TOKEN_FILE } from './paths.js';
+import { JOIN_CODES_FILE, NODE_TOKEN_FILE } from './paths.js';
 import { JoinCodes } from './joinCodes.js';
 import type { JoinCode } from './joinCodes.js';
 import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
@@ -168,7 +168,7 @@ class Hub {
   public constructor() {
     this.token = null;
     this.version = null;
-    this.joinCodes = new JoinCodes();
+    this.joinCodes = new JoinCodes(JOIN_CODES_FILE);
     this.nodes = new Map();
     this.settings = {};
     this.pauseState = null;

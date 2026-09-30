@@ -39,6 +39,8 @@ JOIN_CODE="${JOIN_CODE:-}"
 NODE_ID="${NODE_ID:-}"
 NODE_NAME="${NODE_NAME:-}"
 FORCE="${FORCE:-0}"
+# A node given a code or token is registered with it, whatever was there before.
+if [ "$NODE_ONLY" = "1" ] && { [ -n "$JOIN_CODE" ] || [ -n "$NODE_TOKEN" ]; }; then FORCE=1; fi
 
 # 0.0.0.0 and :: listen on every interface; anything else is reachable at itself.
 case "$HOST" in
@@ -244,8 +246,13 @@ $(env_entry PROMPTD_JOIN_CODE "$JOIN_CODE")"
 $(env_entry PROMPTD_NODE_ID "$NODE_ID")"
   [ -n "$NODE_NAME" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_NAME "$NODE_NAME")"
+  # A token kept from pairing with this or another hub would win over the new code.
+  [ -n "$JOIN_CODE" ] && rm -f "${PROMPTD_NODE_HOME:-$STORAGE_ROOT/node}/hub-token"
+  # What the node writes from here on is this install's, and so is its start time.
+  NODE_LOG_START="$(wc -c < "$NODE_LOG" 2>/dev/null | tr -d ' ' || echo 0)"
+  NODE_SINCE="$(date -u +%Y-%m-%dT%H:%M:%S)"
   install_agent "$NODE_LABEL" "$NODE_PLIST" node.js "$NODE_LOG" "$NODE_ENV"
-  [ -n "$NODE_TOKEN" ] && chmod 600 "$NODE_PLIST"
+  { [ -n "$NODE_TOKEN" ] || [ -n "$JOIN_CODE" ]; } && chmod 600 "$NODE_PLIST"
   NODE_INSTALLED=1
 fi
 
@@ -269,24 +276,41 @@ if [ "$HUB_INSTALLED" = "1" ]; then
 fi
 
 if [ "$NODE_INSTALLED" = "1" ]; then
-  printf '  • waiting for the node to connect'
+  # The node's id is this Mac's hostname unless NODE_ID says otherwise, made the way the node makes it.
+  CHECK_ID="$(printf '%s' "${NODE_ID:-$(hostname)}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-64)"
+  printf '  • waiting for %s to connect' "$CHECK_ID"
   connected=0
   for _ in $(seq 1 30); do
-    nodes="$(curl -sS -w '\n%{http_code}' "$HUB_URL/api/nodes" 2>/dev/null || true)"
-    case "$nodes" in
+    answer="$(curl -sS -w '\n%{http_code}' "$HUB_URL/api/nodes/$CHECK_ID" 2>/dev/null || true)"
+    case "$answer" in
       *$'\n'401) connected=locked; break ;;
-      *'"online":true'*) connected=1; break ;;
+      *'"online":true'*$'\n'200)
+        # Online as the process started just now, not as another Mac of the same name.
+        started="$(printf '%s' "$answer" | grep -o '"startedAt":"[^"]*"' | head -1 | cut -d'"' -f4)"
+        [[ -n "$started" && ! "$started" < "$NODE_SINCE" ]] && { connected=1; break; } ;;
     esac
     printf '.'
     sleep 1
   done
   printf '\n'
   if [ "$connected" = "1" ]; then
-    ok "node connected to $HUB_URL"
+    ok "$CHECK_ID connected to $HUB_URL"
   elif [ "$connected" = "locked" ]; then
     ok "node registered; the hub requires a login, so check it under Settings → Nodes"
   else
-    warn "the node is registered but no node showed as online at $HUB_URL within 30s. Check $NODE_LOG"
+    since_install="$(tail -c +$((NODE_LOG_START + 1)) "$NODE_LOG" 2>/dev/null)"
+    case "$since_install" in
+      *"refused join code"*)
+        die "the hub refused join code $JOIN_CODE: it was used, has expired, or was mistyped. Press Add a Mac on the hub for a new one, and run its command here." ;;
+      *"already syncing as node"*)
+        die "another Mac is already connected as $CHECK_ID. Run the command again with NODE_ID=<a name of its own> in front of bash." ;;
+      *"no longer takes this node's token"*)
+        die "the hub no longer takes this node's token. Press Add a Mac on the hub for a new command, and run it here." ;;
+      *)
+        warn "$CHECK_ID has not reached $HUB_URL yet. It keeps trying, and shows up under Settings → Nodes once it does."
+        last="$(printf '%s\n' "$since_install" | grep -E 'cannot sync|pairing got' | tail -n 1)"
+        [ -n "$last" ] && warn "its log says: $last" ;;
+    esac
   fi
 fi
 
