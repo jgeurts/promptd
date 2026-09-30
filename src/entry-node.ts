@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { installVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
+import { BuildNotReleasedError, installVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -91,6 +91,15 @@ let updatingTo: { version: string; since: number } | null = null;
 const updateFailedAt = new Map<string, number>();
 /** A join code the hub refused, which is not sent again. */
 let rejectedCode: string | null = null;
+interface Download {
+  version: string;
+  settled: boolean;
+  error: Error | null;
+}
+/** The hub's build being downloaded, while the node carries on. */
+let download: Download | null = null;
+/** Builds the hub runs that have no release, which are not asked for again. */
+const unreleasedBuilds = new Set<string>();
 let lastError: string | null = null;
 
 bus.on('event', (event) => {
@@ -399,16 +408,35 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
  * finishes the node exits for launchd to start the new build.
  */
 async function followHub(version: string | null | undefined): Promise<void> {
-  if (!BINARY_VERSION || !version || version === BINARY_VERSION) return;
+  if (!BINARY_VERSION || !version || version === BINARY_VERSION || unreleasedBuilds.has(version)) return;
   const failedAt = updateFailedAt.get(version);
   if (failedAt !== undefined && Date.now() - failedAt < UPDATE_RETRY_MS) return;
 
   if (updatingTo?.version !== version) {
-    try {
-      if ((await versionOnDisk()) !== version) await installVersion(version);
-    } catch (err) {
-      return abandonUpdate(version, `could not install the hub's build ${version}: ${(err as Error).message}`);
+    // The download runs beside the sync, so the node keeps reporting and the
+    // hub never sees it go quiet; each cycle looks in on it until it settles.
+    if (download?.version !== version) {
+      const started: Download = { version, settled: false, error: null };
+      download = started;
+      versionOnDisk()
+        .then((onDisk) => (onDisk === version ? undefined : installVersion(version)))
+        .catch((err: Error) => {
+          started.error = err;
+        })
+        .finally(() => {
+          started.settled = true;
+        });
+      return;
     }
+    if (!download.settled) return;
+    const { error } = download;
+    download = null;
+    if (error instanceof BuildNotReleasedError) {
+      unreleasedBuilds.add(version);
+      console.error(`[update] the hub runs build ${version}, which has no release to download (${error.message}); staying on ${BINARY_VERSION}`);
+      return;
+    }
+    if (error) return abandonUpdate(version, `could not install the hub's build ${version}: ${error.message}`);
     if (!underLaunchd()) {
       return abandonUpdate(version, `build ${version} is on disk, but launchd is not running this node, so restart it to finish`);
     }

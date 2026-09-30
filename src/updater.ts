@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { commitsBehind, installVersion, latestVersion, underLaunchd } from './binaryUpdate.js';
+import { compareBuilds, installVersion, latestVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { emit } from './events.js';
 import { LOGS_DIR } from './paths.js';
 import { loadSettings, patchSettings } from './settings.js';
@@ -155,9 +155,16 @@ async function checkForBuild(current: string): Promise<UpdateCheck> {
   }
   if (!latest) return { updatable: false, reason: 'no build has been released' };
   if (latest === current) return { updatable: false, behind: 0, head: current, reason: 'already up to date' };
-  // A build that is not an ancestor, such as one made from a branch, is left alone.
-  const behind = await commitsBehind(current, latest).catch(() => 1);
-  return { updatable: behind > 0, behind, head: current, target: latest, reason: behind > 0 ? null : 'already up to date' };
+  let behind: number;
+  let ahead: number;
+  try {
+    ({ behind, ahead } = await compareBuilds(current, latest));
+  } catch (err) {
+    return { updatable: false, reason: `could not compare build ${current} with ${latest}: ${(err as Error).message}` };
+  }
+  // As with a checkout, only a straight line forward is taken.
+  if (ahead > 0) return { updatable: false, reason: `diverged: ${ahead} ahead, ${behind} behind`, behind, ahead, head: current };
+  return { updatable: behind > 0, behind, ahead, head: current, target: latest, reason: behind > 0 ? null : 'already up to date' };
 }
 
 class SelfUpdater {
@@ -170,6 +177,8 @@ class SelfUpdater {
   public lastCheck: LastCheck;
   /** The build a binary is updating to, from the check that started the update. */
   public target: string | null;
+  /** Set while a binary downloads and swaps in a build, after the drain has ended. */
+  public installing: boolean;
 
   public constructor() {
     this.timer = null;
@@ -187,6 +196,7 @@ class SelfUpdater {
      */
     this.lastCheck = { updatable: false, behind: 0, head: null, reason: null, at: null };
     this.target = null;
+    this.installing = false;
   }
 
   /** What the health endpoint and the header badge read. */
@@ -247,7 +257,7 @@ class SelfUpdater {
    * tick and the Update now button, so both behave identically.
    */
   public async applyIfBehind(): Promise<UpdateOutcome> {
-    if (this.draining) {
+    if (this.draining || this.installing) {
       // Already committed to updating; a second press just reports the wait.
       return { updatable: true, launched: true, waiting: true, pid: null, ...this.state() };
     }
@@ -321,7 +331,7 @@ class SelfUpdater {
    * an update can be offered without ever being taken.
    */
   public async tick(force = false): Promise<UpdateOutcome | null> {
-    if (this.busy || this.draining) return null;
+    if (this.busy || this.draining || this.installing) return null;
     const settings = await loadSettings();
     if (!force && !this.due(settings)) return null;
 
@@ -400,13 +410,18 @@ class SelfUpdater {
       fs.appendFileSync(UPDATE_LOG, `[${new Date().toISOString()}] ${line}\n`);
     };
     const giveUp = (why: string): void => {
+      this.installing = false;
       console.error(`[update] ${why}. Resuming schedules.`);
       emit('update:failed', { code: null, updateLog: UPDATE_LOG });
       hub.resumeAll('update finished without restarting').catch((err: Error) => console.error(`[cron] resume failed: ${err.message}`));
     };
     if (!target) return giveUp('no build to update to');
+    this.installing = true;
     log(`no runs in flight; installing build ${target} over ${BINARY_VERSION}`);
-    installVersion(target).then(
+    // A hub left outside launchd already has the build on disk from the last try.
+    versionOnDisk()
+      .then((onDisk) => (onDisk === target ? undefined : installVersion(target)))
+      .then(
       () => {
         // Killing a hub that nothing would restart would be worse than leaving it on the old build.
         if (!underLaunchd()) {

@@ -18,6 +18,8 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   binaries:
+    # Every installed binary updates to the latest release, so only main publishes one.
+    if: github.ref == 'refs/heads/main'
     needs: check
     runs-on: macos-latest
     permissions:
@@ -49,7 +51,7 @@ jobs:
         run: >
           gh release create "build-$VERSION" dist/bin/*
           --title "promptd $VERSION" --notes "Built from $GITHUB_SHA." --target "$GITHUB_SHA" --latest
-      - name: Keep the newest 30 builds
+      - name: Keep the newest 100 builds
         run: |
-          gh release list --limit 200 --json tagName,createdAt -q 'sort_by(.createdAt) | reverse | .[].tagName' |
-            grep '^build-' | tail -n +31 | while read -r tag; do gh release delete "$tag" --cleanup-tag --yes; done
+          gh release list --limit 300 --json tagName,createdAt -q 'sort_by(.createdAt) | reverse | .[].tagName' |
+            grep '^build-' | tail -n +101 | while read -r tag; do gh release delete "$tag" --cleanup-tag --yes; done

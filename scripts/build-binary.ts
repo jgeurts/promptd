@@ -21,8 +21,15 @@ const version =
   process.env.PROMPTD_BUILD_VERSION || execFileSync('git', ['-C', ROOT, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
 const repo = process.env.GITHUB_REPOSITORY || process.env.PROMPTD_BUILD_REPO || 'promptilicious/promptd';
 
+// The page's files are embedded as text; an image added to public/ needs this to change first.
+const TEXT_FILES = new Set(['.html', '.js', '.css', '.svg', '.json', '.txt']);
 const publicDir = path.join(ROOT, 'public');
-const publicFiles = Object.fromEntries(fs.readdirSync(publicDir).map((name) => [name, fs.readFileSync(path.join(publicDir, name), 'utf8')]));
+const publicFiles = Object.fromEntries(
+  fs.readdirSync(publicDir).map((name) => {
+    if (!TEXT_FILES.has(path.extname(name))) throw new Error(`public/${name} is not a text file, which the binary cannot embed yet`);
+    return [name, fs.readFileSync(path.join(publicDir, name), 'utf8')];
+  }),
+);
 
 for (const platform of platforms) {
   const outfile = path.join(ROOT, 'dist', 'bin', `promptd-${platform}`);

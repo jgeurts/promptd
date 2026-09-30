@@ -17,9 +17,9 @@ export function servePublic(): RequestHandler {
   return (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     const name = req.path === '/' ? 'index.html' : req.path.slice(1);
-    const body = files[name];
-    if (body === undefined) return next();
-    res.type(path.extname(name)).send(body);
+    // Own keys only, so a path such as /constructor is a 404 rather than Object's.
+    if (!Object.hasOwn(files, name)) return next();
+    res.type(path.extname(name)).send(files[name]);
   };
 }
 

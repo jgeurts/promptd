@@ -31,6 +31,8 @@ curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/in
 
 Open http://127.0.0.1:4321. promptd is one file, `~/.local/bin/promptd`. It starts at every login and updates itself from the latest release once a day.
 
+Already running promptd from a checkout? Put `FORCE=1` before `bash` to switch its services to the binary.
+
 ### Adding more Macs, with Tailscale
 
 With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by its tailnet name, at home or away, and the hub stays closed to whatever network you are on.

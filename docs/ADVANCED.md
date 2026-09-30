@@ -409,6 +409,10 @@ promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no
 
 Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it while its runs carry on, holds new runs, and exits once the last one finishes. Outside launchd, a new build is left on disk for the next restart, and the log says so.
 
+A node can follow only a hub whose build has a release: a binary hub, or a checkout on a commit from `main`. A Docker hub reports no build, so its binary nodes stay on the one they were installed with; run the installer on each again to update it. Only the newest 100 builds are kept.
+
+To go back to an earlier build, turn self update off first, then run the installer with `PROMPTD_RELEASE=build-<commit>` and `FORCE=1` in front of `bash`. Download promptd with the installer rather than a browser: macOS quarantines what a browser downloads, and the binary is not notarized.
+
 ### The restart needs the launchd agent
 
 Only launchd can bring a process back after it stops, so the updater restarts the node registered under `local.promptd.node` and then the hub under `local.promptd` (override with `PROMPTD_NODE_LAUNCHD_LABEL` and `PROMPTD_LAUNCHD_LABEL`). An update pulls this checkout only: a node on another Mac runs its own checkout and is updated there. See [Start at login](#start-at-login-macos).

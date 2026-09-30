@@ -50,8 +50,12 @@ async function github<T>(route: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** A build with no release: made from a commit that was never on main, or pruned since. */
+export class BuildNotReleasedError extends Error {}
+
 async function download(url: string): Promise<Buffer> {
   const res = await fetch(url, { headers: { 'user-agent': 'promptd' }, signal: AbortSignal.timeout(300_000) });
+  if (res.status === 404) throw new BuildNotReleasedError(`no release has ${url.split('/').slice(-2).join('/')}`);
   if (!res.ok) throw new Error(`could not download ${url}: ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -61,9 +65,10 @@ export async function latestVersion(): Promise<string | null> {
   return versionOfTag((await github<{ tag_name: string }>('/releases/latest')).tag_name);
 }
 
-/** How many commits `to` has that `from` does not. */
-export async function commitsBehind(from: string, to: string): Promise<number> {
-  return (await github<{ ahead_by: number }>(`/compare/${from}...${to}`)).ahead_by;
+/** How many commits `to` has that `from` does not, and the other way round. */
+export async function compareBuilds(from: string, to: string): Promise<{ behind: number; ahead: number }> {
+  const comparison = await github<{ ahead_by: number; behind_by: number }>(`/compare/${from}...${to}`);
+  return { behind: comparison.ahead_by, ahead: comparison.behind_by };
 }
 
 /** Which build the file on disk is, which after an update is not the one running. */
