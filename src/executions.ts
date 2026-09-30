@@ -92,6 +92,7 @@ export async function createExecution(input: ExecutionInput): Promise<Execution>
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
+    projectId: input.projectId ?? null,
     status: 'scheduled',
     createdAt: now,
     updatedAt: now,
@@ -133,6 +134,7 @@ export async function updateExecution(id: string, input: ExecutionInput): Promis
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
+    projectId: input.projectId ?? null,
     updatedAt: new Date().toISOString(),
     ...(rescheduled ? { status: 'scheduled', firedAt: null } : {}),
   };

@@ -94,5 +94,6 @@ export function feedbackExecution(
     prompt: feedbackPrompt(kind, details),
     isActive: true,
     nodeId: '',
+    projectId: null,
   };
 }

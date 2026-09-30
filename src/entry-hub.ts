@@ -22,6 +22,7 @@ import {
   updateExecution,
 } from './executions.js';
 import { feedbackExecution, readFeedbackForm } from './feedback.js';
+import { createProject, deleteProject, getProject, listProjects, updateProject } from './projects.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './settings.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
 import { normalizeUsageDelay, usageDelayOptions } from './usage.js';
@@ -41,7 +42,7 @@ import {
   updateCron,
 } from './store.js';
 import { DEFAULT_RETROSPECTIVE_PROMPT } from './retrospective.js';
-import type { BusEvent, Cron, CronInput, Execution, ExecutionInput, JobKind, Settings } from './types.js';
+import type { BusEvent, Cron, CronInput, Execution, ExecutionInput, JobKind, ProjectInput, Settings } from './types.js';
 
 /** When this process came up, which is what the Settings page calls the last boot. */
 const STARTED_AT = new Date().toISOString();
@@ -122,6 +123,7 @@ function readForm(body: Record<string, unknown> | undefined): { errors: string[]
       prompt: String(body?.prompt ?? ''),
       isActive: Boolean(body?.isActive),
       nodeId: String(body?.nodeId ?? '').trim(),
+      projectId: String(body?.projectId ?? '').trim() || null,
     },
   };
 }
@@ -166,8 +168,21 @@ function readExecutionForm(body: Record<string, unknown> | undefined): { errors:
       prompt: String(body?.prompt ?? ''),
       isActive: Boolean(body?.isActive),
       nodeId: String(body?.nodeId ?? '').trim(),
+      projectId: String(body?.projectId ?? '').trim() || null,
     },
   };
+}
+
+async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
+  if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');
+}
+
+function readProjectForm(body: Record<string, unknown> | undefined): { errors: string[]; value: ProjectInput } {
+  const name = String(body?.name ?? '').trim();
+  const errors: string[] = [];
+  if (!name) errors.push('Name is required.');
+  if (name.length > 120) errors.push('Name must be 120 characters or fewer.');
+  return { errors, value: { name, description: String(body?.description ?? '').trim() } };
 }
 
 function decorate(cron: Cron) {
@@ -513,6 +528,7 @@ app.get('/api/crons/:id', async (req, res, next) => {
 app.post('/api/crons', async (req, res, next) => {
   try {
     const { errors, value } = readForm(req.body);
+    await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const cron = await createCron(value);
     hub.jobsChanged();
@@ -525,6 +541,7 @@ app.post('/api/crons', async (req, res, next) => {
 app.put('/api/crons/:id', async (req, res, next) => {
   try {
     const { errors, value } = readForm(req.body);
+    await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const cron = await updateCron(req.params.id, value);
     if (!cron) return res.status(404).json({ error: 'cron not found' });
@@ -540,6 +557,46 @@ app.delete('/api/crons/:id', async (req, res, next) => {
     const removed = await deleteCron(req.params.id);
     if (!removed) return res.status(404).json({ error: 'cron not found' });
     hub.jobsChanged();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/api/projects', async (_req, res, next) => {
+  try {
+    res.json(await listProjects());
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/projects', async (req: JsonRequest, res, next) => {
+  try {
+    const { errors, value } = readProjectForm(req.body);
+    if (errors.length) return res.status(400).json({ error: errors.join(' ') });
+    res.status(201).json(await createProject(value));
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.put('/api/projects/:id', async (req: JsonRequest, res, next) => {
+  try {
+    const { errors, value } = readProjectForm(req.body);
+    if (errors.length) return res.status(400).json({ error: errors.join(' ') });
+    const project = await updateProject(String(req.params.id), value);
+    if (!project) return res.status(404).json({ error: 'project not found' });
+    res.json(project);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/api/projects/:id', async (req, res, next) => {
+  try {
+    const removed = await deleteProject(req.params.id);
+    if (!removed) return res.status(404).json({ error: 'project not found' });
     res.json({ ok: true });
   } catch (err) {
     next(err);
@@ -573,6 +630,7 @@ app.get('/api/executions/:id', async (req, res, next) => {
 app.post('/api/executions', async (req, res, next) => {
   try {
     const { errors, value } = readExecutionForm(req.body);
+    await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const execution = await createExecution(value);
     // A date already past is armed and run by the same reload that arms the
@@ -604,6 +662,7 @@ app.post('/api/feedback', async (req: JsonRequest, res, next) => {
 app.put('/api/executions/:id', async (req, res, next) => {
   try {
     const { errors, value } = readExecutionForm(req.body);
+    await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const execution = await updateExecution(req.params.id, value);
     if (!execution) return res.status(404).json({ error: 'execution not found' });

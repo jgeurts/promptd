@@ -674,9 +674,26 @@ async function renderHome(tab = 'crons') {
   view.replaceChildren(head, tabBar(tab), panel);
 }
 
+/** One heading row per project, in name order, with the jobs in no project last. */
+function groupedRows(jobs, projects, row) {
+  if (!projects.length) return jobs.map(row);
+  const groups = [...projects.map((project) => ({ id: project.id, name: project.name })), { id: null, name: 'No project' }];
+  const known = new Set(projects.map((project) => project.id));
+  return groups.flatMap((group) => {
+    const members = jobs.filter((job) => (known.has(job.projectId) ? job.projectId : null) === group.id);
+    if (!members.length) return [];
+    return [
+      el('tr', { class: 'group-row' }, [
+        el('td', { colspan: '6' }, [el('span', { text: group.name }), el('span', { class: 'group-count', text: String(members.length) })]),
+      ]),
+      ...members.map(row),
+    ];
+  });
+}
+
 /** The Crons tab: everything the home page showed before the tabs existed. */
 async function paintCrons(panel, pause, sub) {
-  const crons = await api('/api/crons');
+  const [crons, projects] = await Promise.all([api('/api/crons'), api('/api/projects')]);
   const armed = crons.filter((c) => c.isActive).length;
 
   let line;
@@ -703,7 +720,7 @@ async function paintCrons(panel, pause, sub) {
     return;
   }
 
-  const rows = crons.map((cron) =>
+  const rows = groupedRows(crons, projects, (cron) =>
     el('tr', {}, [
       el('td', {}, [
         el('div', { class: 'cron-name', text: cron.name }),
@@ -786,7 +803,7 @@ function nextRunCell(cron, pause) {
  * on its own.
  */
 async function paintExecutions(panel, pause, sub) {
-  const page = await api(`/api/executions?limit=${executionsState.limit}`);
+  const [page, projects] = await Promise.all([api(`/api/executions?limit=${executionsState.limit}`), api('/api/projects')]);
   const executions = page.items;
 
   let line;
@@ -813,7 +830,7 @@ async function paintExecutions(panel, pause, sub) {
     return;
   }
 
-  const rows = executions.map((execution) =>
+  const rows = groupedRows(executions, projects, (execution) =>
     el('tr', {}, [
       el('td', {}, [
         el('div', { class: 'cron-name', text: execution.name }),
@@ -1577,6 +1594,29 @@ function followNodeDirectory(input, listing, keep) {
  * Which node runs the job. Blank follows the default node, so changing the default moves it.
  * `onChange` gets the listing of the node that would run it, once the nodes load and on every pick.
  */
+/** Hidden until a project exists, so a server that uses none never sees it. */
+function projectPicker(selected) {
+  const select = el('select', { class: 'select' });
+  const field = el('div', { class: 'field', hidden: 'hidden' }, [
+    el('label', { text: 'Project' }),
+    select,
+    el('div', { class: 'hint' }, ['Groups this job with others on the home page. Projects are added on the ', el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }), '.']),
+  ]);
+  const current = selected ?? '';
+  api('/api/projects')
+    .then((projects) => {
+      if (!projects.length) return;
+      select.replaceChildren(
+        el('option', { value: '' }, 'No project'),
+        ...projects.map((project) => el('option', { value: project.id, selected: project.id === current }, project.name)),
+      );
+      select.value = projects.some((project) => project.id === current) ? current : '';
+      field.hidden = false;
+    })
+    .catch(() => {});
+  return { read: () => select.value, field };
+}
+
 function nodePicker(selected, { onChange = () => {} } = {}) {
   const select = el('select', { class: 'select mono' });
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
@@ -1658,6 +1698,7 @@ async function renderForm(id, duplicateOf) {
   inputs.prompt.value = cron ? (cron.prompt ?? '') : defaults.prompt;
   inputs.isActive.checked = cron ? Boolean(cron.isActive) : true;
 
+  const project = projectPicker(cron?.projectId);
   const worktree = worktreePicker(cron, { id });
   const retrospective = retrospectivePicker(cron);
   const model = modelPicker(cron?.model ?? '');
@@ -1688,6 +1729,7 @@ async function renderForm(id, duplicateOf) {
       description: inputs.description.value,
       cron: inputs.cron.value,
       timezone: cronZone(),
+      projectId: project.read(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
       ...worktree.read(),
@@ -1738,6 +1780,7 @@ async function renderForm(id, duplicateOf) {
       errorBox,
       field('Name', inputs.name),
       field('Description', inputs.description),
+      project.field,
       schedule.field,
       node.field,
       directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
@@ -1824,6 +1867,7 @@ async function renderExecutionForm(id, duplicateOf) {
   inputs.prompt.value = execution ? (execution.prompt ?? '') : defaults.prompt;
   inputs.isActive.checked = execution ? Boolean(execution.isActive) : true;
 
+  const project = projectPicker(execution?.projectId);
   const worktree = worktreePicker(execution, { id, oneTime: true });
   const node = nodePicker(execution?.nodeId ?? '', {
     onChange: (listing) => {
@@ -1852,6 +1896,7 @@ async function renderExecutionForm(id, duplicateOf) {
       // Sent as a full instant rather than the field's bare local string, so
       // the server is not left guessing which clock it was typed on.
       scheduledAt: typed ? new Date(typed).toISOString() : '',
+      projectId: project.read(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
       ...worktree.read(),
@@ -1903,6 +1948,7 @@ async function renderExecutionForm(id, duplicateOf) {
       errorBox,
       field('Name', inputs.name),
       field('Description', inputs.description),
+      project.field,
       scheduledAtPicker(inputs.scheduledAt),
       node.field,
       directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
@@ -2264,6 +2310,74 @@ function nodeSettingsParts(node, config) {
   };
 }
 
+/** The project list on the Settings page: rename, describe, delete, and add. */
+function projectsList() {
+  const body = el('div', {});
+  const row = (project) => {
+    const name = el('input', { type: 'text', value: project?.name ?? '', placeholder: 'Project name', maxlength: '120' });
+    const description = el('input', { type: 'text', value: project?.description ?? '', placeholder: 'Description (optional)' });
+    const send = async (button, request, done) => {
+      button.disabled = true;
+      try {
+        await request();
+        toast(done);
+        await paint();
+      } catch (err) {
+        toast(err.message, true);
+        button.disabled = false;
+      }
+    };
+    const payload = () => JSON.stringify({ name: name.value, description: description.value });
+    const actions = project
+      ? [
+          el('button', {
+            class: 'btn small',
+            type: 'button',
+            text: 'Save',
+            onclick: (event) => send(event.target, () => api(`/api/projects/${project.id}`, { method: 'PUT', body: payload() }), 'Project saved'),
+          }),
+          el('button', {
+            class: 'btn small danger',
+            type: 'button',
+            text: 'Delete',
+            onclick: (event) => {
+              if (!confirm(`Delete "${project.name}"? Its jobs keep running, with no project.`)) return;
+              send(event.target, () => api(`/api/projects/${project.id}`, { method: 'DELETE' }), 'Project deleted');
+            },
+          }),
+        ]
+      : [
+          el('button', {
+            class: 'btn small primary',
+            type: 'button',
+            text: 'Add project',
+            onclick: (event) => send(event.target, () => api('/api/projects', { method: 'POST', body: payload() }), 'Project added'),
+          }),
+        ];
+    return el('div', { class: 'field project-row' }, [name, description, el('div', { class: 'row-actions' }, actions)]);
+  };
+  const paint = async () => {
+    let projects;
+    try {
+      projects = await api('/api/projects');
+    } catch (err) {
+      body.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the projects: ${err.message}` }));
+      return;
+    }
+    body.replaceChildren(...projects.map(row), row(null));
+  };
+  return {
+    paint,
+    parts: [
+      body,
+      el('div', { class: 'hint' }, [
+        'A project groups crons and one-time executions on the home page. Pick one on each job\'s form. ',
+        'Deleting a project keeps its jobs, with no project. With no projects, the home page shows one ungrouped list.',
+      ]),
+    ],
+  };
+}
+
 /** The node list on the Settings page, each linking to the node's own page. */
 function nodesList() {
   const body = el('div', {});
@@ -2343,6 +2457,7 @@ async function renderSettings() {
   const soleLocal = nodeState.nodes.length === 1 && nodeState.nodes[0].isLocal ? nodeState.nodes[0] : null;
   const local = soleLocal ? nodeSettingsParts(soleLocal, config) : null;
   const nodes = nodesList();
+  const projects = projectsList();
 
   const signOut = auth.required
     ? el('button', {
@@ -2669,6 +2784,7 @@ async function renderSettings() {
         ' already in the main checkout is overwritten with this text on every run, including one the repo has committed.',
       ]),
     ]),
+    el('div', { class: 'card' }, [el('h2', { text: 'Projects' }), ...projects.parts]),
     el('div', { class: 'card' }, [el('h2', { text: 'Nodes' }), ...nodes.parts]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Storage' }),
@@ -2692,6 +2808,7 @@ async function renderSettings() {
   if (config.selfUpdate) check();
   local?.paintQueue();
   nodes.paint();
+  projects.paint();
   // Run activity redraws the queue on its own from here; the page is not rebuilt.
   repaintQueue = () => {
     local?.paintQueue();

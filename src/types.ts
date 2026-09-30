@@ -34,6 +34,7 @@ export interface JobBase extends LifetimeStats {
   prompt: string;
   isActive: boolean;
   nodeId?: string;
+  projectId: string | null;
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
@@ -69,6 +70,7 @@ export type CronInput = Pick<
   | 'model'
   | 'name'
   | 'nodeId'
+  | 'projectId'
   | 'prompt'
   | 'retrospective'
   | 'usageDelay'
@@ -77,6 +79,16 @@ export type CronInput = Pick<
 >;
 
 export type ExecutionInput = Omit<CronInput, 'cron' | 'timezone'> & Pick<Execution, 'scheduledAt'>;
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ProjectInput = Pick<Project, 'description' | 'name'>;
 
 export interface UsageWindow {
   key: string;

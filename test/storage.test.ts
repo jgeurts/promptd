@@ -5,6 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type * as DbModule from '../src/db.js';
 import type * as ExecutionsModule from '../src/executions.js';
+import type * as ProjectsModule from '../src/projects.js';
 import type * as SettingsModule from '../src/settings.js';
 import type * as StoreModule from '../src/store.js';
 import type { CronInput } from '../src/types.js';
@@ -15,12 +16,14 @@ process.env.PROMPTD_HOME = home;
 let dbModule: typeof DbModule;
 let store: typeof StoreModule;
 let executions: typeof ExecutionsModule;
+let projects: typeof ProjectsModule;
 let settings: typeof SettingsModule;
 
 beforeAll(async () => {
   dbModule = await import('../src/db.js');
   store = await import('../src/store.js');
   executions = await import('../src/executions.js');
+  projects = await import('../src/projects.js');
   settings = await import('../src/settings.js');
 });
 
@@ -48,6 +51,7 @@ const cronInput: CronInput = {
   prompt: 'Write two lines.',
   isActive: true,
   nodeId: '',
+  projectId: null,
 };
 
 describe.each(targets)('storage on $name', ({ url }) => {
@@ -59,7 +63,7 @@ describe.each(targets)('storage on $name', ({ url }) => {
 
   beforeEach(async () => {
     const db = dbModule.db();
-    for (const table of ['crons', 'executions', 'notifications', 'settings', 'nodes'] as const) {
+    for (const table of ['crons', 'executions', 'notifications', 'settings', 'nodes', 'projects'] as const) {
       await db.deleteFrom(table).execute();
     }
   });
@@ -111,6 +115,18 @@ describe.each(targets)('storage on $name', ({ url }) => {
     const second = await executions.pageExecutions({ before: first.nextBefore, limit: 1 });
     expect(second.items.map((item) => item.id)).toEqual([late.id]);
     expect(second.nextBefore).toBeNull();
+  });
+
+  it('ungroups a deleted project\'s jobs rather than deleting them', async () => {
+    const project = await projects.createProject({ name: 'Billing', description: '' });
+    const cron = await store.createCron({ ...cronInput, projectId: project.id });
+    const execution = await executions.createExecution({ ...cronInput, projectId: project.id, scheduledAt: '2026-01-01T00:00:00.000Z' });
+    expect(await store.getCron(cron.id)).toMatchObject({ projectId: project.id });
+
+    expect(await projects.deleteProject(project.id)).toBe(true);
+    expect(await projects.listProjects()).toEqual([]);
+    expect(await store.getCron(cron.id)).toMatchObject({ projectId: null });
+    expect(await executions.getExecution(execution.id)).toMatchObject({ projectId: null });
   });
 
   it('writes the default settings once and patches one key without touching others', async () => {

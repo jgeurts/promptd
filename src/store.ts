@@ -65,6 +65,7 @@ export async function createCron(input: CronInput): Promise<Cron> {
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
+    projectId: input.projectId ?? null,
     createdAt: now,
     updatedAt: now,
     lastRunAt: null,
@@ -94,6 +95,7 @@ export async function updateCron(id: string, input: CronInput): Promise<Cron | n
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
+    projectId: input.projectId ?? null,
     updatedAt: new Date().toISOString(),
   };
   // A rename moves no logs: the folder is the cron's id.
