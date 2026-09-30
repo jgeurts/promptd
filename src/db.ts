@@ -173,6 +173,16 @@ const MIGRATIONS: Record<string, Migration> = {
         .execute();
     },
   },
+  '20260929_001_node_settings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('nodes').addColumn('settings', 'text', (col) => col.notNull().defaultTo('{}')).execute();
+    },
+  },
+  '20260929_002_cron_timezone': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('crons').addColumn('timezone', 'text', (col) => col.notNull().defaultTo('')).execute();
+    },
+  },
   '20260929_003_retrospective': {
     async up(db: Kysely<unknown>): Promise<void> {
       for (const table of ['crons', 'executions']) {
@@ -180,16 +190,6 @@ const MIGRATIONS: Record<string, Migration> = {
       }
       // The run a notification is about, so its link can open that log.
       await db.schema.alterTable('notifications').addColumn('log_file', 'text').execute();
-    },
-  },
-  '20260929_004_node_settings': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await db.schema.alterTable('nodes').addColumn('settings', 'text', (col) => col.notNull().defaultTo('{}')).execute();
-    },
-  },
-  '20260929_005_cron_timezone': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await db.schema.alterTable('crons').addColumn('timezone', 'text', (col) => col.notNull().defaultTo('')).execute();
     },
   },
 };
