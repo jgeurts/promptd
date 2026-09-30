@@ -1100,6 +1100,8 @@ function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '' } = 
 async function jobFormSettings() {
   const settings = await api('/api/settings').catch(() => ({}));
   return {
+    // The cluster's, which a job follows until its node's own arrive with the node list.
+    jobDefaults: settings.jobDefaults ?? { usageDelay: {} },
     prompt: typeof settings.defaultPrompt === 'string' ? settings.defaultPrompt : '',
     commands:
       typeof settings.commonCommands === 'string'
@@ -1251,27 +1253,110 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
 }
 
 /**
+ * How a setting that can follow a default says which it is doing. A job
+ * follows its node's defaults; a node's own defaults follow the cluster's. Null
+ * is the Settings page itself, where there is nothing further up to follow.
+ */
+const JOB_FOLLOW = { marker: 'default', reset: 'Use default' };
+const NODE_FOLLOW = { marker: 'cluster default', reset: 'Use the cluster default' };
+
+let settingIds = 0;
+
+/** A fresh id, so a label can name the input it belongs to. */
+function uid(prefix) {
+  settingIds += 1;
+  return `${prefix}-${settingIds}`;
+}
+
+/**
+ * One setting that can follow a default, on a checkbox or a select. The input
+ * always shows the value in force. While the setting follows the default it is
+ * marked as the default; once changed it offers to go back, which is what
+ * saves null. `read` answers the setting's own value, or null while it follows.
+ */
+function followSetting(input, { own = null, inherited, follow = JOB_FOLLOW, what, onChange = () => {} }) {
+  const isBox = input.type === 'checkbox';
+  let value = follow ? own : (own ?? inherited);
+  let fallback = inherited;
+  const marker = el('span', { class: 'setting-default', text: follow?.marker ?? '' });
+  const reset = el('button', {
+    type: 'button',
+    class: 'setting-reset',
+    text: follow?.reset ?? '',
+    'aria-label': `${follow?.reset ?? ''}: ${what}`,
+  });
+  const tag = follow ? el('span', { class: 'setting-tag' }, [marker, reset]) : null;
+
+  const show = () => {
+    const current = value ?? fallback;
+    if (isBox) input.checked = Boolean(current);
+    else input.value = current ?? '';
+    marker.hidden = value !== null;
+    reset.hidden = value === null;
+  };
+
+  input.addEventListener('change', () => {
+    value = isBox ? input.checked : input.value;
+    show();
+    onChange(value);
+  });
+  reset.addEventListener('click', () => {
+    value = null;
+    show();
+    onChange(null);
+    input.focus();
+  });
+  show();
+
+  return {
+    tag,
+    read: () => value,
+    effective: () => value ?? fallback,
+    isOwn: () => value !== null,
+    /** Sets the setting's own value from the page, as the git check does. */
+    set: (next) => {
+      value = next;
+      show();
+    },
+    /** A new default to follow, when the job moves to another node. */
+    follow: (next) => {
+      fallback = next;
+      show();
+    },
+    refresh: show,
+  };
+}
+
+/** A checkbox and its words, marked when it follows a default. */
+function followCheck(text, options) {
+  const box = el('input', { type: 'checkbox' });
+  const setting = followSetting(box, { what: text, ...options });
+  const row = el('span', { class: 'setting-row' }, [el('label', { class: 'check' }, [box, text]), setting.tag]);
+  return { ...setting, box, row };
+}
+
+/**
  * Model dropdown, filled from whatever the installed CLI recognises. Both the
  * select and the Refresh button are disabled while discovery is running, since
  * it spawns a probe per candidate and takes a few seconds.
  */
-function modelPicker(selected) {
-  const select = el('select', { class: 'select mono' });
+function modelPicker({ own = null, inherited = '', follow = JOB_FOLLOW, onChange } = {}) {
+  const select = el('select', { class: 'select mono', id: uid('model') });
   const refresh = el('button', { type: 'button', class: 'btn small', text: 'Refresh' });
   const note = el('div', { class: 'hint' });
-  let current = selected ?? '';
+  const setting = followSetting(select, { own, inherited, follow, what: 'Model', onChange });
+  let state = { models: [], loading: true, error: null, discoveredAt: null };
 
-  const paint = (state) => {
-    current = select.value || current;
-    const options = [{ value: '', label: 'Default (whatever the CLI is set to)' }, ...state.models];
+  const paint = (next = state) => {
+    state = next;
+    const current = setting.effective() ?? '';
+    const options = [{ value: '', label: 'CLI default (whatever the CLI is set to)' }, ...state.models];
     // A model saved earlier that this CLI no longer lists must not be silently dropped.
     if (current && !options.some((option) => option.value === current)) {
       options.push({ value: current, label: `${current} (not in this CLI's catalog)` });
     }
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    select.replaceChildren(...options.map((option) => el('option', { value: option.value }, option.label)));
+    setting.refresh();
 
     select.disabled = state.loading;
     refresh.disabled = state.loading;
@@ -1291,10 +1376,10 @@ function modelPicker(selected) {
 
   const load = () =>
     api('/api/models')
-      .then((state) => {
-        paint(state);
+      .then((next) => {
+        paint(next);
         // Discovery started at boot may still be running; check back until it lands.
-        if (state.loading) {
+        if (next.loading) {
           clearTimeout(modelPollTimer);
           modelPollTimer = setTimeout(load, 1000);
         }
@@ -1314,14 +1399,26 @@ function modelPicker(selected) {
     }
   });
 
-  paint({ models: [], loading: true, error: null, discoveredAt: null });
+  paint();
   load();
 
   return {
-    read: () => select.value,
+    read: setting.read,
+    isOwn: setting.isOwn,
+    follow: (next) => {
+      setting.follow(next);
+      paint();
+    },
+    /** The model in force, in the dropdown's words: "Sonnet" rather than "Sonnet (latest)". */
+    describe: () => {
+      const value = setting.effective() ?? '';
+      if (!value) return 'CLI default model';
+      const option = state.models.find((model) => model.value === value);
+      return (option?.label ?? value).replace(/ \(latest\)$/, '');
+    },
     field: el('div', { class: 'field' }, [
-      el('label', { text: 'Model' }),
-      el('div', { class: 'select-row' }, [select, refresh]),
+      el('label', { for: select.id, text: 'Model' }),
+      el('div', { class: 'select-row' }, [select, refresh, setting.tag]),
       note,
     ]),
   };
@@ -1331,51 +1428,69 @@ function modelPicker(selected) {
  * Effort dropdown. The levels come from the server, so the list here and the
  * value the run is allowed to pass stay one list. Empty leaves --effort off.
  */
-function effortPicker(selected) {
-  const select = el('select', { class: 'select mono' });
+function effortPicker({ own = null, inherited = '', follow = JOB_FOLLOW, onChange } = {}) {
+  const select = el('select', { class: 'select mono', id: uid('effort') });
   const note = el('div', {
     class: 'hint',
     text: 'Passed to claude as --effort. Higher levels think longer, so runs cost more and take longer.',
   });
-  const current = selected ?? '';
+  const setting = followSetting(select, { own, inherited, follow, what: 'Effort', onChange });
+  let levels = [];
 
-  const paint = (levels) => {
+  const paint = () => {
+    const current = setting.effective() ?? '';
     const options = [
-      { value: '', label: 'Default (whatever the CLI is set to)' },
+      { value: '', label: 'CLI default (whatever the CLI is set to)' },
       ...levels.map((level) => ({ value: level.id, label: level.label })),
     ];
     // An effort saved earlier that this server no longer offers must not be silently dropped.
     if (current && !options.some((option) => option.value === current)) {
       options.push({ value: current, label: `${current} (no longer offered)` });
     }
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    select.replaceChildren(...options.map((option) => el('option', { value: option.value }, option.label)));
+    setting.refresh();
   };
 
-  paint([]);
+  paint();
   api('/api/config')
-    .then((config) => paint(config.effortLevels ?? []))
+    .then((config) => {
+      levels = config.effortLevels ?? [];
+      paint();
+    })
     .catch((err) => {
       note.textContent = `Could not load the effort levels: ${err.message}`;
       note.className = 'hint warn';
     });
 
   return {
-    read: () => select.value,
-    field: el('div', { class: 'field' }, [el('label', { text: 'Effort' }), select, note]),
+    read: setting.read,
+    isOwn: setting.isOwn,
+    follow: (next) => {
+      setting.follow(next);
+      paint();
+    },
+    describe: () => {
+      const value = setting.effective() ?? '';
+      if (!value) return 'CLI default effort';
+      return `${levels.find((level) => level.id === value)?.label ?? value} effort`;
+    },
+    field: el('div', { class: 'field' }, [
+      el('label', { for: select.id, text: 'Effort' }),
+      el('div', { class: 'select-row' }, [select, setting.tag]),
+      note,
+    ]),
   };
 }
 
 /**
  * Delay for usage: the limits a trigger should wait out rather than run through.
  * The categories come from the server, so the checkboxes here and the limits a
- * held trigger is actually checked against stay one list.
+ * held trigger is actually checked against stay one list. Each box follows its
+ * default on its own.
  */
-function usageDelayPicker(selected) {
+function usageDelayPicker({ own = {}, inherited = {}, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
   const boxes = new Map();
-  const grid = el('div', { class: 'delay-grid' });
+  const grid = el('fieldset', { class: 'delay-grid' });
   const note = el('div', {
     class: 'hint',
     text:
@@ -1391,20 +1506,26 @@ function usageDelayPicker(selected) {
   ]);
   let categories = [];
   let thresholds = null;
+  let fallback = { ...inherited };
 
   const paint = () => {
-    const ticked = boxes.size ? Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])) : selected;
+    // Redrawn when the categories or percentages arrive, keeping what is ticked so far.
+    const kept = boxes.size ? Object.fromEntries([...boxes].map(([id, setting]) => [id, setting.read()])) : own;
     boxes.clear();
     grid.replaceChildren(
+      el('legend', { class: 'sr-only', text: 'Delay for usage' }),
       ...categories.map((category) => {
-        const box = el('input', { type: 'checkbox' });
-        box.checked = Boolean(ticked?.[category.id]);
-        boxes.set(category.id, box);
         const threshold = thresholds?.[category.id] ?? category.threshold;
-        return el('label', { class: 'check', title: category.hint }, [
-          box,
-          el('span', {}, [`${category.label} `, el('span', { class: 'muted', text: `(${threshold}%)` })]),
-        ]);
+        const setting = followCheck(category.label, {
+          own: kept?.[category.id] ?? null,
+          inherited: Boolean(fallback[category.id]),
+          follow,
+          onChange: (value) => onChange(category.id, value),
+        });
+        setting.box.closest('label').append(' ', el('span', { class: 'muted', text: `(${threshold}%)` }));
+        setting.box.closest('label').title = category.hint;
+        boxes.set(category.id, setting);
+        return setting.row;
       }),
     );
   };
@@ -1425,8 +1546,15 @@ function usageDelayPicker(selected) {
       thresholds = next ?? null;
       paint();
     },
-    read: () => Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])),
-    field: el('div', { class: 'field' }, [el('label', { text: 'Delay for usage' }), grid, note, thresholdsNote]),
+    follow: (next) => {
+      fallback = { ...next };
+      for (const [id, setting] of boxes) setting.follow(Boolean(fallback[id]));
+    },
+    read: () => Object.fromEntries([...boxes].map(([id, setting]) => [id, setting.read()])),
+    /** The boxes set apart from the default, as [label, ticked] pairs. */
+    own: () => categories.filter((category) => boxes.get(category.id)?.isOwn()).map((category) => [category.label, boxes.get(category.id).read()]),
+    setting: (id) => boxes.get(id) ?? null,
+    field: el('div', { class: 'field' }, [el('label', { text: 'Delay for usage' }), grid, brief ? null : note, brief ? null : thresholdsNote]),
   };
 }
 
@@ -1437,65 +1565,122 @@ function usageDelayPicker(selected) {
  * A one-time execution runs once, so its worktree would only ever be left
  * behind: the clean up box is ticked and locked, and the server forces it too.
  */
-function worktreePicker(job, { id = null, oneTime = false } = {}) {
-  const useWorktree = el('input', { type: 'checkbox' });
-  useWorktree.checked = Boolean(job?.useWorktree);
-  const cleanup = el('input', { type: 'checkbox' });
-  cleanup.checked = oneTime || Boolean(job?.cleanupWorktree);
-  cleanup.disabled = oneTime;
+function worktreePicker({ id = null, oneTime = false, own = {}, inherited = {}, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
+  const useWorktree = followCheck('Use worktree', {
+    own: own.useWorktree ?? null,
+    inherited: Boolean(inherited.useWorktree),
+    follow,
+    onChange: (value) => onChange('useWorktree', value),
+  });
+  const cleanup = followCheck('Clean up worktree after execution', {
+    own: oneTime ? true : (own.cleanupWorktree ?? null),
+    inherited: Boolean(inherited.cleanupWorktree),
+    follow: oneTime ? null : follow,
+    onChange: (value) => onChange('cleanupWorktree', value),
+  });
+  if (oneTime) {
+    cleanup.box.disabled = true;
+    cleanup.box.closest('label').title = 'One-time executions always clean up';
+  }
+  const note = el('div', { class: 'hint warn', hidden: 'hidden' });
 
   const code = (text) => el('span', { class: 'mono', text });
 
   return {
-    read: () => ({ useWorktree: useWorktree.checked, cleanupWorktree: cleanup.checked }),
+    useWorktree,
+    cleanup,
+    /** Says why Use worktree is off, or clears that when given nothing. */
+    explain: (text) => {
+      note.textContent = text ?? '';
+      note.hidden = !text;
+    },
+    read: () => ({ useWorktree: useWorktree.read(), cleanupWorktree: oneTime ? true : cleanup.read() }),
+    follow: (next) => {
+      useWorktree.follow(Boolean(next?.useWorktree));
+      if (!oneTime) cleanup.follow(Boolean(next?.cleanupWorktree));
+    },
     field: el('div', { class: 'field' }, [
       el('label', { text: 'Worktree' }),
-      el('label', { class: 'check' }, [useWorktree, 'Use worktree']),
-      el('label', { class: 'check', title: oneTime ? 'One-time executions always clean up' : null }, [
-        cleanup,
-        'Clean up worktree after execution',
-      ]),
-      el('div', { class: 'hint' }, [
-        'With Use worktree on, each run starts Claude in a git worktree named after this job\'s ID',
-        id ? [' (', code(id), ')'] : ', given when it is first saved',
-        '. The name stays the same between executions, so without clean up every execution reuses one worktree. ',
-        'Using a worktree adds a little spin-up time to each execution, and cleaning up adds tear-down time. ',
-        'One-time executions always clean up.',
-      ].flat()),
+      useWorktree.row,
+      cleanup.row,
+      note,
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            'With Use worktree on, each run starts Claude in a git worktree named after this job\'s ID',
+            id ? [' (', code(id), ')'] : ', given when it is first saved',
+            '. The name stays the same between executions, so without clean up every execution reuses one worktree. ',
+            'Using a worktree adds a little spin-up time to each execution, and cleaning up adds tear-down time. ',
+            'One-time executions always clean up.',
+          ].flat()),
       el('div', { class: 'hint warn', text: 'Clean up force-removes the worktree after each execution. Uncommitted files in it are not kept.' }),
-      el('div', { class: 'hint' }, [
-        'The default ',
-        code('.worktreeinclude'),
-        ', which lists the files copied into new worktrees, is set on the ',
-        // A new tab, so following it does not throw away what is typed in the form.
-        el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
-        '.',
-      ]),
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            'The default ',
+            code('.worktreeinclude'),
+            ', which lists the files copied into new worktrees, is set on the ',
+            // A new tab, so following it does not throw away what is typed in the form.
+            el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
+            '.',
+          ]),
+    ]),
+  };
+}
+
+/** The Retrospective box both job forms share. */
+function retrospectivePicker({ own = null, inherited = false, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
+  const box = followCheck('Run a retrospective at the end of each execution', { own, inherited, follow, onChange });
+  return {
+    ...box,
+    read: () => ({ retrospective: box.read() }),
+    field: el('div', { class: 'field' }, [
+      el('label', { text: 'Retrospective' }),
+      box.row,
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            "Adds the retrospective prompt to the end of this job's prompt, so Claude reviews the run once the task is done. ",
+            "A retrospective with something in it is written at the end of the run's log, marked in the run list, and sent as a notification. ",
+            'One with nothing to report leaves no trace. The prompt is set on the ',
+            el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
+            '.',
+          ]),
     ]),
   };
 }
 
 /**
- * The Retrospective box both job forms share. Off unless the job already has
- * it on, so a new job starts without one.
+ * The six job defaults as a block of their own: the Settings page's New job
+ * defaults, and each node's own version of them. `own` is what is set here and
+ * `inherited` what shows through where nothing is; `save` gets one change at a
+ * time, shaped as the API takes it.
  */
-function retrospectivePicker(job) {
-  const box = el('input', { type: 'checkbox' });
-  box.checked = Boolean(job?.retrospective);
-  return {
-    read: () => ({ retrospective: box.checked }),
-    field: el('div', { class: 'field' }, [
-      el('label', { text: 'Retrospective' }),
-      el('label', { class: 'check' }, [box, 'Run a retrospective at the end of each execution']),
-      el('div', { class: 'hint' }, [
-        "Adds the retrospective prompt to the end of this job's prompt, so Claude reviews the run once the task is done. ",
-        "A retrospective with something in it is written at the end of the run's log, marked in the run list, and sent as a notification. ",
-        'One with nothing to report leaves no trace. The prompt is set on the ',
-        el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
-        '.',
-      ]),
-    ]),
-  };
+function jobDefaultsParts({ own = {}, inherited = {}, follow = null, save }) {
+  const worktree = worktreePicker({
+    own,
+    inherited,
+    follow,
+    brief: true,
+    onChange: (key, value) => save({ [key]: value }),
+  });
+  const model = modelPicker({ own: own.model ?? null, inherited: inherited.model ?? '', follow, onChange: (value) => save({ model: value }) });
+  const effort = effortPicker({ own: own.effort ?? null, inherited: inherited.effort ?? '', follow, onChange: (value) => save({ effort: value }) });
+  const usageDelay = usageDelayPicker({
+    own: own.usageDelay ?? {},
+    inherited: inherited.usageDelay ?? {},
+    follow,
+    brief: true,
+    onChange: (id, value) => save({ usageDelay: { [id]: value } }),
+  });
+  const retrospective = retrospectivePicker({
+    own: own.retrospective ?? null,
+    inherited: Boolean(inherited.retrospective),
+    follow,
+    brief: true,
+    onChange: (value) => save({ retrospective: value }),
+  });
+  return { usageDelay, parts: [worktree.field, model.field, effort.field, usageDelay.field, retrospective.field] };
 }
 
 /**
@@ -1591,6 +1776,44 @@ function scheduledAtPicker(input) {
     el('div', { class: 'hint', text: 'Your local time. It runs once, then stays in the list as history.' }),
     preview,
   ]);
+}
+
+/**
+ * The six settings a job can leave to its node's defaults, each showing what it
+ * will use. What the job has not set follows the node it runs on, so picking
+ * another node moves them with it; `followNode` takes that node's listing.
+ */
+function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false } = {}) {
+  const own = job ?? {};
+  const inherited = clusterDefaults;
+  const worktree = worktreePicker({ id, oneTime, own, inherited });
+  const model = modelPicker({ own: own.model ?? null, inherited: inherited.model ?? '' });
+  const effort = effortPicker({ own: own.effort ?? null, inherited: inherited.effort ?? '' });
+  const usageDelay = usageDelayPicker({ own: own.usageDelay ?? {}, inherited: inherited.usageDelay ?? {} });
+  const retrospective = retrospectivePicker({ own: own.retrospective ?? null, inherited: Boolean(inherited.retrospective) });
+  return {
+    worktree,
+    model,
+    effort,
+    usageDelay,
+    retrospective,
+    followNode: (listing) => {
+      const next = listing?.config?.jobDefaults ?? clusterDefaults;
+      worktree.follow(next);
+      model.follow(next.model ?? '');
+      effort.follow(next.effort ?? '');
+      usageDelay.follow(next.usageDelay ?? {});
+      retrospective.follow(Boolean(next.retrospective));
+      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+    },
+    read: () => ({
+      ...worktree.read(),
+      model: model.read(),
+      effort: effort.read(),
+      usageDelay: usageDelay.read(),
+      ...retrospective.read(),
+    }),
+  };
 }
 
 /**
@@ -1714,15 +1937,11 @@ async function renderForm(id, duplicateOf) {
   inputs.isActive.checked = cron ? Boolean(cron.isActive) : true;
 
   const project = projectPicker(cron?.projectId);
-  const worktree = worktreePicker(cron, { id });
-  const retrospective = retrospectivePicker(cron);
-  const model = modelPicker(cron?.model ?? '');
-  const effort = effortPicker(cron?.effort ?? '');
-  const usageDelay = usageDelayPicker(cron?.usageDelay ?? null);
+  const settings = jobSettingPickers(cron, defaults.jobDefaults, { id });
   const node = nodePicker(cron?.nodeId ?? '', {
     onChange: (listing) => {
       followNodeDirectory(inputs.workingDirectory, listing, Boolean(cron));
-      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+      settings.followNode(listing);
       schedule.refresh();
     },
   });
@@ -1747,12 +1966,8 @@ async function renderForm(id, duplicateOf) {
       projectId: project.read(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
-      ...worktree.read(),
-      model: model.read(),
-      effort: effort.read(),
-      usageDelay: usageDelay.read(),
+      ...settings.read(),
       prompt: inputs.prompt.value,
-      ...retrospective.read(),
       isActive: inputs.isActive.checked,
     };
     try {
@@ -1799,13 +2014,13 @@ async function renderForm(id, duplicateOf) {
       schedule.field,
       node.field,
       directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
-      worktree.field,
-      model.field,
-      effort.field,
-      usageDelay.field,
+      settings.worktree.field,
+      settings.model.field,
+      settings.effort.field,
+      settings.usageDelay.field,
       field('Prompt', inputs.prompt),
       commandButtons(defaults.commands),
-      retrospective.field,
+      settings.retrospective.field,
       el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
@@ -1883,17 +2098,13 @@ async function renderExecutionForm(id, duplicateOf) {
   inputs.isActive.checked = execution ? Boolean(execution.isActive) : true;
 
   const project = projectPicker(execution?.projectId);
-  const worktree = worktreePicker(execution, { id, oneTime: true });
+  const settings = jobSettingPickers(execution, defaults.jobDefaults, { id, oneTime: true });
   const node = nodePicker(execution?.nodeId ?? '', {
     onChange: (listing) => {
       followNodeDirectory(inputs.workingDirectory, listing, Boolean(execution));
-      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+      settings.followNode(listing);
     },
   });
-  const retrospective = retrospectivePicker(execution);
-  const model = modelPicker(execution?.model ?? '');
-  const effort = effortPicker(execution?.effort ?? '');
-  const usageDelay = usageDelayPicker(execution?.usageDelay ?? null);
 
   const showError = (message) => {
     errorBox.textContent = message;
@@ -1914,12 +2125,8 @@ async function renderExecutionForm(id, duplicateOf) {
       projectId: project.read(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
-      ...worktree.read(),
-      model: model.read(),
-      effort: effort.read(),
-      usageDelay: usageDelay.read(),
+      ...settings.read(),
       prompt: inputs.prompt.value,
-      ...retrospective.read(),
       isActive: inputs.isActive.checked,
     };
     if (typed && Number.isNaN(new Date(typed).getTime())) return showError('Date and time is not a valid date.');
@@ -1967,13 +2174,13 @@ async function renderExecutionForm(id, duplicateOf) {
       scheduledAtPicker(inputs.scheduledAt),
       node.field,
       directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
-      worktree.field,
-      model.field,
-      effort.field,
-      usageDelay.field,
+      settings.worktree.field,
+      settings.model.field,
+      settings.effort.field,
+      settings.usageDelay.field,
       field('Prompt', inputs.prompt),
       commandButtons(defaults.commands),
-      retrospective.field,
+      settings.retrospective.field,
       el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
@@ -2084,7 +2291,7 @@ function versionText(node, hubCommit) {
  * a single local node shows them on the Settings page and any other setup shows
  * them on the node's own page.
  */
-function nodeSettingsParts(node, config) {
+function nodeSettingsParts(node, config, clusterJobDefaults = {}) {
   const url = `/api/nodes/${encodeURIComponent(node.id)}/settings`;
   const save = async (patch, description) => {
     try {
@@ -2272,8 +2479,32 @@ function nodeSettingsParts(node, config) {
     save({ defaultWorkingDirectory: value }, `New jobs on ${node.name} start in ${value}`);
   });
 
+  // ---- job defaults ----
+  // Built only for the node's own page: each follows the cluster's until set
+  // here, and the node's listing carries what it sets itself.
+  const jobDefaults = () => {
+    const defaults = jobDefaultsParts({
+      own: node.jobDefaultOverrides ?? {},
+      inherited: clusterJobDefaults,
+      follow: NODE_FOLLOW,
+      save: (patch) => save({ jobDefaults: patch }, `New job defaults on ${node.name} saved`),
+    });
+    defaults.usageDelay.setThresholds(node.config.usageDelayThresholds);
+    return [
+      el('h3', { text: 'New job defaults' }),
+      el('div', { class: 'hint' }, [
+        'What a job on this node uses for each of these when its form leaves it alone. ',
+        'Each follows the New job defaults on the ',
+        el('a', { href: '#/settings', text: 'Settings page' }),
+        ' until it is changed here; Use the cluster default puts it back.',
+      ]),
+      ...defaults.parts,
+    ];
+  };
+
   return {
     paintQueue,
+    jobDefaults,
     limit: [
       el('h3', { text: 'Limit concurrent jobs' }),
       el('div', { class: 'preset-row' }, [
@@ -2562,6 +2793,15 @@ async function renderSettings() {
     saveSettings({ updateCheckIntervalHours: hours }, `Checking every ${hours}h`);
   });
 
+  // ---- new job defaults ----
+  const clusterDefaults = jobDefaultsParts({
+    own: settings.jobDefaults ?? {},
+    inherited: settings.jobDefaults ?? {},
+    follow: null,
+    save: (patch) => saveSettings({ jobDefaults: patch }, 'New job defaults saved'),
+  });
+  if (local) clusterDefaults.usageDelay.setThresholds(soleLocal.config.usageDelayThresholds);
+
   // ---- default prompt ----
   const defaultPrompt = el('textarea', {
     class: 'compact',
@@ -2744,6 +2984,16 @@ async function renderSettings() {
     ]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Job Settings' }),
+      el('section', { class: 'settings-section', id: 'job-defaults', 'aria-labelledby': 'job-defaults-title' }, [
+        el('h3', { id: 'job-defaults-title', text: 'New job defaults' }),
+        el('div', { class: 'hint' }, [
+          'What a cron or one-time execution uses for each of these when its form leaves it alone. ',
+          'A job that leaves one alone follows it, so a change here reaches that job from its next run; a job that set its own keeps it. ',
+          'Each node can change any of them for the jobs it runs, on its page under Nodes.',
+        ]),
+        ...clusterDefaults.parts,
+      ]),
+      divider(),
       ...(local
         ? [...local.usage, divider(), ...local.directory, divider()]
         : [
@@ -2832,8 +3082,12 @@ async function renderSettings() {
 }
 
 async function renderNode(id) {
-  const [node, config] = await Promise.all([api(`/api/nodes/${encodeURIComponent(id)}`), api('/api/config')]);
-  const parts = nodeSettingsParts(node, config);
+  const [node, config, settings] = await Promise.all([
+    api(`/api/nodes/${encodeURIComponent(id)}`),
+    api('/api/config'),
+    api('/api/settings').catch(() => ({})),
+  ]);
+  const parts = nodeSettingsParts(node, config, settings.jobDefaults ?? {});
   const statusBody = el('div', {});
 
   const paintStatus = async () => {
@@ -2905,6 +3159,8 @@ async function renderNode(id) {
       ...parts.directory,
       el('div', { class: 'card-divider' }),
       ...parts.usage,
+      el('div', { class: 'card-divider' }),
+      ...parts.jobDefaults(),
     ]),
   );
 

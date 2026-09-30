@@ -10,6 +10,7 @@ import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
+import { readJobDefaults } from './jobDefaults.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
@@ -20,6 +21,8 @@ import type {
   ConcurrencyInfo,
   Cron,
   Execution,
+  JobDefaults,
+  JobDefaultsOverride,
   JobPatch,
   JobView,
   LogChunk,
@@ -97,6 +100,8 @@ export interface NodeListing {
   clockTimezone: string | null;
   config: EffectiveNodeConfig;
   customized: Array<keyof NodeConfig>;
+  /** The job defaults this node sets itself; the rest follow the cluster's. */
+  jobDefaultOverrides: JobDefaultsOverride;
 }
 
 export interface NodeDetail extends NodeListing {
@@ -290,7 +295,12 @@ class Hub {
 
   public nodeConfig(id: string): EffectiveNodeConfig {
     const node = this.nodes.get(id);
-    return effectiveNodeConfig(node?.config ?? {}, node?.processors ?? DEFAULT_MAX_CONCURRENT_JOBS);
+    return effectiveNodeConfig(node?.config ?? {}, node?.processors ?? DEFAULT_MAX_CONCURRENT_JOBS, readJobDefaults(this.settings.jobDefaults));
+  }
+
+  /** What a job leaves to the defaults gets from the node it runs on. */
+  public jobDefaultsFor(job: Cron | Execution): JobDefaults {
+    return this.nodeConfig(this.nodeIdFor(job)).jobDefaults;
   }
 
   /** The zone a node's clock is set to, which a cron saved without one fires in. */
@@ -335,6 +345,7 @@ class Hub {
       clockTimezone: node.timezone ?? null,
       config: this.nodeConfig(node.id),
       customized: Object.keys(node.config) as Array<keyof NodeConfig>,
+      jobDefaultOverrides: node.config.jobDefaults ?? {},
     };
   }
 
@@ -624,6 +635,7 @@ class Hub {
         usageDelayThresholds: this.nodeConfig(node.id).usageDelayThresholds,
         defaultWorktreeInclude: this.settings.defaultWorktreeInclude ?? '',
         retrospectivePrompt: this.settings.retrospectivePrompt ?? '',
+        jobDefaults: this.nodeConfig(node.id).jobDefaults,
       },
       pause: this.pauseState,
       commands,

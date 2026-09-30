@@ -26,16 +26,18 @@ import { DEFAULT_MAX_CONCURRENT_JOBS } from './settings.js';
 import { validateCronExpression } from './schedule.js';
 import { RetrospectiveSplitter, retrospectiveAddendum, retrospectivePrompt, retrospectiveSection, substantiveRetrospective } from './retrospective.js';
 import { WORKTREE_INCLUDE_FILE, pathInRepo, removeWorktree, writeWorktreeInclude } from './worktree.js';
+// Every job here comes from the node's cache with its defaults filled in, so
+// these names are the resolved shapes, and each setting is a plain value.
 import type {
   BusyJob,
-  Cron as CronRecord,
+  RunnableCron as CronRecord,
   ConcurrencyInfo,
   DelayEntry,
   DelayOutlook,
-  Execution,
+  RunnableExecution as Execution,
   ExecutionStatus,
-  Job,
-  JobBase,
+  RunnableJob as Job,
+  RunnableJobBase as JobBase,
   JobKind,
   LifetimeStats,
   PauseInfo,

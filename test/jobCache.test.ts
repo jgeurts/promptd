@@ -4,7 +4,7 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import type * as JobCache from '../src/jobCache.js';
-import type { Cron, Execution } from '../src/types.js';
+import type { Cron, Execution, JobDefaults } from '../src/types.js';
 
 let cache: typeof JobCache;
 
@@ -41,7 +41,25 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-const settings = { maxConcurrentJobs: 2, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: '', retrospectivePrompt: '', timezone: null };
+// Written out rather than imported: importing any module that reads the paths
+// before PROMPTD_NODE_HOME is set would point the cache at the real home.
+const BUILT_IN_JOB_DEFAULTS: JobDefaults = {
+  useWorktree: true,
+  cleanupWorktree: true,
+  retrospective: false,
+  model: '',
+  effort: '',
+  usageDelay: { session: true, weekly: false, fable: false, credits: false },
+};
+
+const settings = {
+  maxConcurrentJobs: 2,
+  usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 },
+  defaultWorktreeInclude: '',
+  retrospectivePrompt: '',
+  jobDefaults: BUILT_IN_JOB_DEFAULTS,
+  timezone: null,
+};
 
 describe('jobCache', () => {
   it('reports a change only when the hub sends something new', () => {
@@ -66,6 +84,35 @@ describe('jobCache', () => {
     expect(written.lastRunStatus).toBe('succeeded');
     expect(await cache.getExecution('e1')).toBeNull();
     expect(cache.pendingPatches().at(-1)).toMatchObject({ kind: 'execution', id: 'e1' });
+  });
+
+  it('fills in what a job leaves to the defaults from the ones in force when it is read', async () => {
+    const follows = execution({
+      id: 'follows',
+      useWorktree: null,
+      model: null,
+      effort: 'high',
+      usageDelay: { credits: null, fable: null, session: null, weekly: true },
+    });
+    const work = (jobDefaults: JobDefaults) => ({ crons: [], executions: [follows], settings: { ...settings, jobDefaults } });
+
+    cache.replaceJobs(work(BUILT_IN_JOB_DEFAULTS));
+    expect(await cache.getExecution('follows')).toMatchObject({
+      useWorktree: true,
+      model: '',
+      effort: 'high',
+      usageDelay: { credits: false, fable: false, session: true, weekly: true },
+    });
+
+    // A changed default reaches the settings the job left alone, and not the ones it set.
+    cache.replaceJobs(work({ ...BUILT_IN_JOB_DEFAULTS, useWorktree: false, model: 'sonnet', effort: 'low', usageDelay: { credits: true, fable: false, session: false, weekly: false } }));
+    expect(await cache.getExecution('follows')).toMatchObject({
+      useWorktree: false,
+      model: 'sonnet',
+      effort: 'high',
+      usageDelay: { credits: true, fable: false, session: false, weekly: true },
+    });
+    expect((await cache.listExecutions())[0]).toMatchObject({ model: 'sonnet' });
   });
 
   it('adds nothing to lifetime counters the hub has not backfilled', async () => {

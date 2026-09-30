@@ -70,7 +70,13 @@ async function run(id: string, reply: string): Promise<{ log: string; types: str
   cache.replaceJobs({
     crons: [cron(id)],
     executions: [],
-    settings: { maxConcurrentJobs: 0, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: '', retrospectivePrompt: 'Say what went well.' },
+    settings: {
+      maxConcurrentJobs: 0,
+      usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 },
+      defaultWorktreeInclude: '',
+      retrospectivePrompt: 'Say what went well.',
+      jobDefaults: { useWorktree: true, cleanupWorktree: true, retrospective: false, model: '', effort: '', usageDelay: { session: true, weekly: false, fable: false, credits: false } },
+    },
   });
   const seen: BusEvent[] = [];
   const onEvent = (event: BusEvent): void => {

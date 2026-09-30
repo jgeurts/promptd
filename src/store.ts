@@ -5,7 +5,7 @@ import { db } from './db.js';
 import { cronToRow, rowToCron } from './jobRows.js';
 import { LOGS_DIR } from './paths.js';
 import { hasRetrospectiveSection } from './retrospective.js';
-import { normalizeUsageDelay } from './usage.js';
+import { jobSettingOverrides } from './jobDefaults.js';
 import type { Cron, CronInput } from './types.js';
 
 export interface LogFile {
@@ -56,12 +56,7 @@ export async function createCron(input: CronInput): Promise<Cron> {
     cron: input.cron,
     timezone: input.timezone ?? '',
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
-    cleanupWorktree: Boolean(input.cleanupWorktree),
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
+    ...jobSettingOverrides(input),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
@@ -86,12 +81,7 @@ export async function updateCron(id: string, input: CronInput): Promise<Cron | n
     cron: input.cron,
     timezone: input.timezone ?? '',
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
-    cleanupWorktree: Boolean(input.cleanupWorktree),
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
+    ...jobSettingOverrides(input),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',

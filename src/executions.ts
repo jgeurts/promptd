@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { db } from './db.js';
 import { executionToRow, rowToExecution } from './jobRows.js';
-import { normalizeUsageDelay } from './usage.js';
+import { jobSettingOverrides } from './jobDefaults.js';
 import type { Execution, ExecutionInput, ExecutionStatus } from './types.js';
 
 export interface ExecutionPage {
@@ -83,12 +83,9 @@ export async function createExecution(input: ExecutionInput): Promise<Execution>
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
+    ...jobSettingOverrides(input),
+    // A job that runs once would only leave its worktree behind.
     cleanupWorktree: true,
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
@@ -125,12 +122,9 @@ export async function updateExecution(id: string, input: ExecutionInput): Promis
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
+    ...jobSettingOverrides(input),
+    // A job that runs once would only leave its worktree behind.
     cleanupWorktree: true,
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',

@@ -1,11 +1,29 @@
 import { describe, expect, it } from 'vitest';
+import { BUILT_IN_JOB_DEFAULTS } from '../src/jobDefaults.js';
 import { NodeConfigError, effectiveNodeConfig, patchNodeConfig, readNodeConfig } from '../src/nodeConfig.js';
 
 const DEFAULTS = { session: 90, weekly: 95, fable: 95, credits: 90 };
 
 describe('node config', () => {
   it('falls back to the node processor count, default thresholds and home', () => {
-    expect(effectiveNodeConfig({}, 10)).toEqual({ maxConcurrentJobs: 10, usageDelayThresholds: DEFAULTS, defaultWorkingDirectory: '~/' });
+    expect(effectiveNodeConfig({}, 10)).toMatchObject({ maxConcurrentJobs: 10, usageDelayThresholds: DEFAULTS, defaultWorkingDirectory: '~/' });
+  });
+
+  it('lays its own job defaults over the cluster\'s, and null puts one back', () => {
+    const cluster = { ...BUILT_IN_JOB_DEFAULTS, model: 'opus' };
+    const config = patchNodeConfig({}, { jobDefaults: { model: 'sonnet', usageDelay: { weekly: true } } });
+    expect(config).toEqual({ jobDefaults: { model: 'sonnet', usageDelay: { weekly: true } } });
+    expect(effectiveNodeConfig(config, 4, cluster).jobDefaults).toMatchObject({ model: 'sonnet', useWorktree: true, usageDelay: { session: true, weekly: true } });
+
+    const reset = patchNodeConfig(config, { jobDefaults: { model: null } });
+    expect(effectiveNodeConfig(reset, 4, cluster).jobDefaults).toMatchObject({ model: 'opus', usageDelay: { weekly: true } });
+    expect(patchNodeConfig(reset, { jobDefaults: { usageDelay: { weekly: null } } })).toEqual({});
+    expect(patchNodeConfig(config, { jobDefaults: null })).toEqual({});
+  });
+
+  it('refuses a job default that is not one', () => {
+    expect(() => patchNodeConfig({}, { jobDefaults: { useWorktree: 'yes' } })).toThrow(NodeConfigError);
+    expect(() => patchNodeConfig({}, { jobDefaults: { effort: 'enormous' } })).toThrow(NodeConfigError);
   });
 
   it('keeps the thresholds a patch leaves out, and drops a set back at the defaults', () => {

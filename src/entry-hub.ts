@@ -8,7 +8,7 @@ import { bus, sseInit, sseSend } from './events.js';
 import { assertAuthConfigured, authRouter, requireLogin } from './auth.js';
 import { databaseTarget, migrate, openDatabase } from './db.js';
 import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs } from './paths.js';
-import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
+import { EFFORT_LEVELS, PAUSE_OPTIONS, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
 import { HubError, hub } from './hub.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
@@ -17,15 +17,16 @@ import {
   deleteExecution,
   getExecution,
   pageExecutions,
-  parseScheduledAt,
   patchExecution,
   updateExecution,
 } from './executions.js';
+import { readCronForm, readExecutionForm, withEffective } from './jobForms.js';
+import { JobDefaultsError, patchJobDefaults } from './jobDefaults.js';
 import { feedbackExecution, readFeedbackForm } from './feedback.js';
 import { createProject, deleteProject, getProject, listProjects, updateProject } from './projects.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './settings.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
-import { normalizeUsageDelay, usageDelayOptions } from './usage.js';
+import { usageDelayOptions } from './usage.js';
 import { lifetimeStats } from './stats.js';
 import { MAX_NOTIFICATIONS, PAGE_SIZE, notificationCenter } from './notifications.js';
 import {
@@ -42,7 +43,7 @@ import {
   updateCron,
 } from './store.js';
 import { DEFAULT_RETROSPECTIVE_PROMPT } from './retrospective.js';
-import type { BusEvent, Cron, CronInput, Execution, ExecutionInput, JobKind, ProjectInput, Settings } from './types.js';
+import type { BusEvent, Cron, Execution, JobKind, ProjectInput, Settings } from './types.js';
 
 /** When this process came up, which is what the Settings page calls the last boot. */
 const STARTED_AT = new Date().toISOString();
@@ -85,94 +86,6 @@ app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html'
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(PUBLIC_DIR));
 
-/** Validates and normalizes the cron form payload. */
-function readForm(body: Record<string, unknown> | undefined): { errors: string[]; value: CronInput } {
-  const name = String(body?.name ?? '').trim();
-  const expression = String(body?.cron ?? '').trim();
-  const errors: string[] = [];
-  if (!name) errors.push('Name is required.');
-  if (name.length > 120) errors.push('Name must be 120 characters or fewer.');
-  if (!expression) errors.push('Cron is required.');
-  else {
-    const check = validateCronExpression(expression);
-    if (!check.ok) errors.push(`Cron expression is not valid: ${check.error}`);
-  }
-  if (!String(body?.prompt ?? '').trim()) errors.push('Prompt is required.');
-  const effort = String(body?.effort ?? '').trim();
-  if (effort && !isEffortLevel(effort)) {
-    errors.push(`Effort must be one of ${EFFORT_LEVELS.map((level) => level.id).join(', ')}.`);
-  }
-  const timezone = String(body?.timezone ?? '').trim();
-  if (timezone && !isTimeZone(timezone)) errors.push(`${timezone} is not a time zone.`);
-  return {
-    errors,
-    value: {
-      name,
-      description: String(body?.description ?? '').trim(),
-      cron: expression,
-      timezone,
-      workingDirectory: String(body?.workingDirectory ?? '').trim(),
-      useWorktree: Boolean(body?.useWorktree),
-      cleanupWorktree: Boolean(body?.cleanupWorktree),
-      retrospective: Boolean(body?.retrospective),
-      model: String(body?.model ?? '').trim(),
-      effort,
-      // Unknown keys are dropped and missing ones read as off, so the cron file
-      // always carries the full set whatever the client sent.
-      usageDelay: normalizeUsageDelay(body?.usageDelay),
-      prompt: String(body?.prompt ?? ''),
-      isActive: Boolean(body?.isActive),
-      nodeId: String(body?.nodeId ?? '').trim(),
-      projectId: String(body?.projectId ?? '').trim() || null,
-    },
-  };
-}
-
-/**
- * Validates and normalizes the one-time execution form payload.
- *
- * The same fields as a cron, with a date where the expression was. A date
- * already in the past is accepted rather than rejected: the same rule that runs
- * a trigger missed over a restart runs this one as soon as it is saved, and a
- * form that refused it would be arguing with a clock the user can see.
- */
-function readExecutionForm(body: Record<string, unknown> | undefined): { errors: string[]; value: ExecutionInput } {
-  const name = String(body?.name ?? '').trim();
-  const errors: string[] = [];
-  if (!name) errors.push('Name is required.');
-  if (name.length > 120) errors.push('Name must be 120 characters or fewer.');
-  const scheduledAt = parseScheduledAt(body?.scheduledAt);
-  if (!String(body?.scheduledAt ?? '').trim()) errors.push('Date and time are required.');
-  else if (!scheduledAt) errors.push('Date and time is not a valid date.');
-  if (!String(body?.prompt ?? '').trim()) errors.push('Prompt is required.');
-  const effort = String(body?.effort ?? '').trim();
-  if (effort && !isEffortLevel(effort)) {
-    errors.push(`Effort must be one of ${EFFORT_LEVELS.map((level) => level.id).join(', ')}.`);
-  }
-  return {
-    errors,
-    value: {
-      name,
-      description: String(body?.description ?? '').trim(),
-      // Stored as UTC ISO, whatever the browser sent, so the record reads the
-      // same wherever it is opened from.
-      scheduledAt: scheduledAt ? scheduledAt.toISOString() : null,
-      workingDirectory: String(body?.workingDirectory ?? '').trim(),
-      useWorktree: Boolean(body?.useWorktree),
-      // Whatever was sent: a job that runs once would only leave its worktree behind.
-      cleanupWorktree: true,
-      retrospective: Boolean(body?.retrospective),
-      model: String(body?.model ?? '').trim(),
-      effort,
-      usageDelay: normalizeUsageDelay(body?.usageDelay),
-      prompt: String(body?.prompt ?? ''),
-      isActive: Boolean(body?.isActive),
-      nodeId: String(body?.nodeId ?? '').trim(),
-      projectId: String(body?.projectId ?? '').trim() || null,
-    },
-  };
-}
-
 async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
   if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');
 }
@@ -188,10 +101,7 @@ function readProjectForm(body: Record<string, unknown> | undefined): { errors: s
 function decorate(cron: Cron) {
   const view = hub.jobView(cron);
   return {
-    ...cron,
-    // Always the full set, so a cron file written before this setting existed
-    // still answers every checkbox the form draws.
-    usageDelay: normalizeUsageDelay(cron.usageDelay),
+    ...withEffective(cron, hub.jobDefaultsFor(cron)),
     node: hub.nodeSummary(cron),
     nextRunAt: view?.nextRunAt ?? null,
     isRunning: Boolean(view?.currentRun),
@@ -211,9 +121,8 @@ function decorateExecution(execution: Execution) {
   const view = hub.jobView(execution);
   const armed = execution.isActive && execution.status === 'scheduled';
   return {
-    ...execution,
+    ...withEffective(execution, hub.jobDefaultsFor(execution)),
     kind: 'execution',
-    usageDelay: normalizeUsageDelay(execution.usageDelay),
     node: hub.nodeSummary(execution),
     nextRunAt: armed ? execution.scheduledAt : null,
     // Its time has passed and nothing has run it. On the page that is the gap
@@ -308,7 +217,7 @@ app.get('/api/nodes/:id', (req, res) => {
   res.json({ ...detail, hubCommit: runningCommit });
 });
 
-/** A node's own job limit, usage thresholds and default working directory. Null resets one to the node's default. */
+/** A node's own job limit, usage thresholds, default working directory and job defaults. Null resets one to the node's default. */
 app.put('/api/nodes/:id/settings', async (req: JsonRequest, res, next) => {
   try {
     res.json(await hub.setNodeConfig(String(req.params.id), (req.body ?? {}) as Record<string, unknown>));
@@ -400,11 +309,21 @@ app.put('/api/settings', async (req: JsonRequest, res, next) => {
       if (!hub.nodes.has(id)) return res.status(400).json({ error: 'defaultNodeId must be a node that has connected' });
       patch.defaultNodeId = id;
     }
+    if ('jobDefaults' in (req.body ?? {})) {
+      // Only the keys sent change, so the page can save one field at a time.
+      try {
+        patch.jobDefaults = patchJobDefaults((await loadSettings()).jobDefaults, req.body.jobDefaults);
+      } catch (err) {
+        if (err instanceof JobDefaultsError) return res.status(400).json({ error: err.message });
+        throw err;
+      }
+    }
     const saved = await patchSettings(patch);
     // Written first, applied second: nodes pick settings up from memory, so a
     // save that did not reach the disk must not change what is running.
     hub.setSettings(saved);
-    if ('defaultNodeId' in patch) hub.jobsChanged();
+    // What a job shows as its own settings depends on both, so open pages redraw.
+    if ('defaultNodeId' in patch || 'jobDefaults' in patch) hub.jobsChanged();
     res.json(saved);
   } catch (err) {
     next(err);
@@ -527,7 +446,7 @@ app.get('/api/crons/:id', async (req, res, next) => {
 
 app.post('/api/crons', async (req, res, next) => {
   try {
-    const { errors, value } = readForm(req.body);
+    const { errors, value } = readCronForm(req.body);
     await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const cron = await createCron(value);
@@ -540,7 +459,7 @@ app.post('/api/crons', async (req, res, next) => {
 
 app.put('/api/crons/:id', async (req, res, next) => {
   try {
-    const { errors, value } = readForm(req.body);
+    const { errors, value } = readCronForm(req.body);
     await checkProject(value.projectId, errors);
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const cron = await updateCron(req.params.id, value);
