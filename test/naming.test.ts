@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { readCronForm, readExecutionForm } from '../src/jobForms.js';
-import { MAX_TITLE_LENGTH, TITLE_INSTRUCTION, cleanTitle, nameFromPrompt, titlePrompt, titleToApply } from '../src/naming.js';
+import { MAX_TITLE_LENGTH, TITLE_INSTRUCTION, TITLE_SYSTEM_PROMPT, cleanTitle, nameFromPrompt, titlePrompt, titleToApply } from '../src/naming.js';
 
 describe('nameFromPrompt', () => {
   it('takes the first sentence, cut to about six words', () => {
@@ -28,10 +28,10 @@ describe('nameFromPrompt', () => {
 });
 
 describe('the title from claude', () => {
-  it('is asked for with the fixed instruction ahead of the prompt, cut to 4,000 characters', () => {
+  it('is asked for with the prompt, cut to 4,000 characters, fenced as the task to name', () => {
     const asked = titlePrompt('x'.repeat(5000));
-    expect(asked.startsWith(`${TITLE_INSTRUCTION}\n\n`)).toBe(true);
-    expect(asked.length).toBe(TITLE_INSTRUCTION.length + 2 + 4000);
+    expect(asked).toBe(`<task>\n${'x'.repeat(4000)}\n</task>`);
+    expect(TITLE_SYSTEM_PROMPT.startsWith(TITLE_INSTRUCTION)).toBe(true);
   });
 
   it('is tidied of quotes and markdown, and refused when empty or too long', () => {

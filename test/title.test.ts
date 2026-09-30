@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { TITLE_INSTRUCTION } from '../src/naming.js';
+import { TITLE_INSTRUCTION, TITLE_SYSTEM_PROMPT } from '../src/naming.js';
 import { suggestTitle } from '../src/title.js';
 
 /**
@@ -32,12 +32,27 @@ function lastCall(): { args: string[]; cwd: string } {
 }
 
 describe('suggestTitle', () => {
-  it('asks haiku, in a folder of its own that is removed afterwards', async () => {
+  it('asks haiku with no tools, no customizations and a spending cap, in a folder of its own that is removed afterwards', async () => {
     process.env.FAKE_TITLE = '"Rotate staging keys"\n';
     delete process.env.FAKE_HANG;
     expect(await suggestTitle('Rotate the staging keys, then tell me.', { bin: claude })).toBe('Rotate staging keys');
     const { args, cwd } = lastCall();
-    expect(args).toEqual(['-p', `${TITLE_INSTRUCTION}\n\nRotate the staging keys, then tell me.`, '--model', 'haiku']);
+    expect(args).toEqual([
+      '-p',
+      '<task>\nRotate the staging keys, then tell me.\n</task>',
+      '--model',
+      'haiku',
+      '--safe-mode',
+      '--tools',
+      '',
+      '--system-prompt',
+      TITLE_SYSTEM_PROMPT,
+      '--max-budget-usd',
+      '0.02',
+    ]);
+    // The instruction is the system prompt, and the task only data in the message.
+    expect(TITLE_SYSTEM_PROMPT.startsWith(TITLE_INSTRUCTION)).toBe(true);
+    expect(args).not.toContain('--max-turns');
     expect(path.basename(cwd)).toMatch(/^promptd-title-/);
     expect(fs.existsSync(cwd)).toBe(false);
   });
