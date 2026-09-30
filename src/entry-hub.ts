@@ -86,9 +86,9 @@ app.use(requireLogin());
 app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(PUBLIC_DIR));
-// The rule a blank Name is filled by, compiled from src/naming.ts, so the form's
-// placeholder shows the very name the save will give.
-app.get('/shared/naming.js', (_req, res) => res.sendFile(path.join(BUILD_DIR, 'naming.js')));
+// Rules the job form shares with the hub, compiled from src/naming.ts and
+// src/jobFormRules.ts: the name a blank Name will get, and what a save sends.
+app.get('/shared/:module(naming|jobFormRules).js', (req, res) => res.sendFile(path.join(BUILD_DIR, `${req.params.module}.js`)));
 
 async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
   if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');

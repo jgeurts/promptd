@@ -1,3 +1,6 @@
+// What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
+import { scheduledAtForSave } from '/shared/jobFormRules.js';
+
 const view = document.getElementById('view');
 const connEl = document.getElementById('conn');
 const toastsEl = document.getElementById('toasts');
@@ -2059,6 +2062,7 @@ async function renderJobForm(kind, id, duplicateOf) {
   let schedule = null;
   let whenField;
   let asSoonAsPossible = () => false;
+  let scheduledAt = () => '';
   if (oneTime) {
     const choice = (value, text) => {
       const radio = el('input', { type: 'radio', name: 'when', value });
@@ -2075,6 +2079,8 @@ async function renderJobForm(kind, id, duplicateOf) {
       // the source's date, which is in the past and would fire on save.
       value: scheduledFieldValue(duplicateOf ? null : job?.scheduledAt),
     });
+    // What the field said on opening, so a save can tell whether it was changed.
+    const shownAtOpen = inputs.scheduledAt.value;
     const timeField = scheduledAtPicker(inputs.scheduledAt);
     timeField.classList.add('when-time');
     // A new one, or a duplicate, goes as soon as it can; an edit keeps the time it has.
@@ -2090,6 +2096,7 @@ async function renderJobForm(kind, id, duplicateOf) {
     atTime.radio.addEventListener('change', paintWhen);
     paintWhen();
     asSoonAsPossible = () => asap.radio.checked;
+    scheduledAt = () => scheduledAtForSave(duplicateOf ? null : job?.scheduledAt, shownAtOpen, inputs.scheduledAt.value);
     whenField = el('fieldset', { class: 'field when' }, [el('legend', { text: 'When' }), asap.label, asapHint, atTime.label, timeField]);
   } else {
     // Left as saved, an expression keeps the zone it was written in; any change to it is written in this browser's.
@@ -2125,7 +2132,7 @@ async function renderJobForm(kind, id, duplicateOf) {
         // As soon as possible is dated by the hub's clock; a time is sent as a
         // full instant rather than the field's bare local string, so the
         // server is not left guessing which clock it was typed on.
-        ...(asSoonAsPossible() ? { asSoonAsPossible: true } : { scheduledAt: typed ? new Date(typed).toISOString() : '' }),
+        ...(asSoonAsPossible() ? { asSoonAsPossible: true } : { scheduledAt: scheduledAt() }),
         isActive: true,
       });
     } else {
