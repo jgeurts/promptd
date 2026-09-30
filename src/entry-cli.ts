@@ -7,6 +7,7 @@ const USAGE = `usage: promptd [command]
   hub            run the hub: the web page and the jobs' storage
   node           run a node: fetches its jobs from the hub and runs them
   set-password   set the admin password (--print-hash, --clear)
+  join-command   print the command that adds another Mac as a node
   version        print the build this binary is`;
 
 const [command, ...args] = process.argv.slice(2);
@@ -25,6 +26,9 @@ switch (command) {
     break;
   case 'set-password':
     await import('./entry-set-password.js');
+    break;
+  case 'join-command':
+    await import('./entry-join.js');
     break;
   case 'version':
     console.log(BINARY_VERSION ?? 'development');

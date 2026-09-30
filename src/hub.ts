@@ -6,6 +6,8 @@ import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
+import { JoinCodes } from './joinCodes.js';
+import type { JoinCode } from './joinCodes.js';
 import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
@@ -154,6 +156,7 @@ function sameSecret(given: unknown, expected: unknown): boolean {
 class Hub {
   private token: string | null;
   private version: string | null;
+  private joinCodes: JoinCodes;
   public nodes: Map<string, HubNode>;
   private settings: Partial<Settings>;
   private pauseState: PauseState | null;
@@ -165,6 +168,7 @@ class Hub {
   public constructor() {
     this.token = null;
     this.version = null;
+    this.joinCodes = new JoinCodes();
     this.nodes = new Map();
     this.settings = {};
     this.pauseState = null;
@@ -192,9 +196,9 @@ class Hub {
     this.version = version;
   }
 
-  /** The secret nodes present, for the join command on the Settings page. Null before start. */
-  public nodeToken(): string | null {
-    return this.token;
+  /** A one-time code a new node trades for the token, for the join command. */
+  public createJoinCode(): JoinCode {
+    return this.joinCodes.create();
   }
 
   private async ensureToken(): Promise<string> {
@@ -434,6 +438,13 @@ class Hub {
   public router(): express.Router {
     const router = express.Router();
     router.use(express.json({ limit: '20mb' }));
+    // A new node has no token yet: it trades a join code for one.
+    router.post('/pair', (req, res) => {
+      if (!this.token || !this.joinCodes.redeem(String((req.body as { code?: unknown })?.code ?? ''))) {
+        return res.status(401).json({ error: 'that join code is wrong, used or expired; make a new one on the hub' });
+      }
+      res.json({ token: this.token });
+    });
     router.use((req, res, next) => {
       const header = String(req.get('authorization') ?? '');
       const given = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
@@ -454,6 +465,8 @@ class Hub {
       }
       res.json({ ok: true });
     });
+    // For `promptd join-command` on the hub's machine, which holds the token already.
+    router.post('/join-codes', (_req, res) => res.json(this.joinCodes.create()));
     router.get('/work', (req, res, next) => {
       this.work(String(req.get('x-promptd-node') ?? ''), String(req.get('x-promptd-instance') ?? ''))
         .then((work) => res.json(work))

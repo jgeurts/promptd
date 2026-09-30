@@ -16,7 +16,8 @@
     "dev": "node src/local.js --watch",
     "start:hub": "node src/server.js",
     "start:node": "node src/node.js",
-    "set-password": "node src/set-password.js"
+    "set-password": "node src/set-password.js",
+    "join-command": "node src/join-command.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",

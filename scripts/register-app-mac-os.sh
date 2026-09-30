@@ -5,8 +5,9 @@
 # Run once, from anywhere:
 #   ./scripts/register-app-mac-os.sh
 #
-# On another Mac, to add it as a node of a hub running elsewhere:
-#   NODE_ONLY=1 HUB_URL=http://hub-host:4321 NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh
+# On another Mac, to add it as a node of a hub running elsewhere, with the
+# command Settings → Nodes on the hub shows:
+#   NODE_ONLY=1 HUB_URL=http://hub-host:4321 JOIN_CODE=<code> ./scripts/register-app-mac-os.sh
 #
 # Overrides:
 #   PORT=4321                 port the hub listens on
@@ -17,8 +18,10 @@
 #   NODE_LABEL=$LABEL.node    launchd name of the node
 #   NODE_ONLY=1               register only the node
 #   HUB_URL=http://...        where the node finds the hub (default: this Mac)
-#   NODE_TOKEN=...            the hub's node token; read from the hub's storage
-#                             folder when the hub is on this Mac
+#   JOIN_CODE=1234-5678       a one-time code from the hub, which the node trades
+#                             for the hub's token on its first connection
+#   NODE_TOKEN=...            the hub's node token itself, in place of a join code;
+#                             read from the hub's storage folder when the hub is on this Mac
 #   NODE_ID, NODE_NAME        how the node names itself (default: this Mac's hostname)
 #   FORCE=1                   replace agents that are already registered
 #   PROMPTD_BIN=/path/promptd run this promptd binary rather than the checkout;
@@ -32,6 +35,7 @@ NODE_LABEL="${NODE_LABEL:-$LABEL.node}"
 NODE_ONLY="${NODE_ONLY:-0}"
 PROMPTD_BIN="${PROMPTD_BIN:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
+JOIN_CODE="${JOIN_CODE:-}"
 NODE_ID="${NODE_ID:-}"
 NODE_NAME="${NODE_NAME:-}"
 FORCE="${FORCE:-0}"
@@ -98,8 +102,8 @@ if [ "$NODE_ONLY" != "1" ]; then
   esac
 fi
 
-if [ -z "$NODE_TOKEN" ] && [ ! -f "$STORAGE_ROOT/node-token" ] && [ "$NODE_ONLY" = "1" ]; then
-  die "no node token. Pass NODE_TOKEN=<token>, copied from $STORAGE_ROOT/node-token on the hub's machine."
+if [ -z "$NODE_TOKEN" ] && [ -z "$JOIN_CODE" ] && [ ! -f "$STORAGE_ROOT/node-token" ] && [ "$NODE_ONLY" = "1" ]; then
+  die "no join code. Press Add a Mac under Settings → Nodes on the hub, and run the command it shows."
 fi
 
 # launchd gets a minimal PATH, so claude has to be findable from the one we set.
@@ -234,6 +238,8 @@ if needs_agent "$NODE_LABEL"; then
 $STORAGE_ENV"
   [ -n "$NODE_TOKEN" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_TOKEN "$NODE_TOKEN")"
+  [ -n "$JOIN_CODE" ] && NODE_ENV="$NODE_ENV
+$(env_entry PROMPTD_JOIN_CODE "$JOIN_CODE")"
   [ -n "$NODE_ID" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_ID "$NODE_ID")"
   [ -n "$NODE_NAME" ] && NODE_ENV="$NODE_ENV
@@ -294,7 +300,8 @@ for label in $([ "$NODE_ONLY" != "1" ] && echo "$LABEL") "$NODE_LABEL"; do
 done
 printf '\n  Logs        tail -f %s/*.log\n\n' "$LOG_DIR"
 if [ "$HUB_INSTALLED" = "1" ]; then
-  printf 'To add another Mac as a node, open Settings → Nodes at http://%s:%s\n' "$CHECK_HOST" "$PORT"
-  printf 'and run the command it shows in a checkout on that Mac.\n\n'
+  if [ -n "$PROMPTD_BIN" ]; then JOIN_COMMAND="$PROMPTD_BIN join-command"; else JOIN_COMMAND="npm run -s join-command"; fi
+  printf 'To add another Mac as a node, press Add a Mac under Settings → Nodes at\n'
+  printf 'http://%s:%s, or run %s here, and run what it gives you on that Mac.\n\n' "$CHECK_HOST" "$PORT" "$JOIN_COMMAND"
 fi
 exit 0

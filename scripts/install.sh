@@ -4,8 +4,8 @@
 # The hub and a node on this Mac:
 #   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash
 #
-# A node of a hub on another Mac:
-#   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub <url> --token <token>
+# A node of a hub on another Mac, with the command Settings → Nodes on the hub shows:
+#   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub <url> --code <code>
 #
 # The binary goes to ~/.local/bin/promptd and updates itself from then on.
 # Registering it with launchd is register-app-mac-os.sh's job, from the same release.
@@ -26,6 +26,7 @@ die() { printf '\n\033[31mFailed:\033[0m %s\n' "$*" >&2; exit 1; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --hub) [ $# -ge 2 ] || die "--hub needs the hub's address"; export NODE_ONLY=1 HUB_URL="$2"; shift 2 ;;
+    --code) [ $# -ge 2 ] || die "--code needs the join code from the hub"; export JOIN_CODE="$2"; shift 2 ;;
     --token) [ $# -ge 2 ] || die "--token needs the hub's node token"; export NODE_TOKEN="$2"; shift 2 ;;
     *) die "unknown option $1" ;;
   esac
@@ -60,3 +61,8 @@ install -m 755 "$TMP/$ASSET" "$BIN_DIR/promptd.new"
 mv -f "$BIN_DIR/promptd.new" "$BIN_DIR/promptd"
 
 PROMPTD_BIN="$BIN_DIR/promptd" bash "$TMP/register-app-mac-os.sh"
+
+case ":$PATH:" in
+  *":$BIN_DIR:"*) ;;
+  *) printf '%s is not on your PATH, so run promptd as %s/promptd, or add it to PATH.\n\n' "$BIN_DIR" "$BIN_DIR" ;;
+esac

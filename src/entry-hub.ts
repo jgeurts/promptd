@@ -10,6 +10,7 @@ import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, p
 import { HubError, hub } from './hub.js';
 import { joinCommand, joinUrl } from './join.js';
 import { sendPublicFile, servePublic } from './publicFiles.js';
+import { BINARY_REPO } from './binary.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
@@ -301,11 +302,12 @@ app.get('/api/nodes', (_req, res) => {
   });
 });
 
-/** The command that adds another Mac as a node, with the address it should use and the token filled in. */
-app.get('/api/join', async (req, res, next) => {
+/** A fresh join code, and the command that adds another Mac as a node with it and the address it should use. */
+app.post('/api/join', async (req, res, next) => {
   try {
     const hubUrl = await joinUrl({ host: HOST, port: PORT, origin: `${req.protocol}://${req.get('host')}` });
-    res.json({ hubUrl, port: PORT, command: joinCommand(hubUrl ?? '<hub-address>', hub.nodeToken() ?? '<token>') });
+    const { code, expiresAt } = hub.createJoinCode();
+    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command: joinCommand(hubUrl ?? '<hub-address>', code, BINARY_REPO) });
   } catch (err) {
     next(err);
   }

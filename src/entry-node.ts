@@ -60,6 +60,8 @@ const MAX_LOG_BYTES_PER_REPORT = 2 * 1024 * 1024;
 const MAX_QUEUED_EVENTS = 2000;
 const MAX_REMEMBERED_COMMANDS = 500;
 const UPLOADS_FILE = path.join(NODE_HOME, 'uploads.json');
+// The hub's token, from trading a join code, on a node away from the hub.
+const PAIRED_TOKEN_FILE = path.join(NODE_HOME, 'hub-token');
 // A binary node waits this long for its runs to finish before giving up on an
 // update, and tries a build that failed again after an hour; the hub's update waits alike.
 const UPDATE_DRAIN_LIMIT_MS = 4 * 60 * 60 * 1000;
@@ -87,6 +89,8 @@ let appliedPauseKey: string | null = null;
 /** The hub's build this binary is installed as and waiting to restart into. */
 let updatingTo: { version: string; since: number } | null = null;
 const updateFailedAt = new Map<string, number>();
+/** A join code the hub refused, which is not sent again. */
+let rejectedCode: string | null = null;
 let lastError: string | null = null;
 
 bus.on('event', (event) => {
@@ -122,13 +126,44 @@ function saveUploads(): void {
     .catch((err) => console.error(`[node] could not save ${UPLOADS_FILE}: ${(err as Error).message}`));
 }
 
+async function readFileToken(file: string): Promise<string | null> {
+  try {
+    return (await fsp.readFile(file, 'utf8')).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Trades the join code for the hub's token, and keeps the token for every restart after. */
+async function pair(code: string): Promise<string> {
+  const res = await fetch(`${HUB_URL}/api/node/pair`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const answer = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (!res.ok || !answer.token) {
+    // Asking again with the same code would only use up the hub's wrong-code allowance.
+    rejectedCode = code;
+    throw new Error(`the hub refused join code ${code}: ${answer.error ?? res.status}`);
+  }
+  await fsp.writeFile(PAIRED_TOKEN_FILE, `${answer.token}\n`, { mode: 0o600 });
+  console.log(`[node] paired with ${HUB_URL}; its token is kept in ${PAIRED_TOKEN_FILE}`);
+  return answer.token;
+}
+
 async function readToken(): Promise<string> {
   if (process.env.PROMPTD_NODE_TOKEN) return process.env.PROMPTD_NODE_TOKEN.trim();
-  try {
-    return (await fsp.readFile(NODE_TOKEN_FILE, 'utf8')).trim();
-  } catch {
-    throw new Error(`no token: set PROMPTD_NODE_TOKEN, or run on the hub's machine where ${NODE_TOKEN_FILE} exists`);
-  }
+  const token = (await readFileToken(NODE_TOKEN_FILE)) ?? (await readFileToken(PAIRED_TOKEN_FILE));
+  if (token) return token;
+  const code = process.env.PROMPTD_JOIN_CODE?.trim();
+  if (code && code !== rejectedCode) return pair(code);
+  throw new Error(
+    code
+      ? `join code ${code} was refused; make a new one on the hub and run the installer again`
+      : `no token: set PROMPTD_NODE_TOKEN or PROMPTD_JOIN_CODE, or run on the hub's machine where ${NODE_TOKEN_FILE} exists`,
+  );
 }
 
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
