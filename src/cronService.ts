@@ -952,7 +952,7 @@ class CronService {
         console.error(`[cron] "${cron.name}" has an invalid expression (${cron.cron}): ${check.error}`);
         continue;
       }
-      const job = new Cron(String(cron.cron).trim(), { name: cron.id }, () => {
+      const job = new Cron(String(cron.cron).trim(), { name: cron.id, timezone: cron.timezone || undefined }, () => {
         this.trigger(cron.id, 'schedule').catch((err: unknown) =>
           console.error(`[cron] "${cron.name}" failed to start: ${err instanceof Error ? err.message : String(err)}`),
         );

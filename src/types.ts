@@ -44,6 +44,8 @@ export interface JobBase extends LifetimeStats {
 
 export interface Cron extends JobBase {
   cron: string;
+  /** The zone the expression was written in, from the author's browser. Blank fires on the node's own clock. */
+  timezone: string;
 }
 
 export interface Execution extends JobBase {
@@ -60,6 +62,7 @@ export type CronInput = Pick<
   Cron,
   | 'cleanupWorktree'
   | 'cron'
+  | 'timezone'
   | 'description'
   | 'effort'
   | 'isActive'
@@ -73,7 +76,7 @@ export type CronInput = Pick<
   | 'workingDirectory'
 >;
 
-export type ExecutionInput = Omit<CronInput, 'cron'> & Pick<Execution, 'scheduledAt'>;
+export type ExecutionInput = Omit<CronInput, 'cron' | 'timezone'> & Pick<Execution, 'scheduledAt'>;
 
 export interface UsageWindow {
   key: string;
@@ -208,9 +211,6 @@ export interface Settings {
   lastUpdateCheckAt: string | null;
   lastUpdateLaunchedAt: string | null;
   lastUpdateFromCommit: string | null;
-  maxConcurrentJobs: number;
-  usageDelayThresholds: UsageThresholds;
-  defaultWorkingDirectory: string;
   defaultPrompt: string;
   commonCommands: string;
   defaultWorktreeInclude: string;
@@ -220,11 +220,20 @@ export interface Settings {
   localNodeAgentCheckedAt: string | null;
 }
 
-/** The part of the settings a node needs to run its jobs. */
-export type NodeSettings = Pick<
-  Settings,
-  'defaultWorktreeInclude' | 'maxConcurrentJobs' | 'retrospectivePrompt' | 'usageDelayThresholds'
->;
+/** What each node is set to on its own page. A key left out takes the node's default. */
+export interface NodeConfig {
+  maxConcurrentJobs?: number;
+  usageDelayThresholds?: UsageThresholds;
+  defaultWorkingDirectory?: string;
+}
+
+/** What a node needs to run its jobs. A null limit is the node's own processor count. */
+export interface NodeSettings {
+  defaultWorktreeInclude: string;
+  maxConcurrentJobs: number | null;
+  retrospectivePrompt: string;
+  usageDelayThresholds: UsageThresholds;
+}
 
 /** Everything on the event bus has a type and a time; the rest depends on the type. */
 export interface BusEvent {
@@ -286,6 +295,8 @@ export interface NodeIdentity {
   platform: string;
   commit: string | null;
   startedAt: string;
+  processors: number;
+  timezone: string;
 }
 
 export interface JobPatch {
@@ -301,12 +312,13 @@ export interface LogChunk {
   data: string;
 }
 
-export type NodeCommandType = 'refreshModels' | 'run' | 'stop';
+export type NodeCommandType = 'browse' | 'refreshModels' | 'run' | 'stop';
 
 export interface NodeCommand {
   id: string;
   type: NodeCommandType;
   jobId: string | null;
+  args?: Record<string, unknown>;
   at: string;
 }
 

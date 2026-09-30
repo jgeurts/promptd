@@ -11,7 +11,11 @@ import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
 import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
-import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
+import { DEFAULT_MAX_CONCURRENT_JOBS, deleteSettings, loadSettings, patchSettings } from './settings.js';
+import { LEGACY_NODE_KEYS, effectiveNodeConfig, legacyNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
+import type { EffectiveNodeConfig } from './nodeConfig.js';
+import { browseDirectories } from './browse.js';
+import type { BrowseResult } from './browse.js';
 import { HISTORY_WINDOW_MS, SAMPLE_INTERVAL_MS, SYSTEM_METRICS } from './system.js';
 import type {
   BusEvent,
@@ -25,6 +29,7 @@ import type {
   ModelCatalogState,
   NodeCommand,
   NodeCommandType,
+  NodeConfig,
   NodeCounts,
   NodeSettings,
   NodeStatus,
@@ -41,6 +46,7 @@ const OFFLINE_AFTER_MS = 15 * 1000;
 const COMMAND_TTL_MS = 60 * 1000;
 const JOBS_CACHE_MS = 10 * 1000;
 const MODEL_REFRESH_WAIT_MS = 90 * 1000;
+const BROWSE_WAIT_MS = 8 * 1000;
 
 const BOOKKEEPING_FIELDS = new Set([
   'lastRunAt',
@@ -64,6 +70,9 @@ export interface HubNode {
   platform: string | null;
   commit: string | null;
   startedAt?: string | null;
+  processors?: number | null;
+  timezone?: string | null;
+  config: NodeConfig;
   firstSeenAt: string;
   lastSeenAt: string;
   instance: string | null;
@@ -85,8 +94,19 @@ export interface NodeListing {
   startedAt: string | null;
   online: boolean;
   isDefault: boolean;
+  isLocal: boolean;
   running: number;
   scheduled: number;
+  queued: number;
+  processors: number | null;
+  clockTimezone: string | null;
+  config: EffectiveNodeConfig;
+  customized: Array<keyof NodeConfig>;
+}
+
+export interface NodeDetail extends NodeListing {
+  concurrency: ConcurrencyInfo | null;
+  usage: UsageReading;
 }
 
 export interface NodeSummary {
@@ -144,6 +164,8 @@ class Hub {
   private pauseTimer: ReturnType<typeof setTimeout> | null;
   public jobsCache: JobsCache | null;
   private saveTimer: ReturnType<typeof setTimeout> | null;
+  private legacyConfig: NodeConfig | null;
+  private waiting: Map<string, (result: CommandResult) => void>;
 
   public constructor() {
     this.token = null;
@@ -153,12 +175,15 @@ class Hub {
     this.pauseTimer = null;
     this.jobsCache = null;
     this.saveTimer = null;
+    this.legacyConfig = null;
+    this.waiting = new Map();
   }
 
   public async start(settings: Settings): Promise<void> {
     this.settings = settings;
     this.token = await this.ensureToken();
     await this.loadNodes();
+    await this.carryOverLegacyConfig();
     bus.on('event', (event: BusEvent) => {
       if (event.type === 'crons:changed') this.jobsCache = null;
     });
@@ -185,15 +210,57 @@ class Hub {
 
   private async loadNodes(): Promise<void> {
     for (const saved of await db().selectFrom('nodes').selectAll().execute()) {
-      this.nodes.set(saved.id, { ...saved, instance: null, status: null, samples: [], commands: [] });
+      this.nodes.set(saved.id, { ...saved, config: readNodeConfig(saved.settings), instance: null, status: null, samples: [], commands: [] });
     }
+  }
+
+  /**
+   * The job limit, usage thresholds and working directory were once one set for
+   * the whole hub. They go to every node already known, or wait for the first to
+   * connect: on an install from before nodes, that is the one on this machine.
+   */
+  private async carryOverLegacyConfig(): Promise<void> {
+    const stored = (await loadSettings()) as unknown as Record<string, unknown>;
+    if (!LEGACY_NODE_KEYS.some((key) => key in stored)) return;
+    const config = legacyNodeConfig(stored, DEFAULT_MAX_CONCURRENT_JOBS);
+    if (!this.nodes.size) {
+      this.legacyConfig = config;
+      return;
+    }
+    for (const node of this.nodes.values()) await this.writeNodeConfig(node, { ...config, ...node.config });
+    await deleteSettings(LEGACY_NODE_KEYS);
+  }
+
+  private async adoptLegacyConfig(node: HubNode): Promise<void> {
+    const config = this.legacyConfig;
+    if (!config) return;
+    this.legacyConfig = null;
+    node.config = { ...config, ...node.config };
+    this.saveNodes();
+    await deleteSettings(LEGACY_NODE_KEYS);
+  }
+
+  private async writeNodeConfig(node: HubNode, config: NodeConfig): Promise<void> {
+    await db().updateTable('nodes').set({ settings: JSON.stringify(config) }).where('id', '=', node.id).execute();
+    node.config = config;
+  }
+
+  public async setNodeConfig(id: string, patch: Record<string, unknown>): Promise<NodeListing> {
+    const node = this.nodes.get(id);
+    if (!node) throw new HubError('node not found', 404);
+    const config = patchNodeConfig(node.config, patch);
+    // Written first, applied second: the node picks its settings up from memory,
+    // so a save that did not reach the database must not change what it runs.
+    await this.writeNodeConfig(node, config);
+    this.saveNodes();
+    return this.listing(node);
   }
 
   private saveNodes(): void {
     if (this.saveTimer) return;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      const rows = [...this.nodes.values()].map(({ id, name, hostname, platform, commit, firstSeenAt, lastSeenAt }) => ({
+      const rows = [...this.nodes.values()].map(({ id, name, hostname, platform, commit, firstSeenAt, lastSeenAt, config }) => ({
         id,
         name,
         hostname,
@@ -201,6 +268,7 @@ class Hub {
         commit,
         firstSeenAt,
         lastSeenAt,
+        settings: JSON.stringify(config),
       }));
       if (!rows.length) return;
       db()
@@ -213,6 +281,7 @@ class Hub {
             platform: eb.ref('excluded.platform'),
             commit: eb.ref('excluded.commit'),
             lastSeenAt: eb.ref('excluded.lastSeenAt'),
+            settings: eb.ref('excluded.settings'),
           })),
         )
         .execute()
@@ -238,6 +307,31 @@ class Hub {
     return this.isOnline(node) ? node : null;
   }
 
+  /** A node started with the hub on this machine, as a local install is. */
+  private isLocal(node: HubNode): boolean {
+    return Boolean(node.hostname) && node.hostname === os.hostname();
+  }
+
+  public nodeIsLocal(id: string): boolean {
+    const node = this.nodes.get(id);
+    return Boolean(node) && this.isLocal(node!);
+  }
+
+  /** The node a job with the given node id runs on; blank is the default node. */
+  public resolveNodeId(id: string | null | undefined): string {
+    return String(id ?? '').trim() || this.defaultNodeId();
+  }
+
+  public nodeConfig(id: string): EffectiveNodeConfig {
+    const node = this.nodes.get(id);
+    return effectiveNodeConfig(node?.config ?? {}, node?.processors ?? DEFAULT_MAX_CONCURRENT_JOBS);
+  }
+
+  /** The zone a node's clock is set to, which a cron saved without one fires in. */
+  public clockTimezone(id: string): string | null {
+    return this.nodes.get(id)?.timezone ?? null;
+  }
+
   private nodeIdFor(job: Cron | Execution): string {
     return job.nodeId || this.defaultNodeId();
   }
@@ -254,23 +348,45 @@ class Hub {
     return { id: id || null, name: node?.name ?? id ?? null, online: this.isOnline(node) };
   }
 
+  private listing(node: HubNode): NodeListing {
+    const online = this.isOnline(node);
+    return {
+      id: node.id,
+      name: node.name,
+      hostname: node.hostname,
+      platform: node.platform,
+      commit: node.commit,
+      firstSeenAt: node.firstSeenAt,
+      lastSeenAt: node.lastSeenAt,
+      startedAt: node.startedAt ?? null,
+      online,
+      isDefault: node.id === this.defaultNodeId(),
+      isLocal: this.isLocal(node),
+      running: online ? node.status.counts?.running ?? 0 : 0,
+      scheduled: online ? node.status.counts?.scheduled ?? 0 : 0,
+      queued: online ? node.status.counts?.queued ?? 0 : 0,
+      processors: node.processors ?? null,
+      clockTimezone: node.timezone ?? null,
+      config: this.nodeConfig(node.id),
+      customized: Object.keys(node.config) as Array<keyof NodeConfig>,
+    };
+  }
+
   public listNodes(): NodeListing[] {
     return [...this.nodes.values()]
-      .map((node): NodeListing => ({
-        id: node.id,
-        name: node.name,
-        hostname: node.hostname,
-        platform: node.platform,
-        commit: node.commit,
-        firstSeenAt: node.firstSeenAt,
-        lastSeenAt: node.lastSeenAt,
-        startedAt: node.startedAt ?? null,
-        online: this.isOnline(node),
-        isDefault: node.id === this.defaultNodeId(),
-        running: this.isOnline(node) ? node.status.counts?.running ?? 0 : 0,
-        scheduled: this.isOnline(node) ? node.status.counts?.scheduled ?? 0 : 0,
-      }))
+      .map((node) => this.listing(node))
       .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
+  }
+
+  public nodeDetail(id: string): NodeDetail | null {
+    const node = this.nodes.get(id);
+    if (!node) return null;
+    const online = this.isOnline(node);
+    return {
+      ...this.listing(node),
+      concurrency: online ? this.concurrencyInfo(id) : null,
+      usage: online ? node.status.usage ?? NO_USAGE : { ...NO_USAGE, reason: 'this node is offline' },
+    };
   }
 
   public forgetNode(id: string): ForgetResult {
@@ -290,12 +406,38 @@ class Hub {
     return this.onlineNodes().some((node) => node.status.activeLogs?.some((log) => log.jobId === jobId && log.file === file));
   }
 
-  public command(nodeId: string, type: NodeCommandType, jobId: string | null = null): NodeCommand | null {
+  public command(nodeId: string, type: NodeCommandType, jobId: string | null = null, args?: Record<string, unknown>): NodeCommand | null {
     const node = this.nodes.get(nodeId);
     if (!this.isOnline(node)) return null;
-    const command: NodeCommand = { id: randomUUID(), type, jobId, at: new Date().toISOString() };
+    const command: NodeCommand = { id: randomUUID(), type, jobId, at: new Date().toISOString(), ...(args ? { args } : {}) };
     node.commands.push(command);
     return command;
+  }
+
+  /** Sends a command and waits for the node's next report to answer it. */
+  private ask(nodeId: string, type: NodeCommandType, args: Record<string, unknown>, timeoutMs: number): Promise<CommandResult> {
+    const command = this.command(nodeId, type, null, args);
+    if (!command) return Promise.reject(new HubError('that node is offline', 409));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiting.delete(command.id);
+        reject(new HubError('the node did not answer in time', 504));
+      }, timeoutMs);
+      timer.unref?.();
+      this.waiting.set(command.id, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+    });
+  }
+
+  /** Folder suggestions from the machine the job runs on. The hub's own disk answers for a node beside it. */
+  public async browse(nodeId: string, typed: string): Promise<BrowseResult> {
+    const node = this.nodes.get(nodeId);
+    if (!node || this.isLocal(node)) return browseDirectories(typed);
+    const answer = await this.ask(nodeId, 'browse', { path: typed }, BROWSE_WAIT_MS);
+    if (!answer.ok) throw new HubError(answer.error ?? 'the node could not list folders', 502);
+    return answer.result as unknown as BrowseResult;
   }
 
   public jobsChanged(): void {
@@ -353,7 +495,7 @@ class Hub {
       throw new HubError(`another process is already syncing as node "${id}"; give this one its own PROMPTD_NODE_ID`, 409);
     }
     if (!node) {
-      node = { id, firstSeenAt: now, instance: null, status: null, samples: [], commands: [] } as unknown as HubNode;
+      node = { id, firstSeenAt: now, config: {}, instance: null, status: null, samples: [], commands: [] } as unknown as HubNode;
       this.nodes.set(id, node);
       console.log(`[hub] new node "${identity!.name ?? id}" (${id})`);
     }
@@ -370,6 +512,8 @@ class Hub {
       platform: (identity!.platform ?? null) as string | null,
       commit: (identity!.commit ?? null) as string | null,
       startedAt: (identity!.startedAt ?? null) as string | null,
+      processors: Number(identity!.processors) || null,
+      timezone: typeof identity!.timezone === 'string' && identity!.timezone ? identity!.timezone : null,
       instance,
       lastSeenAt: now,
     });
@@ -379,6 +523,7 @@ class Hub {
 
   private async ingest(body: Record<string, unknown>): Promise<{ ok: true; logOffsets: Record<string, number> }> {
     const node = this.claim(body.node);
+    await this.adoptLegacyConfig(node);
     if (!this.defaultNodeId()) {
       this.settings = await patchSettings({ defaultNodeId: node.id });
       console.log(`[hub] "${node.name}" is the default node`);
@@ -399,7 +544,11 @@ class Hub {
 
     const answered = new Set(((Array.isArray(body.commandResults) ? body.commandResults : []) as CommandResult[]).map((result) => result.id));
     for (const result of (body.commandResults ?? []) as CommandResult[]) {
-      if (!result.ok) console.error(`[hub] node "${node.id}" could not carry out a command: ${result.error}`);
+      const waiter = this.waiting.get(result.id);
+      if (waiter) {
+        this.waiting.delete(result.id);
+        waiter(result);
+      } else if (!result.ok) console.error(`[hub] node "${node.id}" could not carry out a command: ${result.error}`);
     }
     const cutoff = Date.now() - COMMAND_TTL_MS;
     node.commands = node.commands.filter((command) => !answered.has(command.id) && Date.parse(command.at) > cutoff);
@@ -490,7 +639,7 @@ class Hub {
     node: { id: string; isDefault: boolean };
     crons: Cron[];
     executions: Execution[];
-    settings: Partial<NodeSettings>;
+    settings: NodeSettings;
     pause: PauseState | null;
     commands: NodeCommand[];
   }> {
@@ -506,8 +655,8 @@ class Hub {
       crons: crons.filter(mine),
       executions: executions.filter(mine),
       settings: {
-        maxConcurrentJobs: this.settings.maxConcurrentJobs,
-        usageDelayThresholds: this.settings.usageDelayThresholds,
+        maxConcurrentJobs: node.config.maxConcurrentJobs ?? null,
+        usageDelayThresholds: this.nodeConfig(node.id).usageDelayThresholds,
         defaultWorktreeInclude: this.settings.defaultWorktreeInclude ?? '',
         retrospectivePrompt: this.settings.retrospectivePrompt ?? '',
       },
@@ -602,7 +751,7 @@ class Hub {
 
   /** Each node enforces its own limit, so the fleet's is their total, or none when any node has none. */
   private concurrencyLimit(nodes: OnlineHubNode[] = this.onlineNodes()): number {
-    if (!nodes.length) return this.settings.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS;
+    if (!nodes.length) return DEFAULT_MAX_CONCURRENT_JOBS;
     const limits = nodes.map((node) => Number(node.status.counts?.concurrencyLimit) || 0);
     return limits.includes(0) ? 0 : limits.reduce((a, b) => a + b, 0);
   }
@@ -637,8 +786,8 @@ class Hub {
     };
   }
 
-  public concurrencyInfo(): ConcurrencyInfo {
-    const nodes = this.onlineNodes();
+  public concurrencyInfo(nodeId: string | null = null): ConcurrencyInfo {
+    const nodes = this.onlineNodes().filter((node) => !nodeId || node.id === nodeId);
     const infos = nodes.map((node): { node: OnlineHubNode; info: Partial<ConcurrencyInfo> } => ({ node, info: node.status.concurrency ?? {} }));
     const tag =
       (node: OnlineHubNode) =>
@@ -646,7 +795,7 @@ class Hub {
     const slots = infos.map(({ info }) => info.nextSlotAt).filter(Boolean).sort();
     return {
       limit: this.concurrencyLimit(nodes),
-      defaultLimit: DEFAULT_MAX_CONCURRENT_JOBS,
+      defaultLimit: (nodeId && this.nodes.get(nodeId)?.processors) || DEFAULT_MAX_CONCURRENT_JOBS,
       runningCount: sum(infos, ({ info }) => info.runningCount),
       queuedCount: sum(infos, ({ info }) => info.queuedCount),
       usageDelayedCount: sum(infos, ({ info }) => info.usageDelayedCount),

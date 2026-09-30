@@ -19,7 +19,8 @@ import {
   pendingPatches,
   replaceJobs,
 } from './jobCache.js';
-import { normalizeMaxConcurrentJobs } from './settings.js';
+import { DEFAULT_MAX_CONCURRENT_JOBS, normalizeMaxConcurrentJobs } from './settings.js';
+import { browseDirectories } from './browse.js';
 import { setUsageThresholds, usageMonitor } from './usage.js';
 import { modelCatalog } from './models.js';
 import { systemMonitor } from './system.js';
@@ -148,6 +149,8 @@ function identity(): NodeIdentity {
     platform: process.platform,
     commit,
     startedAt: STARTED_AT,
+    processors: DEFAULT_MAX_CONCURRENT_JOBS,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
 
@@ -270,8 +273,8 @@ async function report(): Promise<void> {
 }
 
 function applySettings(settings: Partial<NodeSettings>): void {
-  const limit = normalizeMaxConcurrentJobs(settings.maxConcurrentJobs);
-  if (limit !== null) cronService.setConcurrencyLimit(limit);
+  const limit = settings.maxConcurrentJobs == null ? null : normalizeMaxConcurrentJobs(settings.maxConcurrentJobs);
+  cronService.setConcurrencyLimit(limit ?? DEFAULT_MAX_CONCURRENT_JOBS);
   if (settings.usageDelayThresholds) setUsageThresholds(settings.usageDelayThresholds);
 }
 
@@ -305,6 +308,8 @@ async function runCommand(command: NodeCommand): Promise<void> {
     } else if (command.type === 'stop') {
       const cancelled = await cronService.cancelDelay(command.jobId as string, 'user');
       if (!cancelled) await cronService.stop(command.jobId as string, 'user');
+    } else if (command.type === 'browse') {
+      result = { ...(await browseDirectories(String(command.args?.path ?? ''))) };
     } else if (command.type === 'refreshModels') {
       modelCatalog.refresh();
     } else {
@@ -335,6 +340,8 @@ async function cycle(): Promise<void> {
   try {
     await report();
     await fetchWork();
+    // Someone is waiting on the page for a folder list; answer now rather than next cycle.
+    if (commandResults.length) await report();
     if (lastError) console.log(`[node] reconnected to ${HUB_URL}`);
     lastError = null;
   } catch (err) {

@@ -710,7 +710,7 @@ async function paintCrons(panel, pause, sub) {
         // Two lines on the page, all of it in the tooltip: a paragraph of
         // description must not push the row taller than the ones around it.
         cron.description ? el('div', { class: 'cron-desc clamp', text: cron.description, title: cron.description }) : null,
-        el('div', { class: 'cron-desc mono', text: cron.cron }),
+        el('div', { class: 'cron-desc mono', text: cron.timezone && cron.timezone !== BROWSER_TIMEZONE ? `${cron.cron} (${cron.timezone})` : cron.cron }),
       ]),
       el('td', {}, [statusPill(cron, pause)]),
       el('td', { class: 'hide-sm time-cell' }, [
@@ -940,6 +940,9 @@ function rearmControl(execution) {
 
 // ---- edit / create ---------------------------------------------------
 
+// Cron expressions are written, saved and read back in the zone of the browser writing them.
+const BROWSER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 const DIR_HINT = 'Where claude runs. Type to search, ↑↓ to pick, Enter to accept.';
 
 const CRON_FIELD_HELP = {
@@ -965,8 +968,20 @@ function cronFieldLegend(fields) {
  * Wraps the Cron input in shortcuts and live feedback: preset buttons, a
  * time-of-day entry, and the next fire time recomputed as the field changes.
  */
-function cronPicker(input) {
+/**
+ * `zone` is the time zone the expression is in: the one the cron was written in
+ * while its expression is left alone, and the browser's once it is changed.
+ */
+function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '' } = {}) {
   const preview = el('div', { class: 'hint' });
+  const zoneNote = el('span', {});
+  const paintZone = () => {
+    const current = zone();
+    zoneNote.textContent =
+      current === BROWSER_TIMEZONE
+        ? `. Times are in your time zone, ${current}, and every node fires them at that moment.`
+        : `. Times are in ${current}, where this cron was written. Changing the expression puts it in your time zone, ${BROWSER_TIMEZONE}.`;
+  };
   let debounce = null;
   let seq = 0;
 
@@ -978,7 +993,8 @@ function cronPicker(input) {
       preview.className = 'hint';
       return;
     }
-    api(`/api/next-run?cron=${encodeURIComponent(expression)}`)
+    paintZone();
+    api(`/api/next-run?cron=${encodeURIComponent(expression)}&timezone=${encodeURIComponent(zone())}&node=${encodeURIComponent(node())}`)
       .then((result) => {
         if (mine !== seq) return; // a later keystroke already won
         if (!result.valid) {
@@ -986,7 +1002,7 @@ function cronPicker(input) {
           preview.className = 'hint warn';
           return;
         }
-        preview.textContent = `Next run: ${fmtRelative(result.nextRunAt)} · ${fmtDateTimeWeekday(result.nextRunAt)}`;
+        preview.textContent = `Next run: ${fmtRelative(result.nextRunAt)} · ${fmtDateTimeWeekday(result.nextRunAt)} your time`;
         preview.className = 'hint ok';
       })
       .catch(() => {});
@@ -1019,9 +1035,10 @@ function cronPicker(input) {
   };
   timeEntry.addEventListener('change', applyTime);
 
+  paintZone();
   update();
 
-  return el('div', { class: 'field' }, [
+  const field = el('div', { class: 'field' }, [
     el('label', { text: 'Cron' }),
     input,
     el('div', { class: 'preset-row' }, [
@@ -1038,25 +1055,22 @@ function cronPicker(input) {
       cronFieldLegend(['m', 'h', 'dom', 'mon', 'dow']),
       '. For seconds, add a sixth field at the front ',
       cronFieldLegend(['s', 'm', 'h', 'dom', 'mon', 'dow']),
-      '. Server local time.',
+      zoneNote,
     ]),
     preview,
   ]);
+  return { field, refresh: update };
 }
 
 /**
- * What the job forms take from the Settings page: where a new job's Working
- * Directory and Prompt fields start, and the common commands. A settings read
- * that fails falls back to home, a blank prompt and no commands rather than
- * blocking the form.
+ * What the job forms take from the Settings page: where a new job's Prompt field
+ * starts, and the common commands. The working directory default belongs to the
+ * node, and arrives with the node picker. A settings read that fails falls back
+ * to a blank prompt and no commands rather than blocking the form.
  */
 async function jobFormSettings() {
   const settings = await api('/api/settings').catch(() => ({}));
   return {
-    workingDirectory:
-      typeof settings.defaultWorkingDirectory === 'string' && settings.defaultWorkingDirectory.trim()
-        ? settings.defaultWorkingDirectory
-        : '~/',
     prompt: typeof settings.defaultPrompt === 'string' ? settings.defaultPrompt : '',
     commands:
       typeof settings.commonCommands === 'string'
@@ -1103,7 +1117,7 @@ function commandButtons(commands) {
  * server as you type, keyboard selection, and a live note of where the path lands.
  * A null label leaves the field unlabelled, for a place with a heading of its own.
  */
-function directoryPicker(input, { label = 'Working Directory' } = {}) {
+function directoryPicker(input, { label = 'Working Directory', node = () => '' } = {}) {
   const menu = el('div', { class: 'combo-menu', hidden: 'hidden' });
   const hint = el('div', { class: 'hint', text: DIR_HINT });
   let items = [];
@@ -1148,7 +1162,7 @@ function directoryPicker(input, { label = 'Working Directory' } = {}) {
 
   const lookup = () => {
     const mine = ++seq;
-    api(`/api/browse?path=${encodeURIComponent(input.value)}`)
+    api(`/api/browse?path=${encodeURIComponent(input.value)}&node=${encodeURIComponent(node())}`)
       .then((result) => {
         if (mine !== seq) return; // a later keystroke already won
         items = result.suggestions;
@@ -1162,7 +1176,13 @@ function directoryPicker(input, { label = 'Working Directory' } = {}) {
           hint.className = result.exists ? 'hint ok' : 'hint warn';
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        if (mine !== seq) return;
+        items = [];
+        paint();
+        hint.textContent = `No folder suggestions: ${err.message}`;
+        hint.className = 'hint warn';
+      });
   };
 
   input.addEventListener('input', () => {
@@ -1332,36 +1352,47 @@ function usageDelayPicker(selected) {
       'trigger that arrives while it waits is dropped.',
   });
   const thresholdsNote = el('div', { class: 'hint' }, [
-    'The percentages are set on the ',
+    'The percentages belong to the node that runs the job, and are set on the ',
     // A new tab, so following it does not throw away what is typed in the form.
     el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
-    ' and apply to every cron and one-time execution.',
+    '.',
   ]);
+  let categories = [];
+  let thresholds = null;
 
-  const paint = (categories) => {
+  const paint = () => {
+    const ticked = boxes.size ? Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])) : selected;
     boxes.clear();
     grid.replaceChildren(
       ...categories.map((category) => {
         const box = el('input', { type: 'checkbox' });
-        box.checked = Boolean(selected?.[category.id]);
+        box.checked = Boolean(ticked?.[category.id]);
         boxes.set(category.id, box);
+        const threshold = thresholds?.[category.id] ?? category.threshold;
         return el('label', { class: 'check', title: category.hint }, [
           box,
-          el('span', {}, [`${category.label} `, el('span', { class: 'muted', text: `(${category.threshold}%)` })]),
+          el('span', {}, [`${category.label} `, el('span', { class: 'muted', text: `(${threshold}%)` })]),
         ]);
       }),
     );
   };
 
-  paint([]);
+  paint();
   api('/api/config')
-    .then((config) => paint(config.usageDelayCategories ?? []))
+    .then((config) => {
+      categories = config.usageDelayCategories ?? [];
+      paint();
+    })
     .catch((err) => {
       note.textContent = `Could not load the usage categories: ${err.message}`;
       note.className = 'hint warn';
     });
 
   return {
+    setThresholds: (next) => {
+      thresholds = next ?? null;
+      paint();
+    },
     read: () => Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])),
     field: el('div', { class: 'field' }, [el('label', { text: 'Delay for usage' }), grid, note, thresholdsNote]),
   };
@@ -1530,14 +1561,34 @@ function scheduledAtPicker(input) {
   ]);
 }
 
-/** Which node runs the job. Blank follows the default node, so changing the default moves it. */
-function nodePicker(selected) {
+/**
+ * A new job's Working Directory starts at its node's default, and follows a
+ * change of node until someone types in it. An edited or duplicated job keeps its own.
+ */
+function followNodeDirectory(input, listing, keep) {
+  if (keep) return;
+  const next = listing?.config?.defaultWorkingDirectory ?? '~/';
+  const previous = input.dataset.nodeDefault ?? '~/';
+  if (input.value === previous) input.value = next;
+  input.dataset.nodeDefault = next;
+}
+
+/**
+ * Which node runs the job. Blank follows the default node, so changing the default moves it.
+ * `onChange` gets the listing of the node that would run it, once the nodes load and on every pick.
+ */
+function nodePicker(selected, { onChange = () => {} } = {}) {
   const select = el('select', { class: 'select mono' });
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
   const current = selected ?? '';
+  let byId = new Map();
+  let fallbackId = '';
+  const chosen = () => byId.get(select.value || fallbackId) ?? null;
+  select.addEventListener('change', () => onChange(chosen()));
 
   const paint = ({ nodes = [], defaultNodeId = '' }) => {
-    const byId = new Map(nodes.map((node) => [node.id, node]));
+    byId = new Map(nodes.map((node) => [node.id, node]));
+    fallbackId = defaultNodeId;
     const label = (node) => `${node.name}${node.online ? '' : ' (offline)'}`;
     const fallback = byId.get(defaultNodeId);
     const options = [
@@ -1553,7 +1604,10 @@ function nodePicker(selected) {
 
   paint({});
   api('/api/nodes')
-    .then(paint)
+    .then((state) => {
+      paint(state);
+      onChange(chosen());
+    })
     .catch((err) => {
       note.textContent = `Could not load the nodes: ${err.message}`;
       note.className = 'hint warn';
@@ -1592,8 +1646,8 @@ async function renderForm(id, duplicateOf) {
     workingDirectory: el('input', {
       type: 'text',
       class: 'mono',
-      // New crons start at the Settings page default; editing or duplicating shows the source's.
-      value: cron ? (cron.workingDirectory ?? '') : defaults.workingDirectory,
+      // New crons start at the node's default; editing or duplicating shows the source's.
+      value: cron ? (cron.workingDirectory ?? '') : '~/',
       placeholder: '~/code/project',
       autocomplete: 'off',
       spellcheck: 'false',
@@ -1606,10 +1660,19 @@ async function renderForm(id, duplicateOf) {
 
   const worktree = worktreePicker(cron, { id });
   const retrospective = retrospectivePicker(cron);
-  const node = nodePicker(cron?.nodeId ?? '');
   const model = modelPicker(cron?.model ?? '');
   const effort = effortPicker(cron?.effort ?? '');
   const usageDelay = usageDelayPicker(cron?.usageDelay ?? null);
+  const node = nodePicker(cron?.nodeId ?? '', {
+    onChange: (listing) => {
+      followNodeDirectory(inputs.workingDirectory, listing, Boolean(cron));
+      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+      schedule.refresh();
+    },
+  });
+  // Left as saved, an expression keeps the zone it was written in; any change to it is written in this browser's.
+  const cronZone = () => (cron?.timezone && inputs.cron.value.trim() === cron.cron.trim() ? cron.timezone : BROWSER_TIMEZONE);
+  const schedule = cronPicker(inputs.cron, { zone: cronZone, node: () => node.read() });
 
   const showError = (message) => {
     errorBox.textContent = message;
@@ -1624,6 +1687,7 @@ async function renderForm(id, duplicateOf) {
       name: inputs.name.value,
       description: inputs.description.value,
       cron: inputs.cron.value,
+      timezone: cronZone(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
       ...worktree.read(),
@@ -1674,9 +1738,9 @@ async function renderForm(id, duplicateOf) {
       errorBox,
       field('Name', inputs.name),
       field('Description', inputs.description),
-      cronPicker(inputs.cron),
+      schedule.field,
       node.field,
-      directoryPicker(inputs.workingDirectory),
+      directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
       worktree.field,
       model.field,
       effort.field,
@@ -1749,7 +1813,7 @@ async function renderExecutionForm(id, duplicateOf) {
     workingDirectory: el('input', {
       type: 'text',
       class: 'mono',
-      value: execution ? (execution.workingDirectory ?? '') : defaults.workingDirectory,
+      value: execution ? (execution.workingDirectory ?? '') : '~/',
       placeholder: '~/code/project',
       autocomplete: 'off',
       spellcheck: 'false',
@@ -1761,8 +1825,13 @@ async function renderExecutionForm(id, duplicateOf) {
   inputs.isActive.checked = execution ? Boolean(execution.isActive) : true;
 
   const worktree = worktreePicker(execution, { id, oneTime: true });
+  const node = nodePicker(execution?.nodeId ?? '', {
+    onChange: (listing) => {
+      followNodeDirectory(inputs.workingDirectory, listing, Boolean(execution));
+      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+    },
+  });
   const retrospective = retrospectivePicker(execution);
-  const node = nodePicker(execution?.nodeId ?? '');
   const model = modelPicker(execution?.model ?? '');
   const effort = effortPicker(execution?.effort ?? '');
   const usageDelay = usageDelayPicker(execution?.usageDelay ?? null);
@@ -1836,7 +1905,7 @@ async function renderExecutionForm(id, duplicateOf) {
       field('Description', inputs.description),
       scheduledAtPicker(inputs.scheduledAt),
       node.field,
-      directoryPicker(inputs.workingDirectory),
+      directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
       worktree.field,
       model.field,
       effort.field,
@@ -1917,46 +1986,48 @@ function databaseLabel(database) {
   return database.dialect === 'postgres' ? `Postgres at ${database.location}` : `SQLite at ${database.location}`;
 }
 
-async function renderSettings() {
-  // Health comes along for the boot time: it is the one fact on this page that
-  // belongs to the running process rather than to a file on disk.
-  const [settings, config, health, notifications, auth] = await Promise.all([
-    api('/api/settings'),
-    api('/api/config'),
-    api('/api/health').catch(() => ({})),
-    // One item's worth of payload; it is the counts either side of it we want.
-    api('/api/notifications?limit=1').catch(() => ({})),
-    api('/api/auth/status').catch(() => ({ required: false })),
+function readOnlyField(label, value) {
+  return el('div', { class: 'field' }, [el('label', { text: label }), el('div', { class: 'path-value mono', text: value })]);
+}
+
+function statTile(value, label, sub) {
+  return el('div', { class: 'stat' }, [
+    value.nodeType ? value : el('div', { class: 'stat-value', text: value }),
+    el('div', { class: 'stat-label', text: label }),
+    el('div', { class: 'stat-sub', text: sub }),
   ]);
+}
 
-  const signOut = auth.required
-    ? el('button', {
-        class: 'btn small',
-        type: 'button',
-        text: 'Sign out',
-        onclick: async () => {
-          await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
-          location.assign('/login');
-        },
-      })
-    : null;
+/** Settings save as you change them; there is no Save button to forget. */
+async function saveSettings(patch, description) {
+  try {
+    await api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+    toast(description);
+    return true;
+  } catch (err) {
+    toast(err.message, true);
+    return false;
+  }
+}
 
-  const status = el('div', { class: 'hint' });
-  const checkButton = el('button', { class: 'btn small', text: 'Check for updates' });
-  const updateButton = el('button', { class: 'btn primary', text: 'Update now', disabled: 'disabled' });
+/** One node's commit against the hub's, and what to do when they differ. */
+function versionText(node, hubCommit) {
+  if (!node.commit) return 'unknown';
+  if (!hubCommit || node.commit === hubCommit) return `${node.commit}${hubCommit ? ', same as the hub' : ''}`;
+  return `${node.commit}; the hub runs ${hubCommit}. Pull main in this node's checkout and restart it to match.`;
+}
 
-  const selfUpdate = el('input', { type: 'checkbox' });
-  selfUpdate.checked = Boolean(settings.selfUpdate);
-
-  // Tracked separately so rejecting a bad entry restores the value in force now,
-  // not the one the page happened to load with.
-  let intervalHours = Number(settings.updateCheckIntervalHours) || 24;
-  const interval = el('input', { type: 'text', class: 'mono narrow', value: String(intervalHours) });
-
-  /** Settings save as you change them; there is no Save button to forget. */
+/**
+ * The settings each node keeps for itself: its job limit and queue, usage
+ * delays and default working directory. Returned in pieces, because
+ * a single local node shows them on the Settings page and any other setup shows
+ * them on the node's own page.
+ */
+function nodeSettingsParts(node, config) {
+  const url = `/api/nodes/${encodeURIComponent(node.id)}/settings`;
   const save = async (patch, description) => {
     try {
-      await api('/api/settings', { method: 'PUT', body: JSON.stringify(patch) });
+      Object.assign(node, await api(url, { method: 'PUT', body: JSON.stringify(patch) }));
       toast(description);
       return true;
     } catch (err) {
@@ -1965,80 +2036,15 @@ async function renderSettings() {
     }
   };
 
-  const serverNameInput = el('input', {
-    type: 'text',
-    value: typeof settings.serverName === 'string' ? settings.serverName : '',
-    placeholder: 'e.g. Office Mac mini',
-    autocomplete: 'off',
-    'aria-label': 'Server name',
-  });
-  // `change` fires on blur, and only when the text differs from what it held on focus.
-  serverNameInput.addEventListener('change', async () => {
-    const name = serverNameInput.value.trim();
-    serverNameInput.value = name;
-    if (await save({ serverName: name }, name ? `Server name set to ${name}` : 'Server name cleared')) setServerName(name);
-  });
-
-  // ---- server color ----
-  // Tracked like the fields below, so a failed save puts back the color in force.
-  let serverColor = /^#[0-9a-f]{6}$/i.test(settings.serverColor ?? '') ? settings.serverColor.toLowerCase() : DEFAULT_SERVER_COLOR;
-  const swatches = SERVER_COLORS.map((color) =>
-    el('button', { type: 'button', class: 'swatch', style: `background: ${color.hex}`, title: color.label, 'aria-label': color.label }),
-  );
-  const customColor = el('input', { type: 'color', class: 'swatch-custom', title: 'Custom color', 'aria-label': 'Custom server color' });
-
-  const markColor = (hex) => {
-    swatches.forEach((swatch, i) => swatch.setAttribute('aria-pressed', SERVER_COLORS[i].hex === hex ? 'true' : 'false'));
-    customColor.value = hex;
-    customColor.classList.toggle('selected', !SERVER_COLORS.some((color) => color.hex === hex));
-  };
-
-  const applyServerColor = async (hex) => {
-    const previous = serverColor;
-    serverColor = hex;
-    markColor(hex);
-    setServerColor(hex);
-    const named = SERVER_COLORS.find((color) => color.hex === hex);
-    const saved = await save(
-      { serverColor: hex === DEFAULT_SERVER_COLOR ? '' : hex },
-      hex === DEFAULT_SERVER_COLOR ? 'Server color back to the default' : `Server color set to ${named?.label ?? hex}`,
-    );
-    if (saved) return;
-    serverColor = previous;
-    markColor(previous);
-    setServerColor(previous);
-  };
-
-  swatches.forEach((swatch, i) => swatch.addEventListener('click', () => applyServerColor(SERVER_COLORS[i].hex)));
-  // `change` fires once the picker closes; dragging inside it saves nothing.
-  customColor.addEventListener('change', () => applyServerColor(customColor.value.toLowerCase()));
-  markColor(serverColor);
-
-  selfUpdate.addEventListener('change', () =>
-    save({ selfUpdate: selfUpdate.checked }, selfUpdate.checked ? 'Self update on' : 'Self update off'),
-  );
-
-  interval.addEventListener('change', () => {
-    const hours = Number(interval.value);
-    if (!Number.isFinite(hours) || hours <= 0) {
-      toast('Check interval must be a positive number of hours', true);
-      interval.value = String(intervalHours);
-      return;
-    }
-    intervalHours = hours;
-    save({ updateCheckIntervalHours: hours }, `Checking every ${hours}h`);
-  });
-
   // ---- concurrent job limit ----
-  const processors = config.defaultMaxConcurrentJobs ?? 1;
-  // Tracked like the interval above, so a rejected entry restores the value in
-  // force rather than the one the page loaded with.
-  let jobLimit = Number.isFinite(Number(settings.maxConcurrentJobs)) ? Number(settings.maxConcurrentJobs) : processors;
+  const processors = node.processors ?? 1;
+  // Tracked so a rejected entry restores the value in force rather than the one the page loaded with.
+  let jobLimit = node.config.maxConcurrentJobs;
   const limitInput = el('input', { type: 'text', class: 'mono narrow', value: String(jobLimit) });
   const limitReset = el('button', { class: 'btn small', text: `Use ${processors} (processors)` });
   const queueBody = el('div', { class: 'queue-body' });
 
-  const applyLimit = async (value) => {
+  const applyLimit = async (value, patch = { maxConcurrentJobs: value }) => {
     if (!Number.isInteger(value) || value < 0) {
       toast('Concurrent jobs must be 0 or a whole number', true);
       limitInput.value = String(jobLimit);
@@ -2046,155 +2052,11 @@ async function renderSettings() {
     }
     jobLimit = value;
     limitInput.value = String(value);
-    await save(
-      { maxConcurrentJobs: value },
-      value === 0 ? 'Running jobs with no limit' : `Running at most ${value} job${value === 1 ? '' : 's'} at once`,
-    );
+    await save(patch, value === 0 ? 'Running jobs with no limit' : `Running at most ${value} job${value === 1 ? '' : 's'} at once`);
     paintQueue();
   };
-
   limitInput.addEventListener('change', () => applyLimit(Number(limitInput.value)));
-  limitReset.addEventListener('click', () => applyLimit(processors));
-
-  // ---- usage delay thresholds ----
-  const usageCategories = config.usageDelayCategories ?? [];
-  // Tracked per category like the fields above, so a rejected entry restores the
-  // value in force rather than the one the page loaded with.
-  const thresholds = { ...settings.usageDelayThresholds };
-  const thresholdInputs = new Map();
-
-  const applyThreshold = async (category, value) => {
-    const input = thresholdInputs.get(category.id);
-    if (!Number.isInteger(value) || value < 1 || value > 100) {
-      toast(`${category.label} must be a whole number from 1 to 100`, true);
-      input.value = String(thresholds[category.id]);
-      return;
-    }
-    thresholds[category.id] = value;
-    input.value = String(value);
-    await save({ usageDelayThresholds: { [category.id]: value } }, `${category.label} delays at ${value}%`);
-  };
-
-  const thresholdRow = el(
-    'div',
-    { class: 'preset-row' },
-    usageCategories.flatMap((category, index) => {
-      const input = el('input', {
-        type: 'text',
-        class: 'mono narrow',
-        value: String(thresholds[category.id] ?? category.defaultThreshold),
-        'aria-label': `${category.label} threshold`,
-      });
-      input.addEventListener('change', () => applyThreshold(category, Number(input.value)));
-      thresholdInputs.set(category.id, input);
-      return [
-        index ? el('span', { class: 'preset-sep' }) : null,
-        el('span', { class: 'preset-label', text: category.label }),
-        input,
-        el('span', { class: 'preset-label', text: '%' }),
-      ];
-    }),
-  );
-
-  const thresholdDefaults = usageCategories.map((category) => `${category.label} ${category.defaultThreshold}%`).join(', ');
-  const thresholdReset = el('button', { class: 'btn small', text: 'Use defaults' });
-  thresholdReset.addEventListener('click', async () => {
-    const defaults = Object.fromEntries(usageCategories.map((category) => [category.id, category.defaultThreshold]));
-    Object.assign(thresholds, defaults);
-    for (const [id, input] of thresholdInputs) input.value = String(defaults[id]);
-    await save({ usageDelayThresholds: defaults }, 'Usage delays back to their defaults');
-  });
-
-  // ---- default working directory ----
-  // Tracked like the fields above, so leaving the field unchanged saves nothing.
-  let startDirectory = typeof settings.defaultWorkingDirectory === 'string' && settings.defaultWorkingDirectory.trim() ? settings.defaultWorkingDirectory : '~/';
-  const startDirectoryInput = el('input', {
-    type: 'text',
-    class: 'mono',
-    value: startDirectory,
-    placeholder: '~/',
-    autocomplete: 'off',
-    spellcheck: 'false',
-    'aria-label': 'Default working directory',
-  });
-  // Blur rather than change: taking a suggestion sets the value from script,
-  // which a change event can miss. Clicking a suggestion keeps the focus.
-  startDirectoryInput.addEventListener('blur', () => {
-    const value = startDirectoryInput.value.trim() || '~/';
-    startDirectoryInput.value = value;
-    if (value === startDirectory) return;
-    startDirectory = value;
-    save({ defaultWorkingDirectory: value }, `New jobs start in ${value}`);
-  });
-
-  // ---- default prompt ----
-  const defaultPrompt = el('textarea', {
-    class: 'compact',
-    'aria-label': 'Default prompt',
-    text: typeof settings.defaultPrompt === 'string' ? settings.defaultPrompt : '',
-  });
-  // `change` fires on blur, and only when the text differs from what it held on focus.
-  defaultPrompt.addEventListener('change', () =>
-    save({ defaultPrompt: defaultPrompt.value }, defaultPrompt.value.trim() ? 'Default prompt saved' : 'Default prompt cleared'),
-  );
-
-  // ---- retrospective prompt ----
-  // A blank setting runs the default, so the box shows the default then.
-  const defaultRetrospective = typeof settings.defaultRetrospectivePrompt === 'string' ? settings.defaultRetrospectivePrompt : '';
-  const retrospectivePrompt = el('textarea', {
-    'aria-label': 'Retrospective prompt',
-    text: typeof settings.retrospectivePrompt === 'string' && settings.retrospectivePrompt.trim() ? settings.retrospectivePrompt : defaultRetrospective,
-  });
-  const resetRetrospective = el('button', { type: 'button', class: 'btn small', text: 'Reset to default' });
-  const saveRetrospective = async (text) => {
-    const isDefault = !text.trim() || text.trim() === defaultRetrospective.trim();
-    if (await save({ retrospectivePrompt: isDefault ? '' : text }, isDefault ? 'Retrospective prompt set to the default' : 'Retrospective prompt saved')) {
-      if (isDefault) retrospectivePrompt.value = defaultRetrospective;
-    }
-  };
-  // `change` fires on blur, and only when the text differs from what it held on focus.
-  retrospectivePrompt.addEventListener('change', () => saveRetrospective(retrospectivePrompt.value));
-  resetRetrospective.addEventListener('click', () => saveRetrospective(''));
-
-  // ---- common commands ----
-  const commonCommands = el('textarea', {
-    class: 'compact mono',
-    placeholder: '/review\n/babysit-pr',
-    'aria-label': 'Common commands',
-    text: typeof settings.commonCommands === 'string' ? settings.commonCommands : '',
-  });
-  // Not through save(): the server sorts the lines, and the box shows what it kept.
-  commonCommands.addEventListener('change', async () => {
-    try {
-      const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ commonCommands: commonCommands.value }) });
-      commonCommands.value = saved.commonCommands;
-      toast(saved.commonCommands ? 'Common commands saved' : 'Common commands cleared');
-    } catch (err) {
-      toast(err.message, true);
-    }
-  });
-
-  // ---- worktrees ----
-  const worktreeInclude = el('textarea', {
-    class: 'compact',
-    placeholder: '.env\napps/*/.env.local',
-    'aria-label': 'Default .worktreeinclude',
-    text: typeof settings.defaultWorktreeInclude === 'string' ? settings.defaultWorktreeInclude : '',
-  });
-  // `change` fires on blur, and only when the text differs from what it held on focus.
-  worktreeInclude.addEventListener('change', () =>
-    save(
-      { defaultWorktreeInclude: worktreeInclude.value },
-      worktreeInclude.value.trim() ? 'Default .worktreeinclude saved' : 'Default .worktreeinclude cleared',
-    ),
-  );
-
-  const stat = (value, label, sub) =>
-    el('div', { class: 'stat' }, [
-      value.nodeType ? value : el('div', { class: 'stat-value', text: value }),
-      el('div', { class: 'stat-label', text: label }),
-      el('div', { class: 'stat-sub', text: sub }),
-    ]);
+  limitReset.addEventListener('click', () => applyLimit(processors, { maxConcurrentJobs: null }));
 
   /**
    * The live queue: what is running under the limit and what is behind it.
@@ -2205,7 +2067,7 @@ async function renderSettings() {
   const paintQueue = async () => {
     let state;
     try {
-      state = await api('/api/queue');
+      state = await api(`/api/queue?node=${encodeURIComponent(node.id)}`);
     } catch (err) {
       queueBody.replaceChildren(el('div', { class: 'hint warn', text: err.message }));
       return;
@@ -2217,14 +2079,10 @@ async function renderSettings() {
 
     const parts = [
       el('div', { class: 'stat-strip' }, [
-        stat(
-          state.limit === 0 ? '∞' : String(state.limit),
-          'job limit',
-          state.limit === 0 ? 'no limit' : `${processors} processors`,
-        ),
-        stat(String(state.runningCount), state.runningCount === 1 ? 'job running' : 'jobs running', 'right now'),
-        stat(String(state.queuedCount), 'queued', state.queuedCount ? 'oldest goes first' : 'nothing waiting'),
-        stat(nextSlot, 'next slot', state.nextSlotAt ? 'estimated' : 'no estimate yet'),
+        statTile(state.limit === 0 ? '∞' : String(state.limit), 'job limit', state.limit === 0 ? 'no limit' : `${processors} processors`),
+        statTile(String(state.runningCount), state.runningCount === 1 ? 'job running' : 'jobs running', 'right now'),
+        statTile(String(state.queuedCount), 'queued', state.queuedCount ? 'oldest goes first' : 'nothing waiting'),
+        statTile(nextSlot, 'next slot', state.nextSlotAt ? 'estimated' : 'no estimate yet'),
       ]),
     ];
 
@@ -2279,11 +2137,362 @@ async function renderSettings() {
     }
 
     if (!state.running.length && !state.queued.length) {
-      parts.push(el('div', { class: 'hint', text: 'Nothing is running and nothing is queued.' }));
+      parts.push(el('div', { class: 'hint', text: node.online ? 'Nothing is running and nothing is queued.' : 'This node is offline, so nothing runs.' }));
     }
 
     queueBody.replaceChildren(...parts);
   };
+
+  // ---- usage delay thresholds ----
+  const usageCategories = config.usageDelayCategories ?? [];
+  const thresholds = { ...node.config.usageDelayThresholds };
+  const thresholdInputs = new Map();
+
+  const applyThreshold = async (category, value) => {
+    const input = thresholdInputs.get(category.id);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      toast(`${category.label} must be a whole number from 1 to 100`, true);
+      input.value = String(thresholds[category.id]);
+      return;
+    }
+    thresholds[category.id] = value;
+    input.value = String(value);
+    await save({ usageDelayThresholds: { [category.id]: value } }, `${category.label} delays at ${value}%`);
+  };
+
+  const thresholdRow = el(
+    'div',
+    { class: 'preset-row' },
+    usageCategories.flatMap((category, index) => {
+      const input = el('input', {
+        type: 'text',
+        class: 'mono narrow',
+        value: String(thresholds[category.id] ?? category.defaultThreshold),
+        'aria-label': `${category.label} threshold`,
+      });
+      input.addEventListener('change', () => applyThreshold(category, Number(input.value)));
+      thresholdInputs.set(category.id, input);
+      return [
+        index ? el('span', { class: 'preset-sep' }) : null,
+        el('span', { class: 'preset-label', text: category.label }),
+        input,
+        el('span', { class: 'preset-label', text: '%' }),
+      ];
+    }),
+  );
+
+  const thresholdDefaults = usageCategories.map((category) => `${category.label} ${category.defaultThreshold}%`).join(', ');
+  const thresholdReset = el('button', { class: 'btn small', text: 'Use defaults' });
+  thresholdReset.addEventListener('click', async () => {
+    const defaults = Object.fromEntries(usageCategories.map((category) => [category.id, category.defaultThreshold]));
+    Object.assign(thresholds, defaults);
+    for (const [id, input] of thresholdInputs) input.value = String(defaults[id]);
+    await save({ usageDelayThresholds: null }, 'Usage delays back to their defaults');
+  });
+
+  // ---- default working directory ----
+  let startDirectory = node.config.defaultWorkingDirectory || '~/';
+  const startDirectoryInput = el('input', {
+    type: 'text',
+    class: 'mono',
+    value: startDirectory,
+    placeholder: '~/',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    'aria-label': 'Default working directory',
+  });
+  // Blur rather than change: taking a suggestion sets the value from script,
+  // which a change event can miss. Clicking a suggestion keeps the focus.
+  startDirectoryInput.addEventListener('blur', () => {
+    const value = startDirectoryInput.value.trim() || '~/';
+    startDirectoryInput.value = value;
+    if (value === startDirectory) return;
+    startDirectory = value;
+    save({ defaultWorkingDirectory: value }, `New jobs on ${node.name} start in ${value}`);
+  });
+
+  return {
+    paintQueue,
+    limit: [
+      el('h3', { text: 'Limit concurrent jobs' }),
+      el('div', { class: 'preset-row' }, [
+        el('span', { class: 'preset-label', text: 'Run at most' }),
+        limitInput,
+        el('span', { class: 'preset-label', text: 'jobs at once' }),
+        el('span', { class: 'preset-sep' }),
+        limitReset,
+      ]),
+      el('div', { class: 'hint' }, [
+        'A trigger that arrives with every slot taken is held as ',
+        el('span', { class: 'mono', text: 'delayed' }),
+        ' and started when a run finishes. The queue is first in, first out, so runs keep the order their triggers fired. ',
+        `Set 0 for no limit. The default is this node's processor count (${processors}).`,
+      ]),
+      el('div', { class: 'hint warn' }, [
+        'Lowering this never stops a run already going — it only holds the next ones. ',
+        'The queue lives in memory: a restart clears it, and the next trigger of each cron starts it afresh.',
+      ]),
+    ],
+    queue: [
+      queueBody,
+      el('div', { class: 'hint' }, [
+        'Next slot is the soonest a running job is due to finish: its own average run length, less how long it has been going. ',
+        'A job with no finished runs behind it has no average and is left out, so a slot can come free sooner than this says.',
+      ]),
+    ],
+    usage: [
+      el('h3', { text: 'Delay for usage' }),
+      thresholdRow,
+      el('div', { class: 'preset-row' }, [thresholdReset]),
+      el('div', { class: 'hint' }, [
+        'A cron or one-time execution on this node with a limit ticked under Delay for usage waits while that limit is at or above its percentage here. ',
+        "Usage is read from the Claude account this node is signed in to, and a change reaches the next trigger. ",
+        `The defaults are ${thresholdDefaults}.`,
+      ]),
+    ],
+    directory: [
+      el('h3', { text: 'Default working directory' }),
+      directoryPicker(startDirectoryInput, { label: null, node: () => node.id }),
+      el('div', { class: 'hint' }, [
+        'Where the Working Directory field of a new cron or one-time execution on this node starts. ',
+        'Editing or duplicating a job keeps the directory it already has, and changing this moves no saved job. ',
+        'The default is ',
+        el('span', { class: 'mono', text: '~/' }),
+        '.',
+      ]),
+    ],
+  };
+}
+
+/** The node list on the Settings page, each linking to the node's own page. */
+function nodesList() {
+  const body = el('div', {});
+  const tokenWhere = el('span', {}, ['the token in ', el('span', { class: 'mono', text: 'node-token' }), ' on this machine']);
+  const paint = async () => {
+    let state;
+    try {
+      state = await api('/api/nodes');
+    } catch (err) {
+      body.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the nodes: ${err.message}` }));
+      return;
+    }
+    tokenWhere.replaceChildren(
+      ...(state.tokenSource === 'environment'
+        ? ['the token this server was started with in ', el('span', { class: 'mono', text: 'PROMPTD_NODE_TOKEN' })]
+        : ['the token in ', el('span', { class: 'mono', text: state.tokenFile }), ' on this machine']),
+    );
+    const describe = (node) =>
+      [
+        node.hostname,
+        node.online ? `${node.running} running, ${node.queued} queued, ${node.scheduled} scheduled` : `last seen ${fmtRelative(node.lastSeenAt)}`,
+        `limit ${node.config.maxConcurrentJobs || 'none'}`,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+    const rows = state.nodes.map((node) =>
+      el('div', { class: 'field' }, [
+        el('label', {}, [
+          el('a', { class: 'link', href: `#/nodes/${encodeURIComponent(node.id)}`, text: node.name }),
+          node.isDefault ? ' (default)' : '',
+        ]),
+        el('div', { class: 'preset-row' }, [
+          el('span', { class: `pill ${node.online ? 'active' : 'paused'}` }, [el('span', { class: 'led' }), node.online ? 'online' : 'offline']),
+          node.commit && state.hubCommit && node.commit !== state.hubCommit
+            ? el('span', { class: 'pill warn', title: versionText(node, state.hubCommit), text: `runs ${node.commit}` })
+            : null,
+          el('span', { class: 'preset-label mono', text: describe(node) }),
+          el('span', { class: 'preset-sep' }),
+          el('a', { class: 'btn small', href: `#/nodes/${encodeURIComponent(node.id)}`, text: 'Settings' }),
+        ]),
+      ]),
+    );
+    body.replaceChildren(...(rows.length ? rows : [el('div', { class: 'hint warn', text: 'No node has connected yet, so nothing runs.' })]));
+  };
+  return {
+    paint,
+    parts: [
+      body,
+      el('div', { class: 'hint' }, [
+        'A node is a machine that runs jobs. Each one fetches its work from this server and reports back every few seconds, ',
+        'so only this server needs to be reachable. A job with no node of its own runs on the default node. ',
+        'To add a Mac, run ',
+        el('span', { class: 'mono', text: 'NODE_ONLY=1 HUB_URL=<this server> NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh' }),
+        ' in a checkout there, with ',
+        tokenWhere,
+        '.',
+      ]),
+    ],
+  };
+}
+
+async function renderSettings() {
+  // Health comes along for the boot time: it is the one fact on this page that
+  // belongs to the running process rather than to a file on disk.
+  const [settings, config, health, notifications, auth, nodeState] = await Promise.all([
+    api('/api/settings'),
+    api('/api/config'),
+    api('/api/health').catch(() => ({})),
+    // One item's worth of payload; it is the counts either side of it we want.
+    api('/api/notifications?limit=1').catch(() => ({})),
+    api('/api/auth/status').catch(() => ({ required: false })),
+    api('/api/nodes').catch(() => ({ nodes: [] })),
+  ]);
+
+  // One node beside the hub is a local install, and its settings stay on this
+  // page as they always were. Anything else gets a page per node.
+  const soleLocal = nodeState.nodes.length === 1 && nodeState.nodes[0].isLocal ? nodeState.nodes[0] : null;
+  const local = soleLocal ? nodeSettingsParts(soleLocal, config) : null;
+  const nodes = nodesList();
+
+  const signOut = auth.required
+    ? el('button', {
+        class: 'btn small',
+        type: 'button',
+        text: 'Sign out',
+        onclick: async () => {
+          await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+          location.assign('/login');
+        },
+      })
+    : null;
+
+  const status = el('div', { class: 'hint' });
+  const checkButton = el('button', { class: 'btn small', text: 'Check for updates' });
+  const updateButton = el('button', { class: 'btn primary', text: 'Update now', disabled: 'disabled' });
+
+  const selfUpdate = el('input', { type: 'checkbox' });
+  selfUpdate.checked = Boolean(settings.selfUpdate);
+
+  // Tracked separately so rejecting a bad entry restores the value in force now,
+  // not the one the page happened to load with.
+  let intervalHours = Number(settings.updateCheckIntervalHours) || 24;
+  const interval = el('input', { type: 'text', class: 'mono narrow', value: String(intervalHours) });
+
+  const serverNameInput = el('input', {
+    type: 'text',
+    value: typeof settings.serverName === 'string' ? settings.serverName : '',
+    placeholder: 'e.g. Office Mac mini',
+    autocomplete: 'off',
+    'aria-label': 'Server name',
+  });
+  // `change` fires on blur, and only when the text differs from what it held on focus.
+  serverNameInput.addEventListener('change', async () => {
+    const name = serverNameInput.value.trim();
+    serverNameInput.value = name;
+    if (await saveSettings({ serverName: name }, name ? `Server name set to ${name}` : 'Server name cleared')) setServerName(name);
+  });
+
+  // ---- server color ----
+  // Tracked like the fields below, so a failed save puts back the color in force.
+  let serverColor = /^#[0-9a-f]{6}$/i.test(settings.serverColor ?? '') ? settings.serverColor.toLowerCase() : DEFAULT_SERVER_COLOR;
+  const swatches = SERVER_COLORS.map((color) =>
+    el('button', { type: 'button', class: 'swatch', style: `background: ${color.hex}`, title: color.label, 'aria-label': color.label }),
+  );
+  const customColor = el('input', { type: 'color', class: 'swatch-custom', title: 'Custom color', 'aria-label': 'Custom server color' });
+
+  const markColor = (hex) => {
+    swatches.forEach((swatch, i) => swatch.setAttribute('aria-pressed', SERVER_COLORS[i].hex === hex ? 'true' : 'false'));
+    customColor.value = hex;
+    customColor.classList.toggle('selected', !SERVER_COLORS.some((color) => color.hex === hex));
+  };
+
+  const applyServerColor = async (hex) => {
+    const previous = serverColor;
+    serverColor = hex;
+    markColor(hex);
+    setServerColor(hex);
+    const named = SERVER_COLORS.find((color) => color.hex === hex);
+    const saved = await saveSettings(
+      { serverColor: hex === DEFAULT_SERVER_COLOR ? '' : hex },
+      hex === DEFAULT_SERVER_COLOR ? 'Server color back to the default' : `Server color set to ${named?.label ?? hex}`,
+    );
+    if (saved) return;
+    serverColor = previous;
+    markColor(previous);
+    setServerColor(previous);
+  };
+
+  swatches.forEach((swatch, i) => swatch.addEventListener('click', () => applyServerColor(SERVER_COLORS[i].hex)));
+  // `change` fires once the picker closes; dragging inside it saves nothing.
+  customColor.addEventListener('change', () => applyServerColor(customColor.value.toLowerCase()));
+  markColor(serverColor);
+
+  selfUpdate.addEventListener('change', () =>
+    saveSettings({ selfUpdate: selfUpdate.checked }, selfUpdate.checked ? 'Self update on' : 'Self update off'),
+  );
+
+  interval.addEventListener('change', () => {
+    const hours = Number(interval.value);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      toast('Check interval must be a positive number of hours', true);
+      interval.value = String(intervalHours);
+      return;
+    }
+    intervalHours = hours;
+    saveSettings({ updateCheckIntervalHours: hours }, `Checking every ${hours}h`);
+  });
+
+  // ---- default prompt ----
+  const defaultPrompt = el('textarea', {
+    class: 'compact',
+    'aria-label': 'Default prompt',
+    text: typeof settings.defaultPrompt === 'string' ? settings.defaultPrompt : '',
+  });
+  // `change` fires on blur, and only when the text differs from what it held on focus.
+  defaultPrompt.addEventListener('change', () =>
+    saveSettings({ defaultPrompt: defaultPrompt.value }, defaultPrompt.value.trim() ? 'Default prompt saved' : 'Default prompt cleared'),
+  );
+
+  // ---- retrospective prompt ----
+  // A blank setting runs the default, so the box shows the default then.
+  const defaultRetrospective = typeof settings.defaultRetrospectivePrompt === 'string' ? settings.defaultRetrospectivePrompt : '';
+  const retrospectivePrompt = el('textarea', {
+    'aria-label': 'Retrospective prompt',
+    text: typeof settings.retrospectivePrompt === 'string' && settings.retrospectivePrompt.trim() ? settings.retrospectivePrompt : defaultRetrospective,
+  });
+  const resetRetrospective = el('button', { type: 'button', class: 'btn small', text: 'Reset to default' });
+  const saveRetrospective = async (text) => {
+    const isDefault = !text.trim() || text.trim() === defaultRetrospective.trim();
+    if (await saveSettings({ retrospectivePrompt: isDefault ? '' : text }, isDefault ? 'Retrospective prompt set to the default' : 'Retrospective prompt saved')) {
+      if (isDefault) retrospectivePrompt.value = defaultRetrospective;
+    }
+  };
+  // `change` fires on blur, and only when the text differs from what it held on focus.
+  retrospectivePrompt.addEventListener('change', () => saveRetrospective(retrospectivePrompt.value));
+  resetRetrospective.addEventListener('click', () => saveRetrospective(''));
+
+  // ---- common commands ----
+  const commonCommands = el('textarea', {
+    class: 'compact mono',
+    placeholder: '/review\n/babysit-pr',
+    'aria-label': 'Common commands',
+    text: typeof settings.commonCommands === 'string' ? settings.commonCommands : '',
+  });
+  // Not through saveSettings(): the server sorts the lines, and the box shows what it kept.
+  commonCommands.addEventListener('change', async () => {
+    try {
+      const saved = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ commonCommands: commonCommands.value }) });
+      commonCommands.value = saved.commonCommands;
+      toast(saved.commonCommands ? 'Common commands saved' : 'Common commands cleared');
+    } catch (err) {
+      toast(err.message, true);
+    }
+  });
+
+  // ---- worktrees ----
+  const worktreeInclude = el('textarea', {
+    class: 'compact',
+    placeholder: '.env\napps/*/.env.local',
+    'aria-label': 'Default .worktreeinclude',
+    text: typeof settings.defaultWorktreeInclude === 'string' ? settings.defaultWorktreeInclude : '',
+  });
+  // `change` fires on blur, and only when the text differs from what it held on focus.
+  worktreeInclude.addEventListener('change', () =>
+    saveSettings(
+      { defaultWorktreeInclude: worktreeInclude.value },
+      worktreeInclude.value.trim() ? 'Default .worktreeinclude saved' : 'Default .worktreeinclude cleared',
+    ),
+  );
 
   const showCheck = (result) => {
     setUpdateBadge(Boolean(result.updatable), result.behind);
@@ -2333,79 +2542,55 @@ async function renderSettings() {
     }
   });
 
-  const readOnly = (label, value) =>
-    el('div', { class: 'field' }, [el('label', { text: label }), el('div', { class: 'path-value mono', text: value })]);
-
-  const nodesBody = el('div', {});
-  const tokenWhere = el('span', {}, ['the token in ', el('span', { class: 'mono', text: 'node-token' }), ' on this machine']);
-  const paintNodes = async () => {
-    let state;
-    try {
-      state = await api('/api/nodes');
-    } catch (err) {
-      nodesBody.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the nodes: ${err.message}` }));
-      return;
-    }
-    tokenWhere.replaceChildren(
-      ...(state.tokenSource === 'environment'
-        ? ['the token this server was started with in ', el('span', { class: 'mono', text: 'PROMPTD_NODE_TOKEN' })]
-        : ['the token in ', el('span', { class: 'mono', text: state.tokenFile }), ' on this machine']),
-    );
-    const describe = (node) =>
-      [
-        node.id,
-        node.hostname,
-        node.commit,
-        node.online ? `${node.running} running, ${node.scheduled} scheduled` : `last seen ${fmtRelative(node.lastSeenAt)}`,
-      ]
-        .filter(Boolean)
-        .join(' · ');
-    const rows = state.nodes.map((node) =>
-      el('div', { class: 'field' }, [
-        el('label', { text: node.isDefault ? `${node.name} (default)` : node.name }),
-        el('div', { class: 'preset-row' }, [
-          el('span', { class: `pill ${node.online ? 'active' : 'paused'}` }, [el('span', { class: 'led' }), node.online ? 'online' : 'offline']),
-          el('span', { class: 'preset-label mono', text: describe(node) }),
-          el('span', { class: 'preset-sep' }),
-          node.isDefault
-            ? null
-            : el('button', {
-                class: 'btn small',
-                text: 'Make default',
-                onclick: async () => {
-                  if (await save({ defaultNodeId: node.id }, `${node.name} is now the default node`)) paintNodes();
-                },
-              }),
-          node.online
-            ? null
-            : el('button', {
-                class: 'btn small danger',
-                text: 'Remove',
-                onclick: async () => {
-                  try {
-                    await api(`/api/nodes/${encodeURIComponent(node.id)}`, { method: 'DELETE' });
-                    toast(`Removed ${node.name}`);
-                    paintNodes();
-                  } catch (err) {
-                    toast(err.message, true);
-                  }
-                },
-              }),
+  const divider = () => el('div', { class: 'card-divider' });
+  const updates = config.selfUpdate
+    ? [
+        divider(),
+        el('h3', { text: 'Updates' }),
+        el('label', { class: 'check' }, [selfUpdate, 'Check for updates once per interval and apply them automatically']),
+        el('div', { class: 'hint warn' }, [
+          'Every cron is paused while an update runs. ',
+          'A trigger due in that window is missed, not queued. ',
+          'With this off, the server still checks and shows an Update available badge in the header.',
         ]),
-      ]),
-    );
-    nodesBody.replaceChildren(
-      ...(rows.length ? rows : [el('div', { class: 'hint warn', text: 'No node has connected yet, so nothing runs.' })]),
-    );
-  };
+        el('div', { class: 'preset-row' }, [
+          checkButton,
+          updateButton,
+          el('span', { class: 'preset-sep' }),
+          el('span', { class: 'preset-label', text: 'Check every' }),
+          interval,
+          el('span', { class: 'preset-label', text: 'hours' }),
+        ]),
+        status,
+        el('div', { class: 'hint' }, [
+          'An update pulls ',
+          el('span', { class: 'mono', text: 'origin/main' }),
+          ' and restarts the service. Update now works even with self update off.',
+        ]),
+      ]
+    : [];
+  const dates = [
+    divider(),
+    el('h3', { text: 'Dates' }),
+    ...(config.selfUpdate
+      ? [
+          readOnlyField('Last check for updates', settings.lastUpdateCheckAt ? `${fmtDateTime(settings.lastUpdateCheckAt)} (${fmtRelative(settings.lastUpdateCheckAt)})` : 'never'),
+          readOnlyField(
+            'Last update started',
+            settings.lastUpdateLaunchedAt
+              ? `${fmtDateTime(settings.lastUpdateLaunchedAt)}${settings.lastUpdateFromCommit ? `, from ${settings.lastUpdateFromCommit}` : ''}`
+              : 'never',
+          ),
+        ]
+      : []),
+    // An update restarts the service, so this says whether the last one landed.
+    readOnlyField('Server last boot time', health.startedAt ? `${fmtDateTime(health.startedAt)} (${fmtRelative(health.startedAt)})` : 'unknown'),
+  ];
 
   view.replaceChildren(
     el('div', { class: 'breadcrumb' }, [el('a', { href: '#/', text: '← All crons' })]),
     el('div', { class: 'page-head' }, [
-      el('div', {}, [
-        el('h1', { text: 'Settings' }),
-        el('p', { class: 'sub', text: `Stored in ${databaseLabel(settings.database)}` }),
-      ]),
+      el('div', {}, [el('h1', { text: 'Settings' }), el('p', { class: 'sub', text: `Stored in ${databaseLabel(settings.database)}` })]),
     ]),
     el('div', { class: 'card' }, [
       el('div', { class: 'card-head' }, [el('h2', { text: 'Server Settings' }), signOut]),
@@ -2416,101 +2601,28 @@ async function renderSettings() {
         el('span', { class: 'mono', text: 'promptd - <name>' }),
         ', so two open servers can be told apart. Leave it blank to show promptd alone.',
       ]),
-      el('div', { class: 'card-divider' }),
+      divider(),
       el('h3', { text: 'Server Color' }),
-      el('div', { class: 'preset-row' }, [
-        ...swatches,
-        el('span', { class: 'preset-sep' }),
-        el('span', { class: 'preset-label', text: 'Custom' }),
-        customColor,
-      ]),
+      el('div', { class: 'preset-row' }, [...swatches, el('span', { class: 'preset-sep' }), el('span', { class: 'preset-label', text: 'Custom' }), customColor]),
       el('div', { class: 'hint' }, [
         'Colors the band across the top of every page, the dot beside the name, and the buttons and highlights. ',
         'Give each server its own and you can tell which one is open before reading anything. Orange is the default.',
       ]),
-      el('div', { class: 'card-divider' }),
-      el('h3', { text: 'Updates' }),
-      el('label', { class: 'check' }, [
-        selfUpdate,
-        'Check for updates once per interval and apply them automatically',
-      ]),
-      el('div', { class: 'hint warn' }, [
-        'Every cron is paused while an update runs. ',
-        'A trigger due in that window is missed, not queued. ',
-        'With this off, the server still checks and shows an Update available badge in the header.',
-      ]),
-      el('div', { class: 'preset-row' }, [
-        checkButton,
-        updateButton,
-        el('span', { class: 'preset-sep' }),
-        el('span', { class: 'preset-label', text: 'Check every' }),
-        interval,
-        el('span', { class: 'preset-label', text: 'hours' }),
-      ]),
-      status,
-      el('div', { class: 'hint' }, [
-        'An update pulls ',
-        el('span', { class: 'mono', text: 'origin/main' }),
-        ' and restarts the service. Update now works even with self update off.',
-      ]),
-      el('div', { class: 'card-divider' }),
-      el('h3', { text: 'Dates' }),
-      readOnly('Last check for updates', settings.lastUpdateCheckAt ? `${fmtDateTime(settings.lastUpdateCheckAt)} (${fmtRelative(settings.lastUpdateCheckAt)})` : 'never'),
-      readOnly(
-        'Last update started',
-        settings.lastUpdateLaunchedAt
-          ? `${fmtDateTime(settings.lastUpdateLaunchedAt)}${settings.lastUpdateFromCommit ? `, from ${settings.lastUpdateFromCommit}` : ''}`
-          : 'never',
-      ),
-      // An update restarts the service, so this says whether the last one landed.
-      readOnly('Server last boot time', health.startedAt ? `${fmtDateTime(health.startedAt)} (${fmtRelative(health.startedAt)})` : 'unknown'),
-      el('div', { class: 'card-divider' }),
-      el('h3', { text: 'Limit concurrent jobs' }),
-      el('div', { class: 'preset-row' }, [
-        el('span', { class: 'preset-label', text: 'Run at most' }),
-        limitInput,
-        el('span', { class: 'preset-label', text: 'jobs at once' }),
-        el('span', { class: 'preset-sep' }),
-        limitReset,
-      ]),
-      el('div', { class: 'hint' }, [
-        'A trigger that arrives with every slot taken is held as ',
-        el('span', { class: 'mono', text: 'delayed' }),
-        ' and started when a run finishes. The queue is first in, first out, so runs keep the order their triggers fired. ',
-        `Set 0 for no limit. The default is this machine's processor count (${processors}).`,
-      ]),
-      el('div', { class: 'hint warn' }, [
-        'Lowering this never stops a run already going — it only holds the next ones. ',
-        'The queue lives in memory: a restart clears it, and the next trigger of each cron starts it afresh.',
-      ]),
-      el('div', { class: 'card-divider' }),
-      queueBody,
-      el('div', { class: 'hint' }, [
-        'Next slot is the soonest a running job is due to finish: its own average run length, less how long it has been going. ',
-        'A job with no finished runs behind it has no average and is left out, so a slot can come free sooner than this says.',
-      ]),
+      ...updates,
+      ...dates,
+      ...(local ? [divider(), ...local.limit, divider(), ...local.queue] : []),
     ]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Job Settings' }),
-      el('h3', { text: 'Delay for usage' }),
-      thresholdRow,
-      el('div', { class: 'preset-row' }, [thresholdReset]),
-      el('div', { class: 'hint' }, [
-        'A cron or one-time execution with a limit ticked under Delay for usage waits while that limit is at or above its percentage here. ',
-        'The same percentage applies to every job that ticks it, and a change reaches the next trigger. ',
-        `The defaults are ${thresholdDefaults}.`,
-      ]),
-      el('div', { class: 'card-divider' }),
-      el('h3', { text: 'Default working directory' }),
-      directoryPicker(startDirectoryInput, { label: null }),
-      el('div', { class: 'hint' }, [
-        'Where the Working Directory field of a new cron or one-time execution starts. ',
-        'Editing or duplicating a job keeps the directory it already has, and changing this moves no saved job. ',
-        'The default is ',
-        el('span', { class: 'mono', text: '~/' }),
-        '.',
-      ]),
-      el('div', { class: 'card-divider' }),
+      ...(local
+        ? [...local.usage, divider(), ...local.directory, divider()]
+        : [
+            el('div', { class: 'hint' }, [
+              'The job limit, usage delays and default working directory belong to each node. ',
+              'Open a node under Nodes to set them. What is here applies to every node.',
+            ]),
+            divider(),
+          ]),
       el('h3', { text: 'Default prompt' }),
       el('div', { class: 'field' }, [defaultPrompt]),
       el('div', { class: 'hint' }, [
@@ -2518,7 +2630,7 @@ async function renderSettings() {
         'Editing or duplicating a job keeps the prompt it already has, and changing this rewrites no saved job. ',
         'Leave it blank to start new jobs with an empty prompt.',
       ]),
-      el('div', { class: 'card-divider' }),
+      divider(),
       el('h3', { text: 'Retrospective prompt' }),
       el('div', { class: 'field' }, [retrospectivePrompt]),
       el('div', { class: 'hint' }, [
@@ -2528,7 +2640,7 @@ async function renderSettings() {
         'Clearing the box, or saving the default unchanged, keeps it on the default.',
       ]),
       el('div', { class: 'form-actions' }, [resetRetrospective]),
-      el('div', { class: 'card-divider' }),
+      divider(),
       el('h3', { text: 'Common commands' }),
       el('div', { class: 'field' }, [commonCommands]),
       el('div', { class: 'hint' }, [
@@ -2536,7 +2648,7 @@ async function renderSettings() {
         'and clicking it copies the command to the clipboard for pasting into the prompt. ',
         'Saving sorts the lines and drops blank ones, and the buttons follow the same order.',
       ]),
-      el('div', { class: 'card-divider' }),
+      divider(),
       el('h3', { text: 'Default .worktreeinclude' }),
       el('div', { class: 'field' }, [worktreeInclude]),
       el('div', { class: 'hint' }, [
@@ -2557,32 +2669,18 @@ async function renderSettings() {
         ' already in the main checkout is overwritten with this text on every run, including one the repo has committed.',
       ]),
     ]),
-    el('div', { class: 'card' }, [
-      el('h2', { text: 'Nodes' }),
-      nodesBody,
-      el('div', { class: 'hint' }, [
-        'A node is a machine that runs jobs. Each one fetches its work from this server and reports back every few seconds, ',
-        'so only this server needs to be reachable. A job with no node of its own runs on the default node. ',
-        'To add a Mac, run ',
-        el('span', { class: 'mono', text: 'NODE_ONLY=1 HUB_URL=<this server> NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh' }),
-        ' in a checkout there, with ',
-        tokenWhere,
-        '.',
-      ]),
-    ]),
+    el('div', { class: 'card' }, [el('h2', { text: 'Nodes' }), ...nodes.parts]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Storage' }),
-      readOnly('Storage root', config.storageRoot),
-      readOnly('Database', databaseLabel(config.database)),
-      readOnly('Logs', `${config.logsDir} (newest ${config.maxLogsPerCron} runs kept per cron)`),
-      readOnly(
+      readOnlyField('Storage root', config.storageRoot),
+      readOnlyField('Database', databaseLabel(config.database)),
+      readOnlyField('Logs', `${config.logsDir} (newest ${config.maxLogsPerCron} runs kept per cron)`),
+      readOnlyField(
         'Notifications',
-        Number.isFinite(notifications.total)
-          ? `${notifications.total} stored, ${notifications.unread} unread`
-          : 'in the database',
+        Number.isFinite(notifications.total) ? `${notifications.total} stored, ${notifications.unread} unread` : 'in the database',
       ),
-      readOnly('Project folder', settings.projectDir),
-      readOnly('Update log', settings.updateLog),
+      readOnlyField('Project folder', settings.projectDir),
+      ...(config.selfUpdate ? [readOnlyField('Update log', settings.updateLog)] : []),
       el('div', { class: 'hint' }, [
         'Crons, one-time executions, settings and notifications are kept in the database; run logs are plain files under the storage root. ',
         'Set DATABASE_URL to a postgres:// address to use Postgres instead of the SQLite file. ',
@@ -2591,13 +2689,98 @@ async function renderSettings() {
     ]),
   );
 
-  check();
-  paintQueue();
-  paintNodes();
+  if (config.selfUpdate) check();
+  local?.paintQueue();
+  nodes.paint();
   // Run activity redraws the queue on its own from here; the page is not rebuilt.
   repaintQueue = () => {
-    paintQueue();
-    paintNodes();
+    local?.paintQueue();
+    nodes.paint();
+  };
+}
+
+async function renderNode(id) {
+  const [node, config] = await Promise.all([api(`/api/nodes/${encodeURIComponent(id)}`), api('/api/config')]);
+  const parts = nodeSettingsParts(node, config);
+  const statusBody = el('div', {});
+
+  const paintStatus = async () => {
+    let current;
+    try {
+      current = await api(`/api/nodes/${encodeURIComponent(id)}`);
+    } catch (err) {
+      statusBody.replaceChildren(el('div', { class: 'hint warn', text: err.message }));
+      return;
+    }
+    const actions = [
+      current.isDefault
+        ? null
+        : el('button', {
+            class: 'btn small',
+            text: 'Make default',
+            onclick: async () => {
+              if (await saveSettings({ defaultNodeId: current.id }, `${current.name} is now the default node`)) paintStatus();
+            },
+          }),
+      current.online
+        ? null
+        : el('button', {
+            class: 'btn small danger',
+            text: 'Remove',
+            onclick: async () => {
+              try {
+                await api(`/api/nodes/${encodeURIComponent(current.id)}`, { method: 'DELETE' });
+                toast(`Removed ${current.name}`);
+                location.hash = '#/settings';
+              } catch (err) {
+                toast(err.message, true);
+              }
+            },
+          }),
+    ].filter(Boolean);
+    statusBody.replaceChildren(
+      el('div', { class: 'preset-row' }, [
+        el('span', { class: `pill ${current.online ? 'active' : 'paused'}` }, [el('span', { class: 'led' }), current.online ? 'online' : 'offline']),
+        current.isDefault ? el('span', { class: 'pill', text: 'default node' }) : null,
+        el('span', {
+          class: 'preset-label',
+          text: current.online
+            ? `${current.running} running, ${current.queued} queued, ${current.scheduled} scheduled`
+            : `last seen ${fmtRelative(current.lastSeenAt)}`,
+        }),
+        ...(actions.length ? [el('span', { class: 'preset-sep' }), ...actions] : []),
+      ]),
+      readOnlyField('Version', versionText(current, current.hubCommit)),
+      readOnlyField('Started', current.startedAt ? `${fmtDateTime(current.startedAt)} (${fmtRelative(current.startedAt)})` : 'unknown'),
+      readOnlyField('Machine', [current.hostname, current.platform, current.processors ? `${current.processors} processors` : null].filter(Boolean).join(' · ')),
+      readOnlyField('Clock time zone', current.clockTimezone ?? 'unknown'),
+      readOnlyField('Node id', current.id),
+    );
+  };
+
+  view.replaceChildren(
+    el('div', { class: 'breadcrumb' }, [el('a', { href: '#/settings', text: '← Settings' })]),
+    el('div', { class: 'page-head' }, [
+      el('div', {}, [
+        el('h1', { text: node.name }),
+        el('p', { class: 'sub', text: 'A machine that runs jobs. What is set here applies only to the jobs it runs.' }),
+      ]),
+    ]),
+    el('div', { class: 'card' }, [el('h2', { text: 'Node' }), statusBody]),
+    el('div', { class: 'card' }, [el('h2', { text: 'Jobs' }), ...parts.limit, el('div', { class: 'card-divider' }), ...parts.queue]),
+    el('div', { class: 'card' }, [
+      el('h2', { text: 'Job defaults' }),
+      ...parts.directory,
+      el('div', { class: 'card-divider' }),
+      ...parts.usage,
+    ]),
+  );
+
+  paintStatus();
+  parts.paintQueue();
+  repaintQueue = () => {
+    parts.paintQueue();
+    paintStatus();
   };
 }
 
@@ -2948,6 +3131,7 @@ async function route() {
   if (section === 'logs' && id && file) openLinkedLog(kind, id, file, retro);
   try {
     if (section === 'settings') await renderSettings();
+    else if (section === 'nodes' && id) await renderNode(decodeURIComponent(id));
     else if (kind === 'execution') {
       if (section === 'new') await renderExecutionForm(null, id || null);
       else if (section === 'edit' && id) await renderExecutionForm(id);

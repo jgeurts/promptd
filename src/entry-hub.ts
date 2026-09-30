@@ -1,6 +1,5 @@
 import fsp from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -9,9 +8,10 @@ import { bus, sseInit, sseSend } from './events.js';
 import { assertAuthConfigured, authRouter, requireLogin } from './auth.js';
 import { databaseTarget, migrate, openDatabase } from './db.js';
 import { importLegacyFiles } from './legacyImport.js';
-import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs, resolveUserPath } from './paths.js';
-import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
-import { hub } from './hub.js';
+import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs } from './paths.js';
+import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
+import { HubError, hub } from './hub.js';
+import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
   createExecution,
@@ -23,10 +23,10 @@ import {
   updateExecution,
 } from './executions.js';
 import { feedbackExecution, readFeedbackForm } from './feedback.js';
-import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, normalizeMaxConcurrentJobs, patchSettings } from './settings.js';
+import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './settings.js';
 import { migrateLogDirs } from './logsMigration.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
-import { USAGE_DELAY_CATEGORIES, normalizeUsageDelay, parseUsageThreshold, setUsageThresholds, usageDelayOptions } from './usage.js';
+import { normalizeUsageDelay, usageDelayOptions } from './usage.js';
 import { lifetimeStats } from './stats.js';
 import { MAX_NOTIFICATIONS, PAGE_SIZE, notificationCenter } from './notifications.js';
 import {
@@ -50,6 +50,7 @@ const STARTED_AT = new Date().toISOString();
 
 const PORT = Number(process.env.PORT || 4321);
 const HOST = process.env.HOST || '127.0.0.1';
+const SELF_UPDATE = process.env.PROMPTD_SELF_UPDATE !== '0';
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
 type JsonRequest = Request<Record<string, string>, unknown, Record<string, unknown>>;
@@ -102,12 +103,15 @@ function readForm(body: Record<string, unknown> | undefined): { errors: string[]
   if (effort && !isEffortLevel(effort)) {
     errors.push(`Effort must be one of ${EFFORT_LEVELS.map((level) => level.id).join(', ')}.`);
   }
+  const timezone = String(body?.timezone ?? '').trim();
+  if (timezone && !isTimeZone(timezone)) errors.push(`${timezone} is not a time zone.`);
   return {
     errors,
     value: {
       name,
       description: String(body?.description ?? '').trim(),
       cron: expression,
+      timezone,
       workingDirectory: String(body?.workingDirectory ?? '').trim(),
       useWorktree: Boolean(body?.useWorktree),
       cleanupWorktree: Boolean(body?.cleanupWorktree),
@@ -232,11 +236,10 @@ app.get('/api/config', (_req, res) => {
     maxLogsPerCron: MAX_LOGS_PER_CRON,
     maxNotifications: MAX_NOTIFICATIONS,
     effortLevels: EFFORT_LEVELS,
-    // Each with the threshold in force now, which the form draws next to its label.
-    usageDelayCategories: usageDelayOptions(),
-    // What the concurrent job limit defaults to, so the Settings page can say
-    // what "processors" means on this machine.
-    defaultMaxConcurrentJobs: DEFAULT_MAX_CONCURRENT_JOBS,
+    // Each with the default node's threshold, which the form draws next to its label.
+    usageDelayCategories: usageDelayOptions(hub.nodeConfig(hub.defaultNodeId()).usageDelayThresholds),
+    // Off in the container image, where the hub is shipped rather than pulled.
+    selfUpdate: SELF_UPDATE,
   });
 });
 
@@ -280,9 +283,27 @@ app.get('/api/nodes', (_req, res) => {
   res.json({
     nodes: hub.listNodes(),
     defaultNodeId: hub.defaultNodeId(),
+    hubCommit: runningCommit,
     tokenSource: process.env.PROMPTD_NODE_TOKEN?.trim() ? 'environment' : 'file',
     tokenFile: NODE_TOKEN_FILE,
   });
+});
+
+app.get('/api/nodes/:id', (req, res) => {
+  const detail = hub.nodeDetail(req.params.id);
+  if (!detail) return res.status(404).json({ error: 'node not found' });
+  res.json({ ...detail, hubCommit: runningCommit });
+});
+
+/** A node's own job limit, usage thresholds and default working directory. Null resets one to the node's default. */
+app.put('/api/nodes/:id/settings', async (req: JsonRequest, res, next) => {
+  try {
+    res.json(await hub.setNodeConfig(String(req.params.id), (req.body ?? {}) as Record<string, unknown>));
+  } catch (err) {
+    if (err instanceof HubError) return res.status(err.status).json({ error: err.message });
+    if (err instanceof NodeConfigError) return res.status(400).json({ error: err.message });
+    next(err);
+  }
 });
 
 app.delete('/api/nodes/:id', (req, res) => {
@@ -291,49 +312,12 @@ app.delete('/api/nodes/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-/**
- * Directory suggestions for the Working Directory field.
- * Splits what the user typed into an already-typed parent and a partial name,
- * then lists the parent's subdirectories that start with that partial.
- */
+/** Folder suggestions for the Working Directory field, from the machine `node` names (blank is the default node). */
 app.get('/api/browse', async (req, res, next) => {
-  const typed = String(req.query.path ?? '');
   try {
-    // Everything up to the last slash is settled; what follows is being typed.
-    const cut = typed.lastIndexOf('/');
-    const parentTyped = cut >= 0 ? typed.slice(0, cut + 1) : '~/';
-    const partial = cut >= 0 ? typed.slice(cut + 1) : typed;
-    const parentPath = resolveUserPath(parentTyped) ?? os.homedir();
-
-    const entries = await fsp.readdir(parentPath, { withFileTypes: true }).catch(() => []);
-    const wanted = partial.toLowerCase();
-    const names: string[] = [];
-    for (const entry of entries) {
-      if (!entry.name.toLowerCase().startsWith(wanted)) continue;
-      if (entry.name.startsWith('.') && !partial.startsWith('.')) continue;
-      if (entry.isDirectory()) names.push(entry.name);
-      else if (entry.isSymbolicLink()) {
-        const isDir = await fsp
-          .stat(path.join(parentPath, entry.name))
-          .then((s) => s.isDirectory())
-          .catch(() => false);
-        if (isDir) names.push(entry.name);
-      }
-      if (names.length >= 200) break;
-    }
-    names.sort((a, b) => a.localeCompare(b));
-
-    // Suggestions come back in the same style the user is typing, tilde included.
-    const suggestions = names.slice(0, 25).map((name) => `${parentTyped}${name}/`);
-    const resolved = resolveUserPath(typed);
-    const exists = resolved
-      ? await fsp
-          .stat(resolved)
-          .then((s) => s.isDirectory())
-          .catch(() => false)
-      : false;
-    res.json({ suggestions, resolved, exists, truncated: names.length > 25 });
+    res.json(await hub.browse(hub.resolveNodeId(String(req.query.node ?? '')), String(req.query.path ?? '')));
   } catch (err) {
+    if (err instanceof HubError) return res.status(err.status).json({ error: err.message });
     next(err);
   }
 });
@@ -374,30 +358,6 @@ app.put('/api/settings', async (req: JsonRequest, res, next) => {
       if (!Number.isFinite(hours) || hours <= 0) return res.status(400).json({ error: 'updateCheckIntervalHours must be a positive number' });
       patch.updateCheckIntervalHours = hours;
     }
-    if ('maxConcurrentJobs' in (req.body ?? {})) {
-      const limit = normalizeMaxConcurrentJobs(req.body.maxConcurrentJobs);
-      if (limit === null) return res.status(400).json({ error: 'maxConcurrentJobs must be 0 or a positive whole number' });
-      patch.maxConcurrentJobs = limit;
-    }
-    if ('usageDelayThresholds' in (req.body ?? {})) {
-      // Any subset of the categories; the ones left out keep what is on disk.
-      const given = (req.body.usageDelayThresholds ?? {}) as Record<string, unknown>;
-      const thresholds = { ...(await loadSettings()).usageDelayThresholds };
-      for (const category of USAGE_DELAY_CATEGORIES) {
-        if (!(category.id in given)) continue;
-        const value = parseUsageThreshold(given[category.id]);
-        if (value === null) {
-          return res.status(400).json({ error: `usageDelayThresholds.${category.id} must be a whole number from 1 to 100` });
-        }
-        thresholds[category.id] = value;
-      }
-      patch.usageDelayThresholds = thresholds;
-    }
-    if ('defaultWorkingDirectory' in (req.body ?? {})) {
-      if (typeof req.body.defaultWorkingDirectory !== 'string') return res.status(400).json({ error: 'defaultWorkingDirectory must be a string' });
-      // Blank would run in home anyway; saved as ~/ so a new job's field still shows where it starts.
-      patch.defaultWorkingDirectory = req.body.defaultWorkingDirectory.trim() || '~/';
-    }
     if ('defaultPrompt' in (req.body ?? {})) {
       if (typeof req.body.defaultPrompt !== 'string') return res.status(400).json({ error: 'defaultPrompt must be a string' });
       patch.defaultPrompt = req.body.defaultPrompt;
@@ -431,7 +391,6 @@ app.put('/api/settings', async (req: JsonRequest, res, next) => {
     // Written first, applied second: nodes pick settings up from memory, so a
     // save that did not reach the disk must not change what is running.
     hub.setSettings(saved);
-    if ('usageDelayThresholds' in patch) setUsageThresholds(saved.usageDelayThresholds);
     if ('defaultNodeId' in patch) hub.jobsChanged();
     res.json(saved);
   } catch (err) {
@@ -446,8 +405,8 @@ app.put('/api/settings', async (req: JsonRequest, res, next) => {
  * Answered from memory: the queue is never written to disk, for the same reason
  * the pause is not. A restart comes back with nothing waiting.
  */
-app.get('/api/queue', (_req, res) => {
-  res.json(hub.concurrencyInfo());
+app.get('/api/queue', (req, res) => {
+  res.json(hub.concurrencyInfo(String(req.query.node ?? '').trim() || null));
 });
 
 /**
@@ -528,7 +487,10 @@ app.get('/api/next-run', (req, res) => {
   if (!expression) return res.json({ valid: false, error: 'Cron is required.', nextRunAt: null });
   const check = validateCronExpression(expression);
   if (!check.ok) return res.json({ valid: false, error: check.error, nextRunAt: null });
-  res.json({ valid: true, error: null, nextRunAt: previewNextRun(expression) });
+  // A cron saved before zones were stored fires on its node's clock.
+  const asked = String(req.query.timezone ?? '').trim();
+  const timezone = (isTimeZone(asked) && asked) || hub.clockTimezone(hub.resolveNodeId(String(req.query.node ?? ''))) || undefined;
+  res.json({ valid: true, error: null, nextRunAt: previewNextRun(expression, timezone), timezone: timezone ?? null });
 });
 
 app.get('/api/crons', async (_req, res, next) => {
@@ -907,13 +869,12 @@ await importLegacyFiles();
 // Subscribes to the event bus before anything can emit, and reads the table
 // behind the server coming up.
 notificationCenter.start();
-const bootSettings = await loadSettings(); // writes the defaults on first run
-setUsageThresholds(bootSettings.usageDelayThresholds);
+await loadSettings(); // writes the defaults on first run
 // Before any node can upload a log: after this the folders are cron ids.
 await migrateLogDirs().catch((err: unknown) => console.error(`[logs] migration failed: ${errorMessage(err)}`));
 runningCommit = await currentCommit();
 await hub.start(await loadSettings());
-if (process.env.PROMPTD_SELF_UPDATE !== '0') selfUpdater.start();
+if (SELF_UPDATE) selfUpdater.start();
 
 app.listen(PORT, HOST, () => {
   console.log(`promptd listening on http://${HOST}:${PORT}${runningCommit ? ` (${runningCommit})` : ''}`);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isEffortLevel, pauseOption, previewNextRun, validateCronExpression } from '../src/schedule.js';
+import { isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from '../src/schedule.js';
 
 describe('validateCronExpression', () => {
   it('accepts a five-field expression', () => {
@@ -36,5 +36,21 @@ describe('options', () => {
   it('knows the CLI effort levels', () => {
     expect(isEffortLevel('xhigh')).toBe(true);
     expect(isEffortLevel('extreme')).toBe(false);
+  });
+});
+
+describe('previewNextRun in a time zone', () => {
+  const hourIn = (zone: string, iso: string): number =>
+    Number(new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: 'numeric', hourCycle: 'h23' }).format(new Date(iso)));
+
+  it('fires 5:00 written in Chicago at 6:00 in New York, whatever the clock it runs on', () => {
+    const next = previewNextRun('0 5 * * *', 'America/Chicago')!;
+    expect(hourIn('America/Chicago', next)).toBe(5);
+    expect(hourIn('America/New_York', next)).toBe(6);
+  });
+
+  it('knows a time zone from a name that is not one', () => {
+    expect(isTimeZone('America/Chicago')).toBe(true);
+    expect(isTimeZone('Mars/Olympus')).toBe(false);
   });
 });

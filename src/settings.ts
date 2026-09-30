@@ -3,7 +3,6 @@ import path from 'node:path';
 import { db } from './db.js';
 import { ROOT } from './paths.js';
 import type { Settings } from './types.js';
-import { DEFAULT_USAGE_THRESHOLDS, normalizeUsageThresholds } from './usage.js';
 
 export const LEGACY_SETTINGS_FILE = path.join(ROOT, 'settings.json');
 
@@ -36,14 +35,6 @@ export const DEFAULT_SETTINGS: Settings = {
   lastUpdateCheckAt: null,
   lastUpdateLaunchedAt: null,
   lastUpdateFromCommit: null,
-  // Runs allowed at once. A trigger arriving with every slot taken is held as
-  // delayed and started, oldest first, as the running ones finish. 0 is no limit.
-  maxConcurrentJobs: DEFAULT_MAX_CONCURRENT_JOBS,
-  // The percentage each Delay for usage limit has to reach before a cron that
-  // ticks it is held.
-  usageDelayThresholds: DEFAULT_USAGE_THRESHOLDS,
-  // Where the Working Directory field of a new cron or one-time execution starts.
-  defaultWorkingDirectory: '~/',
   // Where the Prompt field of a new cron or one-time execution starts.
   defaultPrompt: '',
   // One per line; each is a button under the Prompt field of the job forms that
@@ -79,8 +70,7 @@ export async function loadSettings(): Promise<Settings> {
     return { ...DEFAULT_SETTINGS };
   }
   const stored: Partial<Settings> = Object.fromEntries(rows.map((row) => [row.key, parseValue(row.value)]));
-  // Filled per key, so a stored value that drops one threshold keeps the other three.
-  return { ...DEFAULT_SETTINGS, ...stored, usageDelayThresholds: normalizeUsageThresholds(stored.usageDelayThresholds) };
+  return { ...DEFAULT_SETTINGS, ...stored };
 }
 
 async function writeKeys(values: Partial<Settings>): Promise<void> {
@@ -96,6 +86,10 @@ async function writeKeys(values: Partial<Settings>): Promise<void> {
 export async function saveSettings(settings: Settings): Promise<Settings> {
   await writeKeys(settings);
   return settings;
+}
+
+export async function deleteSettings(keys: readonly string[]): Promise<void> {
+  if (keys.length) await db().deleteFrom('settings').where('key', 'in', [...keys]).execute();
 }
 
 /** Writes only the keys given, so two saves of different settings cannot undo each other. */

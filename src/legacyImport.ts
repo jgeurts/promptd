@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 
 import { db } from './db.js';
+import type { Insertable } from 'kysely';
 import type { NodeTable, NotificationTable } from './db.js';
 import { cronToRow, executionToRow } from './jobRows.js';
 import { ROOT } from './paths.js';
@@ -139,7 +140,7 @@ async function importNodes(): Promise<number> {
   const saved = await readJson(LEGACY_NODES_FILE);
   if (!Array.isArray(saved)) return 0;
   const now = new Date().toISOString();
-  const rows: NodeTable[] = saved.filter(isRecord).map((node) => ({
+  const rows: Insertable<NodeTable>[] = saved.filter(isRecord).map((node) => ({
     id: String(node.id),
     name: String(node.name ?? node.id),
     hostname: typeof node.hostname === 'string' ? node.hostname : null,

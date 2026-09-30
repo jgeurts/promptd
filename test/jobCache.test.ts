@@ -40,7 +40,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-const settings = { maxConcurrentJobs: 2, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: '', retrospectivePrompt: '' };
+const settings = { maxConcurrentJobs: 2, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: '', retrospectivePrompt: '', timezone: null };
 
 describe('jobCache', () => {
   it('reports a change only when the hub sends something new', () => {

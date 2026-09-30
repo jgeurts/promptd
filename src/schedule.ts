@@ -48,6 +48,15 @@ export function pauseOption(id: unknown): PauseOption | null {
   return PAUSE_OPTIONS.find((option) => option.id === id) ?? null;
 }
 
+export function isTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function validateCronExpression(expression: unknown): CronCheck {
   try {
     const probe = new Cron(String(expression).trim(), { paused: true });
@@ -60,9 +69,9 @@ export function validateCronExpression(expression: unknown): CronCheck {
 }
 
 /** Next fire time for an expression, without scheduling anything. */
-export function previewNextRun(expression: unknown): string | null {
+export function previewNextRun(expression: unknown, timezone?: string): string | null {
   try {
-    const probe = new Cron(String(expression).trim(), { paused: true });
+    const probe = new Cron(String(expression).trim(), { paused: true, timezone });
     const next = probe.nextRun();
     probe.stop();
     return next ? next.toISOString() : null;

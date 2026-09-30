@@ -45,6 +45,7 @@ function cron(id: string): Cron {
     name: id,
     description: '',
     cron: '0 9 * * *',
+    timezone: '',
     workingDirectory: os.tmpdir(),
     useWorktree: false,
     cleanupWorktree: false,

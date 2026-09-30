@@ -2,7 +2,7 @@ import type { CronTable, ExecutionTable } from './db.js';
 import type { Cron, Execution, ExecutionStatus, JobBase, RunStatus } from './types.js';
 import { normalizeUsageDelay } from './usage.js';
 
-type JobColumns = Omit<CronTable, 'cron'>;
+type JobColumns = Omit<CronTable, 'cron' | 'timezone'>;
 
 function flag(value: boolean): number {
   return value ? 1 : 0;
@@ -74,11 +74,11 @@ function fromColumns(row: JobColumns): JobBase {
 }
 
 export function cronToRow(cron: Cron): CronTable {
-  return { ...toColumns(cron), cron: cron.cron };
+  return { ...toColumns(cron), cron: cron.cron, timezone: cron.timezone ?? '' };
 }
 
 export function rowToCron(row: CronTable): Cron {
-  return { ...fromColumns(row), cron: row.cron };
+  return { ...fromColumns(row), cron: row.cron, timezone: row.timezone ?? '' };
 }
 
 export function executionToRow(execution: Execution): ExecutionTable {
