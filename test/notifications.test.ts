@@ -163,3 +163,99 @@ describe('the bell counts', () => {
     expect(page.levels).toEqual({ action: 1, worth: 1, routine: 1 });
   });
 });
+
+const disk = (summary: string, extra: Record<string, unknown> = {}) =>
+  ({ metric: 'disk', label: 'Low disk space', summary, value: 90, ...extra });
+
+describe('collapsing repeats', () => {
+  it('keys each group by what repeats', () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
+    center.record(fromNode('studio', 'run:delayed', held));
+    expect(center.items.map((record) => record.groupKey)).toEqual(['hold:c1', 'update:def5678', 'system:disk:studio']);
+  });
+
+  it('lands a repeat on the open row: latest wording, one more, moved to now, read kept', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10.5% free')));
+    const first = center.items[0]!;
+    const firstAt = first.at;
+    await center.markRead([first.id]);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    center.record(fromNode('studio', 'run:finished', failed));
+    center.record(fromNode('studio', 'system:alert', disk('9.8% free')));
+    expect(center.items).toHaveLength(2);
+    expect(center.items[0]).toMatchObject({ id: first.id, count: 2, read: true, since: firstAt });
+    expect(center.items[0]!.message).toContain('9.8% free');
+    expect(center.items[0]!.at > firstAt).toBe(true);
+  });
+
+  it('keeps each machine to its own row', () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    center.record(fromNode('air', 'system:alert', disk('12% free')));
+    expect(center.items.map((record) => [record.nodeId, record.count])).toEqual([
+      ['air', 1],
+      ['studio', 1],
+    ]);
+  });
+
+  it('starts a new, unread row for an episode after a clear', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:cleared', { metric: 'disk' }));
+    center.record(fromNode('studio', 'system:alert', disk('11% free')));
+    expect(center.items.map((record) => [record.count, record.read, record.open])).toEqual([
+      [1, false, true],
+      [1, true, false],
+    ]);
+  });
+
+  it('makes a row unread again when it gets worse', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:alert', disk('5% free', { worse: true })));
+    expect(center.items).toHaveLength(1);
+    expect(center.items[0]).toMatchObject({ count: 2, read: false });
+  });
+
+  it('keeps an update to one row, unread again and closed when it fails', async () => {
+    center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
+    await center.markRead([center.items[0]!.id]);
+    center.record(event('update:failed', { code: 1, target: 'def5678' }));
+    expect(center.items).toHaveLength(1);
+    expect(center.items[0]).toMatchObject({ level: 'action', count: 2, read: false, open: false });
+    center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
+    expect(center.items.map((record) => record.count)).toEqual([1, 2]);
+  });
+
+  it('turns a hold that passed its expected start into one that needs action', async () => {
+    center.record(fromNode('studio', 'run:delayed', held));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'run:delayed', { ...held, late: true }));
+    expect(center.items).toHaveLength(1);
+    expect(center.items[0]).toMatchObject({ level: 'action', count: 2, read: false });
+    expect(center.items[0]!.message).toContain('past the time it was expected to start');
+  });
+
+  it('closes a hold when it is released, and gives the release a routine row of its own', () => {
+    center.record(fromNode('studio', 'run:delayed', held));
+    center.record(fromNode('studio', 'run:released', { ...held, ran: true }));
+    center.record(fromNode('studio', 'run:delayed', held));
+    expect(center.items.map((record) => [record.level, record.groupKey, record.open])).toEqual([
+      ['worth', 'hold:c1', true],
+      ['routine', null, false],
+      ['worth', 'hold:c1', false],
+    ]);
+  });
+
+  it('keeps the group, the count and the open state through a restart', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    center.record(fromNode('studio', 'system:alert', disk('9% free')));
+    await center.items[0]!.writing;
+    const reloaded = new notifications.NotificationCenter();
+    await reloaded.load();
+    expect(reloaded.items[0]).toMatchObject({ groupKey: 'system:disk:studio', count: 2, open: true });
+    reloaded.record(fromNode('studio', 'system:alert', disk('8% free')));
+    expect(reloaded.items).toHaveLength(1);
+    expect(reloaded.items[0]!.count).toBe(3);
+  });
+});

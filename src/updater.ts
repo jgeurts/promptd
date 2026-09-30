@@ -20,6 +20,8 @@ export interface UpdateCheck {
   behind?: number;
   ahead?: number;
   head?: string;
+  /** The commit an update would move to: what one update's notifications share. */
+  target?: string;
 }
 
 export type UpdateAvailability = {
@@ -136,7 +138,15 @@ export async function checkForUpdates(): Promise<UpdateCheck> {
   if (behind > 0 && ahead > 0) {
     return { updatable: false, reason: `diverged: ${ahead} ahead, ${behind} behind`, behind, ahead };
   }
-  return { updatable: behind > 0, behind, ahead, head: head.out, reason: behind > 0 ? null : 'already up to date' };
+  const target = await git(['rev-parse', '--short', `${REMOTE}/${BRANCH}`]);
+  return {
+    updatable: behind > 0,
+    behind,
+    ahead,
+    head: head.out,
+    ...(target.ok && target.out ? { target: target.out } : {}),
+    reason: behind > 0 ? null : 'already up to date',
+  };
 }
 
 class SelfUpdater {
@@ -146,6 +156,7 @@ class SelfUpdater {
   public drainTimer: NodeJS.Timeout | null;
   public drainStartedAt: number | null;
   public waitingCount: number | null;
+  public target: string | null;
   public lastCheck: LastCheck;
 
   public constructor() {
@@ -157,6 +168,8 @@ class SelfUpdater {
     this.drainStartedAt = null;
     /** The run count in the last "still waiting" announcement; null before the first. */
     this.waitingCount = null;
+    /** The commit the update under way is going to, named on each of its events. */
+    this.target = null;
     /**
      * The last answer to "is main behind?", whoever asked. Checking happens on
      * the interval whether or not selfUpdate is on, so the header badge can
@@ -239,8 +252,9 @@ class SelfUpdater {
     // be cancelled from the page.
     this.draining = true;
     this.drainStartedAt = Date.now();
+    this.target = result.target ?? null;
     await hub.pauseAll({ mode: 'update', label: 'for update' });
-    emit('update:launched', { behind: result.behind, from: result.head, pid: null, ...this.state() });
+    emit('update:launched', { behind: result.behind, from: result.head, target: this.target, pid: null, ...this.state() });
 
     const pid = this.startDrain();
     return { ...result, launched: true, waiting: pid === null, pid, ...this.state() };
@@ -262,7 +276,7 @@ class SelfUpdater {
       if (Date.now() - this.drainStartedAt! >= DRAIN_LIMIT_MS) {
         console.error(`[update] gave up after ${Math.round(DRAIN_LIMIT_MS / 60000)}m; ${running} run(s) still going. Resuming schedules, update not applied.`);
         this.stopDrain();
-        emit('update:abandoned', { runningCount: running });
+        emit('update:abandoned', { runningCount: running, target: this.target });
         hub.resumeAll('update gave up waiting').catch((err: Error) => console.error(`[cron] resume failed: ${err.message}`));
         return;
       }
@@ -349,7 +363,7 @@ class SelfUpdater {
       console.log(`[update] update script exited ${code}; waiting ${RESTART_GRACE_MS / 1000}s for the restart`);
       const grace = setTimeout(() => {
         console.error(`[update] no restart arrived; see ${UPDATE_LOG}. Resuming schedules.`);
-        emit('update:failed', { code, updateLog: UPDATE_LOG });
+        emit('update:failed', { code, updateLog: UPDATE_LOG, target: this.target });
         hub.resumeAll('update finished without restarting').catch((err: Error) => console.error(`[cron] resume failed: ${err.message}`));
       }, RESTART_GRACE_MS);
       grace.unref?.();

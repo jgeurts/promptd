@@ -38,6 +38,16 @@ export interface NotificationRecord {
   /** The machine it happened on, or null on a record written before nodes were named. */
   nodeId: string | null;
   nodeName: string | null;
+  /**
+   * What repeats of this record share — `system:<metric>:<nodeId>`,
+   * `update:<target>`, `hold:<jobId>` — or null for a record that stands alone.
+   */
+  groupKey: string | null;
+  /** How many events this one row stands for, and when the first of them was. */
+  count: number;
+  since: string;
+  /** Whether a later event can still land on this row: the alert has not cleared, the update not finished, the hold not been released. */
+  open: boolean;
   writing?: Promise<void> | null;
 }
 
@@ -71,10 +81,22 @@ export interface NotificationNode {
 /** What the hub's own events are credited to: its pauses and its updates happen on no node. */
 export const HUB_NODE: NotificationNode = { id: 'hub', name: 'hub' };
 
+/**
+ * Where an event stands in the run of events that share its group key.
+ *
+ * - `new`: the start of a run. Whatever was open under the key is closed first.
+ * - `same`: more of the run that is open; it lands on that row as it is.
+ * - `worse`: more of it, and worse — it lands on the row and makes it unread.
+ * - `last`: the end of it, as bad news — it lands on the row, makes it unread
+ *   and closes it.
+ */
+export type Episode = 'new' | 'same' | 'worse' | 'last';
+
 interface NotificationDraft {
   kind: string;
   level: NotificationLevel;
   message: string;
+  group?: { key: string; episode: Episode };
   cronId?: string | null;
   cronName?: string | null;
   jobKind?: JobKind;
@@ -109,6 +131,9 @@ type DescribableEvent = BusEvent & {
   summary?: string;
   running?: RunningJobSummary[];
   reasons?: UsageBlocker[];
+  worse?: boolean;
+  late?: boolean;
+  target?: string | null;
   /** Stamped by the hub on everything a node reports; absent on the hub's own events. */
   nodeId?: string;
   nodeName?: string;
@@ -147,6 +172,10 @@ function toRow(record: NotificationRecord): NotificationTable {
     logFile: record.logFile,
     nodeId: record.nodeId,
     nodeName: record.nodeName,
+    groupKey: record.groupKey,
+    count: record.count,
+    since: record.since,
+    open: record.open ? 1 : 0,
   };
 }
 
@@ -155,6 +184,9 @@ function fromRow(row: NotificationTable): NotificationRecord {
     ...row,
     level: isLevel(row.level) ? row.level : 'routine',
     read: Boolean(row.read),
+    count: Number(row.count) || 1,
+    since: row.since ?? row.at,
+    open: Boolean(row.open),
     jobKind: row.jobKind === 'execution' ? 'execution' : 'cron',
   };
 }
@@ -190,9 +222,26 @@ function blockerNames(event: DescribableEvent): string {
  * was the hub's own doing — a pause, an update — and is credited to the hub.
  */
 export function describe(event: DescribableEvent): NotificationDraft | null {
-  const draft = describeEvent(event);
+  const nodeId = event.nodeId ?? HUB_NODE.id;
+  const draft = describeEvent(event, nodeId);
   if (!draft) return null;
-  return { ...draft, nodeId: event.nodeId ?? HUB_NODE.id, nodeName: event.nodeName ?? event.nodeId ?? HUB_NODE.name };
+  return { ...draft, nodeId, nodeName: event.nodeName ?? event.nodeId ?? HUB_NODE.name };
+}
+
+/**
+ * The group an event closes without a row of its own being about it: an alert
+ * clearing, a held trigger let go. The next event under the key starts afresh.
+ */
+export function closes(event: DescribableEvent): string | null {
+  const nodeId = event.nodeId ?? HUB_NODE.id;
+  if (event.type === 'system:cleared') return `system:${event.metric}:${nodeId}`;
+  if (event.type === 'run:released' && event.cronId) return `hold:${event.cronId}`;
+  return null;
+}
+
+/** An update is one row from launch to outcome, keyed by the commit it is going to. */
+function updateGroup(event: DescribableEvent, episode: Episode): Pick<NotificationDraft, 'group'> {
+  return event.target ? { group: { key: `update:${event.target}`, episode } } : {};
 }
 
 /** Of the four machine alerts, the one that stops runs when it is ignored. */
@@ -207,7 +256,7 @@ const ACTION_METRICS = new Set(['disk']);
  * written in the client and these on the server, so the two are kept in step by
  * hand; a difference in wording is a bug, not a feature.
  */
-function describeEvent(event: DescribableEvent): NotificationDraft | null {
+function describeEvent(event: DescribableEvent, nodeId: string): NotificationDraft | null {
   // jobKind, not kind: `kind` on a notification is what sort of notice it is,
   // and this is what sort of thing it happened to.
   const cron: Pick<NotificationDraft, 'cronId' | 'cronName' | 'jobKind'> = { cronId: event.cronId ?? null, cronName: event.cronName ?? null, jobKind: event.kind ?? 'cron' };
@@ -256,18 +305,24 @@ function describeEvent(event: DescribableEvent): NotificationDraft | null {
         ...cron,
       };
     case 'run:delayed':
+      // A cron has one waiting trigger at most, so each hold is its own row.
+      // The one thing that lands on it is the hold running past its expected
+      // start, which turns a wait into something to look at.
       return {
         kind: 'delayed',
         // A queue moves on its own within minutes. A usage hold can last hours,
         // and is the reason a run happened later than its schedule said.
-        level: event.hold === 'concurrency' ? 'routine' : 'worth',
+        level: event.hold === 'concurrency' ? 'routine' : event.late ? 'action' : 'worth',
         // A queued trigger says where it stands rather than what it is waiting
         // on: the limit is the same for every one of them, the place is not.
         message:
           event.hold === 'concurrency'
             ? `${name} is queued at position ${event.position! + 1} of ${event.queueLength}, behind ${event.runningCount} running job${event.runningCount === 1 ? '' : 's'}`
-            : `${name} is waiting on ${blockerNames(event)}`,
+            : event.late
+              ? `${name} is still waiting on ${blockerNames(event)}, past the time it was expected to start`
+              : `${name} is waiting on ${blockerNames(event)}`,
         ...cron,
+        group: { key: `hold:${event.cronId}`, episode: event.late ? 'worse' : 'new' },
       };
     case 'run:released':
       return {
@@ -302,18 +357,31 @@ function describeEvent(event: DescribableEvent): NotificationDraft | null {
               ? `Schedules resumed after the "${event.resumedFrom}" pause (${event.reason})`
               : 'Schedules resumed',
           };
+    // One row per update: the launch opens it, and a failure lands on it.
     case 'update:launched':
-      return { kind: 'update', level: 'worth', message: `Update started from ${event.from ?? 'the current commit'}; the service will restart` };
+      return {
+        kind: 'update',
+        level: 'worth',
+        message: `Update started from ${event.from ?? 'the current commit'}; the service will restart`,
+        ...updateGroup(event, 'new'),
+      };
     case 'update:abandoned':
-      return { kind: 'update', level: 'action', message: `Update gave up waiting on ${event.runningCount} run(s); schedules resumed` };
+      return {
+        kind: 'update',
+        level: 'action',
+        message: `Update gave up waiting on ${event.runningCount} run(s); schedules resumed`,
+        ...updateGroup(event, 'last'),
+      };
     case 'update:failed':
-      return { kind: 'update', level: 'action', message: `Update script failed (exit ${event.code}); schedules resumed` };
+      return { kind: 'update', level: 'action', message: `Update script failed (exit ${event.code}); schedules resumed`, ...updateGroup(event, 'last') };
+    // One row per episode on each machine: from crossing the line to clearing.
     case 'system:alert':
       return {
         kind: 'system',
         // A full disk stops runs; a busy machine only slows them.
         level: ACTION_METRICS.has(String(event.metric)) ? 'action' : 'worth',
         message: `${event.label}: ${event.summary}. ${runningSummary(event.running)}`,
+        group: { key: `system:${event.metric}:${nodeId}`, episode: event.worse ? 'worse' : 'same' },
       };
     default:
       return null;
@@ -367,10 +435,65 @@ export class NotificationCenter {
     return this.items.length;
   }
 
-  /** Turns one bus event into however many notifications it is worth. */
+  /**
+   * Turns one bus event into what it is worth: a new row, more of a row that is
+   * already there, or nothing.
+   */
   public record(event: BusEvent): void {
+    const closed = closes(event as DescribableEvent);
+    if (closed) this.close(closed);
     const draft = describe(event as DescribableEvent);
-    if (draft) this.add(draft);
+    if (!draft) return;
+    const { group } = draft;
+    if (!group) {
+      this.add(draft);
+      return;
+    }
+    if (group.episode === 'new') this.close(group.key);
+    const open = group.episode === 'new' ? undefined : this.openRecord(group.key);
+    if (open) this.merge(open, draft, group.episode);
+    else this.add(draft);
+  }
+
+  /** The newest row a repeat of this key would land on, if one is still open. */
+  public openRecord(key: string): NotificationRecord | undefined {
+    return this.items.find((record) => record.open && record.groupKey === key);
+  }
+
+  /** Ends whatever is open under a key, so the next event under it is a row of its own. */
+  public close(key: string): void {
+    for (const record of this.items) {
+      if (record.open && record.groupKey === key) {
+        record.open = false;
+        void this.persist(record);
+      }
+    }
+  }
+
+  /**
+   * Lands a repeat on the row already open for it: the latest wording, one more
+   * in the count, and the time moved to now, so the row sorts as new again.
+   *
+   * Read stays read. A repeat of something already seen is not news; a worse
+   * one, or the one that ends it badly, is, and those make it unread again.
+   */
+  public merge(record: NotificationRecord, draft: NotificationDraft, episode: Episode): NotificationRecord {
+    record.message = draft.message;
+    record.kind = draft.kind;
+    record.level = draft.level;
+    record.count += 1;
+    record.at = new Date().toISOString();
+    if (episode === 'worse' || episode === 'last') record.read = false;
+    if (episode === 'last') record.open = false;
+    const index = this.items.indexOf(record);
+    if (index > 0) {
+      this.items.splice(index, 1);
+      this.items.unshift(record);
+    }
+    // Announced as new: the page replaces the row it has with this one.
+    emit('notification:new', { notification: this.view(record), unread: this.unreadCount(), counts: this.counts() });
+    void this.persist(record);
+    return record;
   }
 
   /**
@@ -388,10 +511,12 @@ export class NotificationCenter {
     logFile = null,
     nodeId = null,
     nodeName = null,
+    group,
   }: NotificationDraft): NotificationRecord {
+    const at = new Date().toISOString();
     const record = {
       id: randomUUID(),
-      at: new Date().toISOString(),
+      at,
       kind,
       level,
       message,
@@ -404,6 +529,11 @@ export class NotificationCenter {
       logFile,
       nodeId,
       nodeName,
+      groupKey: group?.key ?? null,
+      count: 1,
+      since: at,
+      // A bad ending with nothing to land on is a row of its own, and already over.
+      open: Boolean(group) && group!.episode !== 'last',
     } as NotificationRecord;
     this.items.unshift(record);
     const pruned = this.items.length > MAX_NOTIFICATIONS ? this.items.splice(MAX_NOTIFICATIONS) : [];

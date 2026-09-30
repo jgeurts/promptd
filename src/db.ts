@@ -63,6 +63,10 @@ export interface NotificationTable {
   logFile: string | null;
   nodeId: string | null;
   nodeName: string | null;
+  groupKey: string | null;
+  count: number;
+  since: string | null;
+  open: Flag;
 }
 
 export interface SettingTable {
@@ -248,6 +252,16 @@ const MIGRATIONS: Record<string, Migration> = {
           or (kind = 'delayed' and (message like '% is waiting on %' or message like '% missed its trigger %'))
       `.execute(db);
       await sql`update notifications set ${sql.ref('read')} = 1 where level = 'routine'`.execute(db);
+    },
+  },
+  // Repeats of one thing — an alert, an update, a held trigger — land on one
+  // row. The rows already written each stand alone, and none is left open.
+  '20260930_004_notification_groups': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('group_key', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('count', 'integer', (col) => col.notNull().defaultTo(1)).execute();
+      await db.schema.alterTable('notifications').addColumn('since', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('open', 'integer', (col) => col.notNull().defaultTo(0)).execute();
     },
   },
 };

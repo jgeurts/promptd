@@ -157,6 +157,8 @@ export interface DelayEntry {
   position?: number;
   queueLength?: number;
   runningCount?: number;
+  /** Still held past the time its limits said they would reset. */
+  late?: boolean;
 }
 
 export interface PauseState {

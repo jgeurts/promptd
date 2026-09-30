@@ -117,6 +117,10 @@ const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 // and never asks the endpoint — so it is short enough to start the run promptly
 // once a refresh lands rather than adding a wait of its own on top.
 const DELAY_REVIEW_MS = 30 * 1000;
+// A held trigger normally goes within one usage refresh of its limit resetting,
+// and the review that notices takes up to one more pass. Held longer than that
+// past its expected start, something other than the wait is holding it.
+const LATE_AFTER_MS = USAGE_CHECK_MS + DELAY_REVIEW_MS;
 
 // A job that has never finished a run has no runtime to go on, so the delay
 // outlook only counts it as taking a slot when it fires this close before the
@@ -674,6 +678,12 @@ class CronService {
           // a session limit resets while a weekly one is still holding it back.
           entry.reasons = blockers;
           entry.resumeAt = resumeTime(blockers);
+          // Said once: the run is now later than anyone planned for.
+          if (!entry.late && entry.resumeAt && Date.now() > Date.parse(entry.resumeAt) + LATE_AFTER_MS) {
+            entry.late = true;
+            console.warn(`[cron] "${cron.name}" is still held for ${blockerNames(blockers)}, past its expected start`);
+            emit('run:delayed', { ...entry });
+          }
           continue;
         }
         // A pause outranks this. The trigger keeps waiting and goes when the

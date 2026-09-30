@@ -3337,6 +3337,8 @@ function connectEvents() {
         if (payload.hold === 'concurrency') {
           const when = payload.resumeAt ? ` Could start ${fmtCountdown(payload.resumeAt)}.` : '';
           toast(`${named} is queued at position ${payload.position + 1} of ${payload.queueLength}.${when}`, true);
+        } else if (payload.late) {
+          toast(`${named} is still waiting on ${delayNames(payload)}, past the time it was expected to start`, true);
         } else {
           const when = payload.resumeAt ? ` Starts ${fmtRelative(payload.resumeAt)}.` : '';
           toast(`${named} is waiting on ${delayNames(payload)}.${when}`, true);
@@ -3596,14 +3598,25 @@ function setBellBadge(counts) {
   syncNodeChips();
 }
 
+/** When a run of repeats began: a time today, a weekday this week, a date before that. */
+function fmtSince(iso) {
+  const date = new Date(iso);
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  if (now.getTime() - date.getTime() < 6 * 86400000) return date.toLocaleDateString(undefined, { weekday: 'short' });
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
 function renderNotification(record, { arriving = false } = {}) {
-  const meta = `${fmtRelative(record.at)} · ${fmtDateTime(record.at)}`;
+  // One row can stand for several of the same thing: say how many, and since when.
+  const repeats = record.count > 1 ? `×${record.count} · since ${fmtSince(record.since)} · ` : '';
+  const meta = `${repeats}${fmtRelative(record.at)} · ${fmtDateTime(record.at)}`;
   const classes = ['note', record.read ? '' : 'unread', arriving ? 'arriving' : ''].filter(Boolean);
   const level = LEVELS.find((entry) => entry.level === record.level) ?? LEVELS.at(-1);
   // With several machines a row says which one it is about. A record from before
   // nodes were named has no name, and gets none rather than a guess.
   const named = drawerNodes.length && record.nodeName;
-  const node = el('div', { class: classes.join(' '), 'data-id': record.id }, [
+  const node = el('div', { class: classes.join(' '), 'data-id': record.id, 'data-level': level.level }, [
     // The section heading says the level to a screen reader; this is for the eye.
     el('span', { class: `note-glyph ${level.level}`, 'aria-hidden': 'true', text: level.glyph }),
     el('div', { class: 'note-body' }, [
@@ -3831,9 +3844,44 @@ async function loadNextPage() {
   }
 }
 
+/**
+ * A repeat that landed on a row already drawn. The row takes the new wording
+ * where it is, and moves up to the top of its section when the reader is at
+ * the top — the same rule a new row follows.
+ */
+function replaceNotification(existing, record) {
+  clearTimeout(readTimers.get(record.id));
+  readTimers.delete(record.id);
+  viewObserver?.unobserve(existing);
+  const node = renderNotification(record, { arriving: true });
+  const from = sections.get(existing.dataset.level);
+  const to = sections.get(record.level);
+  if (to && drawerListEl.scrollTop <= 40) {
+    existing.remove();
+    to.list.querySelector('.drawer-empty')?.remove();
+    to.list.prepend(node);
+    if (from && from !== to) {
+      from.total = Math.max(0, from.total - 1);
+      to.total += 1;
+      renderSectionCount(from);
+      renderSectionCount(to);
+      if (from.done) markEmpty(from);
+    }
+  } else {
+    existing.replaceWith(node);
+  }
+  observeItem(node, record);
+}
+
 /** A notification that lands while the drawer is open, from the event stream. */
 function prependNotification(record) {
-  if (!drawerOpen || drawnIds.has(record.id)) return;
+  if (!drawerOpen) return;
+  const existing = drawerListEl.querySelector(`.note[data-id="${CSS.escape(record.id)}"]`);
+  if (existing) {
+    replaceNotification(existing, record);
+    return;
+  }
+  if (drawnIds.has(record.id)) return;
   // The filter means what it says: a notice that arrives already read — a run
   // that succeeded — has no business appearing in a list of unread ones.
   if (unreadOnly && record.read) return;
