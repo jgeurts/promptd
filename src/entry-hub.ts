@@ -933,6 +933,7 @@ try {
 // behind the server coming up.
 notificationCenter.start();
 runningCommit = await currentCommit();
+hub.setVersion(runningCommit);
 await hub.start(await loadSettings()); // writes the defaults on first run
 if (SELF_UPDATE) selfUpdater.start();
 

@@ -355,4 +355,6 @@ export interface NodeWork {
   settings: NodeSettings;
   pause: PauseState | null;
   commands: NodeCommand[];
+  /** The hub's build, which a binary node updates itself to. Missing from an older hub. */
+  hubVersion?: string | null;
 }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
+import { commitsBehind, installVersion, latestVersion, underLaunchd } from './binaryUpdate.js';
 import { emit } from './events.js';
 import { LOGS_DIR } from './paths.js';
 import { loadSettings, patchSettings } from './settings.js';
@@ -21,6 +22,8 @@ export interface UpdateCheck {
   behind?: number;
   ahead?: number;
   head?: string;
+  /** A binary's build to update to. */
+  target?: string;
 }
 
 export type UpdateAvailability = {
@@ -114,6 +117,7 @@ export async function currentCommit(): Promise<string | null> {
  * count whenever the question cannot be answered safely.
  */
 export async function checkForUpdates(): Promise<UpdateCheck> {
+  if (BINARY_VERSION) return checkForBuild(BINARY_VERSION);
   const repo = await git(['rev-parse', '--is-inside-work-tree']);
   if (!repo.ok || repo.out !== 'true') return { updatable: false, reason: 'not a git repository' };
 
@@ -141,6 +145,21 @@ export async function checkForUpdates(): Promise<UpdateCheck> {
   return { updatable: behind > 0, behind, ahead, head: head.out, reason: behind > 0 ? null : 'already up to date' };
 }
 
+/** Is there a newer build of this binary? Asks GitHub, which is where the builds are. */
+async function checkForBuild(current: string): Promise<UpdateCheck> {
+  let latest: string | null;
+  try {
+    latest = await latestVersion();
+  } catch (err) {
+    return { updatable: false, reason: `could not check for a newer build: ${(err as Error).message}` };
+  }
+  if (!latest) return { updatable: false, reason: 'no build has been released' };
+  if (latest === current) return { updatable: false, behind: 0, head: current, reason: 'already up to date' };
+  // A build that is not an ancestor, such as one made from a branch, is left alone.
+  const behind = await commitsBehind(current, latest).catch(() => 1);
+  return { updatable: behind > 0, behind, head: current, target: latest, reason: behind > 0 ? null : 'already up to date' };
+}
+
 class SelfUpdater {
   public timer: NodeJS.Timeout | null;
   public busy: boolean;
@@ -149,6 +168,8 @@ class SelfUpdater {
   public drainStartedAt: number | null;
   public waitingCount: number | null;
   public lastCheck: LastCheck;
+  /** The build a binary is updating to, from the check that started the update. */
+  public target: string | null;
 
   public constructor() {
     this.timer = null;
@@ -165,6 +186,7 @@ class SelfUpdater {
      * offer an update the server has been told not to apply on its own.
      */
     this.lastCheck = { updatable: false, behind: 0, head: null, reason: null, at: null };
+    this.target = null;
   }
 
   /** What the health endpoint and the header badge read. */
@@ -236,6 +258,7 @@ class SelfUpdater {
     }
     console.log(`[update] ${result.behind} commit(s) behind ${REMOTE}/${BRANCH}; holding schedules for the restart`);
     await patchSettings({ lastUpdateLaunchedAt: new Date().toISOString(), lastUpdateFromCommit: result.head });
+    this.target = result.target ?? null;
 
     // Nothing new may start between here and the restart, and this pause cannot
     // be cancelled from the page.
@@ -329,6 +352,10 @@ class SelfUpdater {
    * server being restarted, which is the last thing it does.
    */
   public launch(): number | undefined {
+    if (BINARY_VERSION) {
+      this.installBuild();
+      return undefined;
+    }
     console.log('[update] no runs in flight; starting the update script');
     const logFd = fs.openSync(UPDATE_LOG, 'a');
     const child = spawn('/bin/bash', [UPDATE_SCRIPT], {
@@ -360,6 +387,40 @@ class SelfUpdater {
     fs.closeSync(logFd);
     console.log(`[update] updater started (pid ${child.pid}); progress in ${UPDATE_LOG}`);
     return child.pid;
+  }
+
+  /**
+   * A binary's update: the new build replaces the file, then the hub exits for
+   * launchd to start it again. Each node follows once it sees the hub's new build.
+   */
+  public installBuild(): void {
+    const target = this.target;
+    const log = (line: string): void => {
+      console.log(`[update] ${line}`);
+      fs.appendFileSync(UPDATE_LOG, `[${new Date().toISOString()}] ${line}\n`);
+    };
+    const giveUp = (why: string): void => {
+      console.error(`[update] ${why}. Resuming schedules.`);
+      emit('update:failed', { code: null, updateLog: UPDATE_LOG });
+      hub.resumeAll('update finished without restarting').catch((err: Error) => console.error(`[cron] resume failed: ${err.message}`));
+    };
+    if (!target) return giveUp('no build to update to');
+    log(`no runs in flight; installing build ${target} over ${BINARY_VERSION}`);
+    installVersion(target).then(
+      () => {
+        // Killing a hub that nothing would restart would be worse than leaving it on the old build.
+        if (!underLaunchd()) {
+          log(`build ${target} is on disk, but launchd is not running this hub, so it keeps running ${BINARY_VERSION} until you restart it`);
+          return giveUp('no restart is coming');
+        }
+        log(`build ${target} installed; exiting for launchd to start it`);
+        process.exit(0);
+      },
+      (err: Error) => {
+        log(`could not install build ${target}: ${err.message}`);
+        giveUp(`could not install build ${target}`);
+      },
+    );
   }
 }
 

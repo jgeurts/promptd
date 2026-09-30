@@ -153,6 +153,7 @@ function sameSecret(given: unknown, expected: unknown): boolean {
 
 class Hub {
   private token: string | null;
+  private version: string | null;
   public nodes: Map<string, HubNode>;
   private settings: Partial<Settings>;
   private pauseState: PauseState | null;
@@ -163,6 +164,7 @@ class Hub {
 
   public constructor() {
     this.token = null;
+    this.version = null;
     this.nodes = new Map();
     this.settings = {};
     this.pauseState = null;
@@ -183,6 +185,11 @@ class Hub {
 
   public setSettings(settings: Settings): void {
     this.settings = settings;
+  }
+
+  /** The build or commit this hub runs, which it tells every node. */
+  public setVersion(version: string | null): void {
+    this.version = version;
   }
 
   /** The secret nodes present, for the join command on the Settings page. Null before start. */
@@ -612,6 +619,7 @@ class Hub {
     settings: NodeSettings;
     pause: PauseState | null;
     commands: NodeCommand[];
+    hubVersion: string | null;
   }> {
     const node = this.nodes.get(nodeId);
     if (!node || node.instance !== instance) {
@@ -632,6 +640,7 @@ class Hub {
       },
       pause: this.pauseState,
       commands,
+      hubVersion: this.version,
     };
   }
 
