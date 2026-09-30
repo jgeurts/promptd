@@ -14,6 +14,8 @@ export interface NotificationRecord {
   cronId: string | null;
   cronName: string | null;
   jobKind: JobKind;
+  /** The run it is about, when it is about one run: the drawer's link opens that log. */
+  logFile: string | null;
   writing?: Promise<void> | null;
 }
 
@@ -33,12 +35,14 @@ interface NotificationDraft {
   cronId?: string | null;
   cronName?: string | null;
   jobKind?: JobKind;
+  logFile?: string | null;
 }
 
 type DescribableEvent = BusEvent & {
   cronId?: string | null;
   cronName?: string | null;
   kind?: JobKind;
+  logFile?: string;
   status?: string;
   seconds?: number;
   error?: string;
@@ -90,6 +94,7 @@ function toRow(record: NotificationRecord): NotificationTable {
     cronId: record.cronId,
     cronName: record.cronName,
     jobKind: record.jobKind,
+    logFile: record.logFile,
   };
 }
 
@@ -153,6 +158,9 @@ function describe(event: DescribableEvent): NotificationDraft | NotificationDraf
         ...cron,
       };
     }
+    // Only sent when the retrospective said something, so it is always worth reading.
+    case 'run:retrospective':
+      return { kind: 'retrospective', read: false, message: `${name} left a retrospective`, ...cron, logFile: event.logFile ?? null };
     // A run that could not set up or tear down its worktree may have gone
     // without the files it needed, or left a folder and branch behind.
     case 'worktree:include-failed':
@@ -312,7 +320,7 @@ class NotificationCenter {
    * on: a notification that cannot be written is still worth showing, and the
    * event that produced it must not be held up by a filesystem.
    */
-  public add({ kind, message, read = true, cronId = null, cronName = null, jobKind = 'cron' }: NotificationDraft): NotificationRecord {
+  public add({ kind, message, read = true, cronId = null, cronName = null, jobKind = 'cron', logFile = null }: NotificationDraft): NotificationRecord {
     const record = {
       id: randomUUID(),
       at: new Date().toISOString(),
@@ -323,6 +331,7 @@ class NotificationCenter {
       cronName,
       // Which page the drawer's link should open: a cron's logs or an execution's.
       jobKind,
+      logFile,
     } as NotificationRecord;
     this.items.unshift(record);
     const pruned = this.items.length > MAX_NOTIFICATIONS ? this.items.splice(MAX_NOTIFICATIONS) : [];

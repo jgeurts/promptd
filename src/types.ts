@@ -26,6 +26,8 @@ export interface JobBase extends LifetimeStats {
   workingDirectory: string;
   useWorktree: boolean;
   cleanupWorktree: boolean;
+  /** Ends each run with a retrospective, written into its log. */
+  retrospective: boolean;
   model: string;
   effort: string;
   usageDelay: UsageDelay;
@@ -68,6 +70,7 @@ export type CronInput = Pick<
   | 'name'
   | 'nodeId'
   | 'prompt'
+  | 'retrospective'
   | 'usageDelay'
   | 'useWorktree'
   | 'workingDirectory'
@@ -211,6 +214,7 @@ export interface Settings {
   defaultPrompt: string;
   commonCommands: string;
   defaultWorktreeInclude: string;
+  retrospectivePrompt: string;
   logsMigrated: boolean;
   defaultNodeId: string;
   localNodeAgentCheckedAt: string | null;
@@ -227,6 +231,7 @@ export interface NodeConfig {
 export interface NodeSettings {
   defaultWorktreeInclude: string;
   maxConcurrentJobs: number | null;
+  retrospectivePrompt: string;
   usageDelayThresholds: UsageThresholds;
 }
 

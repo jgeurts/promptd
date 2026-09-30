@@ -19,6 +19,7 @@ interface JobColumns {
   workingDirectory: string;
   useWorktree: Flag;
   cleanupWorktree: Flag;
+  retrospective: Flag;
   model: string;
   effort: string;
   usageDelay: string;
@@ -57,6 +58,7 @@ export interface NotificationTable {
   cronId: string | null;
   cronName: string | null;
   jobKind: string;
+  logFile: string | null;
 }
 
 export interface SettingTable {
@@ -171,12 +173,21 @@ const MIGRATIONS: Record<string, Migration> = {
         .execute();
     },
   },
-  '20260929_001_node_settings': {
+  '20260929_003_retrospective': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      for (const table of ['crons', 'executions']) {
+        await db.schema.alterTable(table).addColumn('retrospective', 'integer', (col) => col.notNull().defaultTo(0)).execute();
+      }
+      // The run a notification is about, so its link can open that log.
+      await db.schema.alterTable('notifications').addColumn('log_file', 'text').execute();
+    },
+  },
+  '20260929_004_node_settings': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('nodes').addColumn('settings', 'text', (col) => col.notNull().defaultTo('{}')).execute();
     },
   },
-  '20260929_002_cron_timezone': {
+  '20260929_005_cron_timezone': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('crons').addColumn('timezone', 'text', (col) => col.notNull().defaultTo('')).execute();
     },

@@ -11,6 +11,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - Hold a cron until your Claude usage resets, per limit, instead of firing it into a spent quota.
 - Choose the model per cron, from whatever the installed CLI recognises.
 - Every finished run records the model, runtime, tokens and cost that the CLI reported.
+- An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.
 - Machine stats in the header — CPU, memory, storage throughput and disk space, sampled every 5 seconds, with a 15-minute chart on hover.
 - A notification centre behind the bell: everything the server announces, kept on disk, with an unread count and a drawer that marks what you have actually read.

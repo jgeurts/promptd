@@ -59,6 +59,7 @@ function jobDefaults(id: string, record: Record<string, unknown>): Record<string
     workingDirectory: '',
     useWorktree: false,
     cleanupWorktree: false,
+    retrospective: false,
     model: '',
     effort: '',
     prompt: '',
@@ -120,6 +121,7 @@ async function importNotifications(): Promise<number> {
       cronId: typeof record.cronId === 'string' ? record.cronId : null,
       cronName: typeof record.cronName === 'string' ? record.cronName : null,
       jobKind: record.jobKind === 'execution' ? 'execution' : 'cron',
+      logFile: null,
     });
   }
   let count = 0;
