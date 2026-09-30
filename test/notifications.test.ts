@@ -281,3 +281,23 @@ describe('an alert found still firing after a restart', () => {
     expect(center.items.map((record) => record.open)).toEqual([true, false]);
   });
 });
+
+describe('reading a row that has changed since it was seen', () => {
+  it('leaves a worse repeat unread when the acknowledgement was for the version before it', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    const { id } = center.items[0]!;
+    center.record(fromNode('studio', 'system:alert', disk('5% free', { worse: true })));
+    expect((await center.markRead([id], { [id]: 1 })).marked).toBe(0);
+    expect(center.items[0]).toMatchObject({ count: 2, read: false });
+    expect((await center.markRead([id], { [id]: 2 })).marked).toBe(1);
+    expect(center.items[0]!.read).toBe(true);
+  });
+
+  it('leaves a failed update unread when only its launch was seen', async () => {
+    center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
+    const { id } = center.items[0]!;
+    center.record(event('update:failed', { code: 1, target: 'def5678' }));
+    await center.markRead([id], { [id]: 1 });
+    expect(center.items[0]).toMatchObject({ level: 'action', read: false });
+  });
+});

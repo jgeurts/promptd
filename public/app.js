@@ -3559,7 +3559,7 @@ let loadingPage = false;
 let listGeneration = 0; // bumped by every reset, so an answer to an older list is dropped
 const drawnIds = new Set(); // a notification arriving as both a page and an event
 const readTimers = new Map(); // id -> the timer counting out its three seconds
-const pendingRead = new Set(); // seen, not yet reported to the server
+const pendingRead = new Map(); // seen, not yet reported to the server: id -> the count it had when seen
 let readFlushTimer = null;
 let viewObserver = null; // watches items for the three-second rule
 let moreObserver = null; // watches the end of the list for the next page
@@ -3617,7 +3617,7 @@ function renderNotification(record, { arriving = false } = {}) {
   // With several machines a row says which one it is about. A record from before
   // nodes were named has no name, and gets none rather than a guess.
   const named = drawerNodes.length && record.nodeName;
-  const node = el('div', { class: classes.join(' '), 'data-id': record.id, 'data-level': level.level }, [
+  const node = el('div', { class: classes.join(' '), 'data-id': record.id, 'data-level': level.level, 'data-count': record.count ?? 1 }, [
     // The section heading says the level to a screen reader; this is for the eye.
     el('span', { class: `note-glyph ${level.level}`, 'aria-hidden': 'true', text: level.glyph }),
     el('div', { class: 'note-body' }, [
@@ -3652,16 +3652,19 @@ function renderNotification(record, { arriving = false } = {}) {
 function flushRead() {
   clearTimeout(readFlushTimer);
   readFlushTimer = setTimeout(async () => {
-    const ids = [...pendingRead];
-    if (!ids.length) return;
+    const seen = new Map(pendingRead);
+    if (!seen.size) return;
     pendingRead.clear();
     try {
-      const result = await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) });
+      // With the count each row had on screen, so a repeat that landed on it
+      // since is not marked read unseen.
+      const body = { ids: [...seen.keys()], revisions: Object.fromEntries(seen) };
+      const result = await api('/api/notifications/read', { method: 'POST', body: JSON.stringify(body) });
       setBellBadge(result.counts);
     } catch {
       // Put them back: the next flush tries again, and the worst case is that
       // something stays unread rather than being marked read without proof.
-      for (const id of ids) pendingRead.add(id);
+      for (const [id, count] of seen) if (!pendingRead.has(id)) pendingRead.set(id, count);
     }
   }, 400);
 }
@@ -3676,7 +3679,7 @@ function flushRead() {
 function markSeen(id, node) {
   node.classList.remove('unread');
   viewObserver?.unobserve(node);
-  pendingRead.add(id);
+  pendingRead.set(id, Number(node.dataset.count) || 1);
   flushRead();
 }
 
@@ -3851,8 +3854,10 @@ async function loadNextPage() {
  * the top — the same rule a new row follows.
  */
 function replaceNotification(existing, record) {
+  // Whatever was counted or seen of the old version says nothing about this one.
   clearTimeout(readTimers.get(record.id));
   readTimers.delete(record.id);
+  pendingRead.delete(record.id);
   viewObserver?.unobserve(existing);
   const node = renderNotification(record, { arriving: true });
   const from = sections.get(existing.dataset.level);

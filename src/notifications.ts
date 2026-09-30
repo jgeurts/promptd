@@ -548,13 +548,22 @@ export class NotificationCenter {
     return record;
   }
 
-  /** Marks the given ids read, and answers with what is still unread. */
-  public async markRead(ids: string | string[] | null | undefined): Promise<{ marked: number; unread: number; counts: NotificationCounts }> {
+  /**
+   * Marks the given ids read, and answers with what is still unread.
+   *
+   * `revisions` is the count each row had when it was seen. A repeat that
+   * landed on the row since then is something the reader has not seen, so an
+   * acknowledgement of an older revision leaves the row unread.
+   */
+  public async markRead(
+    ids: string | string[] | null | undefined,
+    revisions: Record<string, number> = {},
+  ): Promise<{ marked: number; unread: number; counts: NotificationCounts }> {
     await this.ready;
     const wanted = new Set(([] as string[]).concat(ids ?? []));
     const changed: NotificationRecord[] = [];
     for (const record of this.items) {
-      if (!record.read && wanted.has(record.id)) {
+      if (!record.read && wanted.has(record.id) && (revisions[record.id] === undefined || revisions[record.id] === record.count)) {
         record.read = true;
         changed.push(record);
       }
