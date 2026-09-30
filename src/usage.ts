@@ -1,7 +1,8 @@
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { claudeConfig } from './claudeConfig.js';
+import type { ClaudeConfigLocation } from './claudeConfig.js';
 import { ROOT } from './paths.js';
 import type {
   UsageBlocker,
@@ -84,9 +85,6 @@ const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // OAuth tokens are only accepted on this endpoint with the beta opt-in header.
 const OAUTH_BETA = 'oauth-2025-04-20';
 
-const KEYCHAIN_SERVICE = 'Claude Code-credentials';
-const CREDENTIALS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
-
 // Usage moves slowly and every open tab polls /api/health, so the endpoint is
 // asked once per window at most and every request is answered from the cache.
 export const TTL_MS = 5 * 60 * 1000;
@@ -123,30 +121,46 @@ function humanize(kind: unknown): string {
   return text ? text[0]!.toUpperCase() + text.slice(1) : 'Limit';
 }
 
-/** The CLI keeps its credentials in the login keychain on macOS. */
-function keychainCredentials(): Promise<string | null> {
+/** The CLI keeps its credentials in the login keychain on macOS, under a service named for its config directory. */
+function keychainCredentials(service: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      ['find-generic-password', '-s', service, '-w'],
       { timeout: 10000 },
       (err, stdout) => resolve(err ? null : String(stdout).trim() || null),
     );
   });
 }
 
+export interface TokenSources {
+  location?: ClaudeConfigLocation;
+  keychain?: (service: string) => Promise<string | null>;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * The access token the CLI is using, or null when it is not signed in.
+ *
+ * Read from the same config directory the node's account is read from, and
+ * only from there: with CLAUDE_CONFIG_DIR set, the default directory's login is
+ * another account's, and its numbers would be drawn under this one's name.
  *
  * Deliberately read fresh each time rather than held in memory: the CLI rotates
  * this token, and a copy we kept would go stale. It is never logged, never
  * cached, and never leaves this module.
  */
-async function accessToken(): Promise<{ token: string | null; reason: string | null }> {
+export async function accessToken({
+  location = claudeConfig(),
+  keychain = keychainCredentials,
+  platform = process.platform,
+}: TokenSources = {}): Promise<{ token: string | null; reason: string | null }> {
   let raw: string | null = null;
-  if (process.platform === 'darwin') raw = await keychainCredentials();
-  if (!raw) raw = await fsp.readFile(CREDENTIALS_FILE, 'utf8').catch(() => null);
-  if (!raw) return { token: null, reason: 'the Claude CLI is not signed in on this machine' };
+  if (platform === 'darwin') raw = await keychain(location.keychainService);
+  if (!raw) raw = await fsp.readFile(location.credentialsFile, 'utf8').catch(() => null);
+  if (!raw) {
+    return { token: null, reason: location.custom ? `the Claude CLI is not signed in for ${location.dir}` : 'the Claude CLI is not signed in on this machine' };
+  }
 
   let parsed: StoredCredentials | null;
   try {

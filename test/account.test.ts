@@ -1,18 +1,6 @@
-import os from 'node:os';
-import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { claudeConfigFile, readAccount, reportedAccount } from '../src/account.js';
-
-describe('claudeConfigFile', () => {
-  it('reads beside CLAUDE_CONFIG_DIR when it is set', () => {
-    expect(claudeConfigFile({ CLAUDE_CONFIG_DIR: '/opt/claude' })).toBe(path.join('/opt/claude', '.claude.json'));
-  });
-
-  it('falls back to the home directory', () => {
-    expect(claudeConfigFile({})).toBe(path.join(os.homedir(), '.claude.json'));
-  });
-});
+import { readAccount, reportedAccount } from '../src/account.js';
 
 describe('readAccount', () => {
   it('keeps the account id and the email, and nothing else', () => {

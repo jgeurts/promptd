@@ -1,6 +1,5 @@
 import fsp from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
+import { claudeConfig } from './claudeConfig.js';
 import type { ClaudeAccount } from './types.js';
 
 /**
@@ -14,12 +13,6 @@ import type { ClaudeAccount } from './types.js';
 
 /** A sign-in can change under a running node, but not often enough to read the file every sync. */
 const REREAD_MS = 60 * 1000;
-
-/** `$CLAUDE_CONFIG_DIR/.claude.json` when the CLI is pointed elsewhere, `~/.claude.json` otherwise. */
-export function claudeConfigFile(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.CLAUDE_CONFIG_DIR?.trim();
-  return dir ? path.join(dir, '.claude.json') : path.join(os.homedir(), '.claude.json');
-}
 
 /** The account in a parsed config, or null when it names none: signed out, or a shape we do not know. */
 export function readAccount(config: unknown): ClaudeAccount | null {
@@ -52,7 +45,7 @@ class AccountMonitor {
   public async state(): Promise<ClaudeAccount | null> {
     if (Date.now() - this.readAt < REREAD_MS) return this.current;
     this.reading ??= fsp
-      .readFile(claudeConfigFile(), 'utf8')
+      .readFile(claudeConfig().configFile, 'utf8')
       .then((text) => readAccount(JSON.parse(text)))
       // No file is no account. One that will not parse is most likely the CLI
       // halfway through rewriting it, so the account read last time stands.
