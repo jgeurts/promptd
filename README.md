@@ -19,7 +19,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 
 ## Install
 
-The installer is for macOS; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Claude Code installed and signed in: `claude --version` should answer.
+The installer is for Apple silicon Macs; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Claude Code installed and signed in: `claude --version` should answer.
 
 One Mac runs the **hub**, which keeps your jobs and serves the web page. Every Mac that runs jobs is a **node**, the hub's Mac included. Nodes connect to the hub; the hub never connects to them.
 

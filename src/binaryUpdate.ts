@@ -18,10 +18,8 @@ export function versionOfTag(tag: string): string | null {
   return tag.startsWith(TAG_PREFIX) ? tag.slice(TAG_PREFIX.length) : null;
 }
 
-/** The release file for a Mac of this architecture. */
-export function assetName(arch: string = process.arch): string {
-  return `promptd-darwin-${arch === 'arm64' ? 'arm64' : 'x64'}`;
-}
+/** The release file: promptd is built for Apple silicon Macs only. */
+export const ASSET = 'promptd-darwin-arm64';
 
 /** The sha256 that a `shasum -a 256` listing gives for `file`, or null when it lists no such file. */
 export function checksumFor(sums: string, file: string): string | null {
@@ -88,7 +86,7 @@ export async function versionOnDisk(): Promise<string | null> {
  */
 export async function installVersion(version: string): Promise<void> {
   const base = `https://github.com/${BINARY_REPO}/releases/download/${releaseTag(version)}`;
-  const name = assetName();
+  const name = ASSET;
   const [binary, sums] = await Promise.all([download(`${base}/${name}`), download(`${base}/sha256sums.txt`)]);
   const expected = checksumFor(sums.toString('utf8'), name);
   const actual = createHash('sha256').update(binary).digest('hex');

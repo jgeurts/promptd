@@ -34,11 +34,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(uname -s)" = Darwin ] || die "this installer is for macOS"
-case "$(uname -m)" in
-  arm64) ASSET=promptd-darwin-arm64 ;;
-  x86_64) ASSET=promptd-darwin-x64 ;;
-  *) die "no promptd build for $(uname -m)" ;;
-esac
+[ "$(uname -m)" = arm64 ] || die "promptd is built for Apple silicon Macs only"
+ASSET=promptd-darwin-arm64
 
 if [ "$RELEASE" = latest ]; then
   BASE="https://github.com/$REPO/releases/latest/download"

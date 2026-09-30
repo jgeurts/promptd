@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { assetName, checksumFor, releaseTag, underLaunchd, versionOfTag } from '../src/binaryUpdate.js';
+import { checksumFor, releaseTag, underLaunchd, versionOfTag } from '../src/binaryUpdate.js';
 
 describe('release tags', () => {
   it('name a build after its commit, and read it back', () => {
@@ -13,17 +13,9 @@ describe('release tags', () => {
   });
 });
 
-describe('assetName', () => {
-  it('picks the file for the architecture', () => {
-    expect(assetName('arm64')).toBe('promptd-darwin-arm64');
-    expect(assetName('x64')).toBe('promptd-darwin-x64');
-  });
-});
-
 describe('checksumFor', () => {
   const sums = [
     'AAA111  promptd-darwin-arm64',
-    'bbb222  promptd-darwin-x64',
     'ccc333  install.sh',
     '',
   ].join('\n');
