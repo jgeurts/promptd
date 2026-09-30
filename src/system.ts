@@ -301,9 +301,13 @@ export const SYSTEM_ALERTS = [
         summary: `${round1(100 - value)}% of the volume is free`,
       };
     },
-    /** Half the free space it had when it last said so is gone. */
+    /**
+     * Half the free space it had when it last said so is gone. Strictly more in
+     * use, too: a full disk read again at 100% has lost nothing, although
+     * nothing is half of nothing.
+     */
     worsened(sent: AlertAnnouncement, reading: SystemAlertReading): boolean {
-      return 100 - reading.value <= (100 - sent.value) / 2;
+      return reading.value > sent.value && 100 - reading.value <= (100 - sent.value) / 2;
     },
   },
 ];

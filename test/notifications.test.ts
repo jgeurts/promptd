@@ -314,6 +314,14 @@ describe('an alert found worse after a restart', () => {
     expect(center.items[0]!.message).toContain('5% free');
   });
 
+  it('stays quiet when a full disk is read full again after the restart', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('0% free', { value: 100 })));
+    await center.markRead([center.items[0]!.id], { [center.items[0]!.id]: 1 });
+    center.record(fromNode('studio', 'system:alert', seededDisk(100)));
+    expect(center.items[0]).toMatchObject({ count: 1, read: true });
+    expect(center.counts().action).toBe(0);
+  });
+
   it('stays quiet when the reading is no worse than that', async () => {
     center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
     await center.markRead([center.items[0]!.id]);

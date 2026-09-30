@@ -99,6 +99,14 @@ describe('alerts that get worse', () => {
     expect(check({ cpu: 95 })).toMatchObject([{ type: 'system:alert', metric: 'cpu', worse: true }]);
   });
 
+  it('does not call a full disk worse for being read full again', () => {
+    check({ disk: 100 });
+    outlastCooldown('disk');
+    expect(check({ disk: 100 })).toEqual([]);
+    expect(system.alertWorsened('disk', { value: 100, running: 0 }, 100, 0)).toBe(false);
+    expect(system.alertWorsened('disk', { value: 99, running: 0 }, 100, 0)).toBe(true);
+  });
+
   it('holds a worsening to the cooldown like any other alert', () => {
     check({ disk: 90 });
     expect(check({ disk: 96 })).toEqual([]);
