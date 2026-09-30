@@ -2312,7 +2312,7 @@ function nodeSettingsParts(node, config) {
 
 /** The project list on the Settings page: rename, describe, delete, and add. */
 function projectsList() {
-  const body = el('div', {});
+  const body = el('div', { class: 'project-list' });
   const row = (project) => {
     const name = el('input', { type: 'text', value: project?.name ?? '', placeholder: 'Project name', maxlength: '120' });
     const description = el('input', { type: 'text', value: project?.description ?? '', placeholder: 'Description (optional)' });
@@ -2354,7 +2354,7 @@ function projectsList() {
             onclick: (event) => send(event.target, () => api('/api/projects', { method: 'POST', body: payload() }), 'Project added'),
           }),
         ];
-    return el('div', { class: 'field project-row' }, [name, description, el('div', { class: 'row-actions' }, actions)]);
+    return el('div', { class: `project-row${project ? '' : ' project-add'}` }, [name, description, el('div', { class: 'row-actions' }, actions)]);
   };
   const paint = async () => {
     let projects;

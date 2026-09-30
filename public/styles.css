@@ -1782,6 +1782,18 @@ tbody tr.group-row:hover {
   font-weight: 400;
 }
 
+.project-list {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.project-row + .project-add {
+  margin-top: 8px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
 .project-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) 136px;
