@@ -3810,6 +3810,15 @@ async function loadNextPage() {
     // The list was reset while this was in flight: its filter is not this one's.
     if (generation !== listGeneration) return;
     setDrawerNodes(page.nodes ?? []);
+    // The machine being shown is no longer listed — down to one node, or
+    // forgotten — so its chip is gone and nothing on screen could clear the
+    // filter. Drop it, and this answer to it, and start again unfiltered.
+    if (nodeFilter && !drawerNodes.some((node) => node.id === nodeFilter)) {
+      nodeFilter = null;
+      syncNodeChips();
+      resetList();
+      return;
+    }
     setBellBadge(page.counts);
     for (const other of sections.values()) {
       other.total = page.levels?.[other.level] ?? other.total;
@@ -3849,9 +3858,13 @@ async function loadNextPage() {
 }
 
 /**
- * A repeat that landed on a row already drawn. The row takes the new wording
- * where it is, and moves up to the top of its section when the reader is at
- * the top — the same rule a new row follows.
+ * A repeat that landed on a row already drawn.
+ *
+ * A row whose level changed always moves to the top of its new section, with
+ * both sections' totals moved with it: left where it was, a hold that now
+ * needs action would sit under Worth knowing, out of sight if that is folded.
+ * A row at the same level moves up only when the reader is at the top — the
+ * rule a new row follows — and otherwise takes the new wording where it is.
  */
 function replaceNotification(existing, record) {
   // Whatever was counted or seen of the old version says nothing about this one.
@@ -3861,18 +3874,19 @@ function replaceNotification(existing, record) {
   viewObserver?.unobserve(existing);
   const node = renderNotification(record, { arriving: true });
   const from = sections.get(existing.dataset.level);
-  const to = sections.get(record.level);
-  if (to && drawerListEl.scrollTop <= 40) {
+  const to = sections.get(record.level) ?? from;
+  if (from && to && from !== to) {
     existing.remove();
     to.list.querySelector('.drawer-empty')?.remove();
     to.list.prepend(node);
-    if (from && from !== to) {
-      from.total = Math.max(0, from.total - 1);
-      to.total += 1;
-      renderSectionCount(from);
-      renderSectionCount(to);
-      if (from.done) markEmpty(from);
-    }
+    from.total = Math.max(0, from.total - 1);
+    to.total += 1;
+    renderSectionCount(from);
+    renderSectionCount(to);
+    if (from.done) markEmpty(from);
+  } else if (to && drawerListEl.scrollTop <= 40) {
+    existing.remove();
+    to.list.prepend(node);
   } else {
     existing.replaceWith(node);
   }
