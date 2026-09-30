@@ -1201,7 +1201,10 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
           hint.textContent = DIR_HINT;
           hint.className = 'hint';
         } else {
-          hint.textContent = result.exists ? `→ ${result.resolved}` : `${result.resolved} does not exist`;
+          // A node older than the git check answers without the flag, and then nothing is said about it.
+          const repository =
+            result.inGitRepository === undefined ? '' : result.inGitRepository ? ' · in a git repository' : ' · not in a git repository';
+          hint.textContent = result.exists ? `→ ${result.resolved}${repository}` : `${result.resolved} does not exist`;
           hint.className = result.exists ? 'hint ok' : 'hint warn';
         }
       })

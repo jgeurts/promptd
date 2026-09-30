@@ -2,11 +2,14 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { resolveUserPath } from './paths.js';
+import { repoRoot } from './worktree.js';
 
 export interface BrowseResult {
   suggestions: string[];
   resolved: string | null;
   exists: boolean;
+  /** Whether the resolved folder is inside a git repository, which a worktree needs. */
+  inGitRepository: boolean;
   truncated: boolean;
 }
 
@@ -49,5 +52,7 @@ export async function browseDirectories(typed: string): Promise<BrowseResult> {
         .then((s) => s.isDirectory())
         .catch(() => false)
     : false;
-  return { suggestions, resolved, exists, truncated: names.length > 25 };
+  // Asked of git itself, as the run's worktree will be, rather than guessed from a .git folder.
+  const inGitRepository = exists && resolved ? (await repoRoot(resolved)) !== null : false;
+  return { suggestions, resolved, exists, inGitRepository, truncated: names.length > 25 };
 }

@@ -747,7 +747,7 @@ An alias records what it resolved to: a cron set to `haiku` logs `Model: claude-
 
 ## Working directory
 
-On a new cron or one-time execution the field starts at the chosen node's **Default working directory** (`~/` unless you change it), and follows a change of node until you type in it; editing or duplicating a job keeps its own. It autocompletes as you type: suggestions come from the chosen node's filesystem, `↑`/`↓` picks one, `Enter` or `Tab` accepts it. Accepting ends the path in `/`, so pressing `Enter` again drills into that directory. Under the field, a live note shows the absolute path the run will use, or says the path does not exist.
+On a new cron or one-time execution the field starts at the chosen node's **Default working directory** (`~/` unless you change it), and follows a change of node until you type in it; editing or duplicating a job keeps its own. It autocompletes as you type: suggestions come from the chosen node's filesystem, `↑`/`↓` picks one, `Enter` or `Tab` accepts it. Accepting ends the path in `/`, so pressing `Enter` again drills into that directory. Under the field, a live note shows the absolute path the run will use and whether it is inside a git repository, or says the path does not exist. The node answers that from its own disk, asking git, so it is the same answer a worktree run will get.
 
 Paths are stored exactly as typed. They are resolved at spawn time:
 
