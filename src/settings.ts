@@ -39,6 +39,9 @@ export const DEFAULT_SETTINGS: Settings = {
   // Written as .worktreeinclude to the root of a job's git repository when it runs
   // in a worktree, naming the ignored files Claude Code copies into new ones.
   defaultWorktreeInclude: '',
+  // The prompt a job with Retrospective on ends its run with. Blank uses the
+  // built-in one in retrospective.ts, so an untouched setting follows it.
+  retrospectivePrompt: '',
   // The node that runs a job with no node of its own. Set to the first node that connects.
   defaultNodeId: '',
 };

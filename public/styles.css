@@ -1502,6 +1502,45 @@ input.narrow {
   align-items: center;
 }
 
+.run-subitem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--amber);
+  padding: 7px 13px 7px 25px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.run-subitem:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.run-subitem.selected {
+  background: var(--accent-soft);
+  border-left: 2px solid var(--accent);
+}
+
+/* A run's retrospective, set apart from the output it follows. */
+.log-retro {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+
+.log-retro-title {
+  color: var(--amber);
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
 .log-panel {
   background: var(--panel);
   border: 1px solid var(--border);

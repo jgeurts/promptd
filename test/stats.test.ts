@@ -37,6 +37,7 @@ function cronWithCounters(overrides: Partial<Cron> = {}): Cron {
     workingDirectory: '',
     useWorktree: false,
     cleanupWorktree: false,
+    retrospective: false,
     model: '',
     effort: '',
     usageDelay: { credits: false, fable: false, session: false, weekly: false },

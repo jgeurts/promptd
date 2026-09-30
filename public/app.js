@@ -1444,6 +1444,29 @@ function worktreePicker(job, { id = null, oneTime = false } = {}) {
 }
 
 /**
+ * The Retrospective box both job forms share. Off unless the job already has
+ * it on, so a new job starts without one.
+ */
+function retrospectivePicker(job) {
+  const box = el('input', { type: 'checkbox' });
+  box.checked = Boolean(job?.retrospective);
+  return {
+    read: () => ({ retrospective: box.checked }),
+    field: el('div', { class: 'field' }, [
+      el('label', { text: 'Retrospective' }),
+      el('label', { class: 'check' }, [box, 'Run a retrospective at the end of each execution']),
+      el('div', { class: 'hint' }, [
+        "Adds the retrospective prompt to the end of this job's prompt, so Claude reviews the run once the task is done. ",
+        "A retrospective with something in it is written at the end of the run's log, marked in the run list, and sent as a notification. ",
+        'One with nothing to report leaves no trace. The prompt is set on the ',
+        el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
+        '.',
+      ]),
+    ]),
+  };
+}
+
+/**
  * Wraps the date field in the same live feedback the Cron field gets: presets
  * for the times you actually pick, and a line saying how far off it is.
  *
@@ -1636,6 +1659,7 @@ async function renderForm(id, duplicateOf) {
   inputs.isActive.checked = cron ? Boolean(cron.isActive) : true;
 
   const worktree = worktreePicker(cron, { id });
+  const retrospective = retrospectivePicker(cron);
   const model = modelPicker(cron?.model ?? '');
   const effort = effortPicker(cron?.effort ?? '');
   const usageDelay = usageDelayPicker(cron?.usageDelay ?? null);
@@ -1671,6 +1695,7 @@ async function renderForm(id, duplicateOf) {
       effort: effort.read(),
       usageDelay: usageDelay.read(),
       prompt: inputs.prompt.value,
+      ...retrospective.read(),
       isActive: inputs.isActive.checked,
     };
     try {
@@ -1722,6 +1747,7 @@ async function renderForm(id, duplicateOf) {
       usageDelay.field,
       field('Prompt', inputs.prompt),
       commandButtons(defaults.commands),
+      retrospective.field,
       el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
@@ -1805,6 +1831,7 @@ async function renderExecutionForm(id, duplicateOf) {
       usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
     },
   });
+  const retrospective = retrospectivePicker(execution);
   const model = modelPicker(execution?.model ?? '');
   const effort = effortPicker(execution?.effort ?? '');
   const usageDelay = usageDelayPicker(execution?.usageDelay ?? null);
@@ -1832,6 +1859,7 @@ async function renderExecutionForm(id, duplicateOf) {
       effort: effort.read(),
       usageDelay: usageDelay.read(),
       prompt: inputs.prompt.value,
+      ...retrospective.read(),
       isActive: inputs.isActive.checked,
     };
     if (typed && Number.isNaN(new Date(typed).getTime())) return showError('Date and time is not a valid date.');
@@ -1884,6 +1912,7 @@ async function renderExecutionForm(id, duplicateOf) {
       usageDelay.field,
       field('Prompt', inputs.prompt),
       commandButtons(defaults.commands),
+      retrospective.field,
       el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
@@ -2414,6 +2443,24 @@ async function renderSettings() {
     saveSettings({ defaultPrompt: defaultPrompt.value }, defaultPrompt.value.trim() ? 'Default prompt saved' : 'Default prompt cleared'),
   );
 
+  // ---- retrospective prompt ----
+  // A blank setting runs the default, so the box shows the default then.
+  const defaultRetrospective = typeof settings.defaultRetrospectivePrompt === 'string' ? settings.defaultRetrospectivePrompt : '';
+  const retrospectivePrompt = el('textarea', {
+    'aria-label': 'Retrospective prompt',
+    text: typeof settings.retrospectivePrompt === 'string' && settings.retrospectivePrompt.trim() ? settings.retrospectivePrompt : defaultRetrospective,
+  });
+  const resetRetrospective = el('button', { type: 'button', class: 'btn small', text: 'Reset to default' });
+  const saveRetrospective = async (text) => {
+    const isDefault = !text.trim() || text.trim() === defaultRetrospective.trim();
+    if (await saveSettings({ retrospectivePrompt: isDefault ? '' : text }, isDefault ? 'Retrospective prompt set to the default' : 'Retrospective prompt saved')) {
+      if (isDefault) retrospectivePrompt.value = defaultRetrospective;
+    }
+  };
+  // `change` fires on blur, and only when the text differs from what it held on focus.
+  retrospectivePrompt.addEventListener('change', () => saveRetrospective(retrospectivePrompt.value));
+  resetRetrospective.addEventListener('click', () => saveRetrospective(''));
+
   // ---- common commands ----
   const commonCommands = el('textarea', {
     class: 'compact mono',
@@ -2584,6 +2631,16 @@ async function renderSettings() {
         'Leave it blank to start new jobs with an empty prompt.',
       ]),
       divider(),
+      el('h3', { text: 'Retrospective prompt' }),
+      el('div', { class: 'field' }, [retrospectivePrompt]),
+      el('div', { class: 'hint' }, [
+        'Added to the end of the prompt of every job with Retrospective on. ',
+        'Claude is also told to open the retrospective with a marker line, so the log can show it as a section of its own, ',
+        'and to answer only "NO RETROSPECTIVE" when it has nothing to report. ',
+        'Clearing the box, or saving the default unchanged, keeps it on the default.',
+      ]),
+      el('div', { class: 'form-actions' }, [resetRetrospective]),
+      divider(),
       el('h3', { text: 'Common commands' }),
       el('div', { class: 'field' }, [commonCommands]),
       el('div', { class: 'hint' }, [
@@ -2737,7 +2794,29 @@ const logsState = {
   query: '', // the run list shows only logs containing this, ignoring case
   searchTimer: null,
   renderSeq: 0, // a slow search response must not overwrite a newer one
+  toRetrospective: false, // scroll the selected log to its retrospective once it has loaded
 };
+
+// The section the server writes a retrospective under; kept in step with
+// RETROSPECTIVE_HEADING and RETROSPECTIVE_END in src/retrospective.ts.
+const RETRO_HEADING = '--- retrospective ---';
+const RETRO_END = '--- end of retrospective ---';
+
+/**
+ * Sets a finished log's retrospective apart from the output around it, and
+ * answers the element it now sits in, or null when the log has none.
+ */
+function markRetrospective(body) {
+  const text = body.textContent;
+  const start = text.lastIndexOf(`\n${RETRO_HEADING}\n`);
+  if (start < 0) return null;
+  const after = text.indexOf(`\n${RETRO_END}\n`, start);
+  const end = after < 0 ? text.length : after + RETRO_END.length + 2;
+  const inner = text.slice(start + RETRO_HEADING.length + 2, after < 0 ? text.length : after);
+  const section = el('div', { class: 'log-retro' }, [el('div', { class: 'log-retro-title', text: 'Retrospective' }), inner]);
+  body.replaceChildren(text.slice(0, start + 1), section, text.slice(end));
+  return section;
+}
 
 /**
  * Lifetime totals for one cron, drawn under its name on the logs page.
@@ -2807,7 +2886,7 @@ async function renderLogs(id, kind = 'cron') {
     'div',
     { class: 'run-list' },
     logs.length
-      ? logs.map((log) =>
+      ? logs.flatMap((log) => [
           el(
             'button',
             {
@@ -2828,7 +2907,21 @@ async function renderLogs(id, kind = 'cron') {
               ]),
             ],
           ),
-        )
+          // Only a retrospective that said something is written, so this is only ever worth opening.
+          log.hasRetrospective
+            ? el('button', {
+                class: `run-subitem${log.file === logsState.selected ? ' selected' : ''}`,
+                title: "Open this run's retrospective",
+                text: '↳ Retrospective',
+                onclick: () => {
+                  logsState.selected = log.file;
+                  logsState.atBottom = false;
+                  logsState.toRetrospective = true;
+                  renderLogs(id, kind);
+                },
+              })
+            : null,
+        ])
       : [el('div', { class: 'empty', text: query ? 'No runs match' : 'No runs yet' })],
   );
 
@@ -2968,6 +3061,9 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons')
       runtimeEl.textContent = ms === null ? '' : fmtDuration(ms);
     }
     if (!body.textContent) body.textContent = '(empty log)';
+    const retro = markRetrospective(body);
+    if (retro && logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
+    logsState.toRetrospective = false;
     closeLogStream();
   });
 
@@ -2993,8 +3089,35 @@ function closeLogStream() {
  */
 function parseHash() {
   const parts = (location.hash.replace(/^#/, '') || '/').split('/').filter(Boolean);
-  if (parts[0] === 'one-time') return { kind: 'execution', section: parts[1] ?? 'list', id: parts[2] ?? null };
-  return { kind: 'cron', section: parts[0] ?? 'list', id: parts[1] ?? null };
+  const rest = parts[0] === 'one-time' ? parts.slice(1) : parts;
+  return {
+    kind: parts[0] === 'one-time' ? 'execution' : 'cron',
+    section: rest[0] ?? 'list',
+    id: rest[1] ?? null,
+    // A logs link can name one run, `#/logs/:id/:file`, and end in `/retro` to open its retrospective.
+    file: rest[2] ? decodeURIComponent(rest[2]) : null,
+    retro: rest[3] === 'retro',
+  };
+}
+
+/** The link to one run's log, or to its retrospective. */
+function logHash(kind, jobId, file, { retro = false } = {}) {
+  return `${kind === 'execution' ? '#/one-time' : '#'}/logs/${jobId}/${encodeURIComponent(file)}${retro ? '/retro' : ''}`;
+}
+
+/**
+ * Selects the run a logs link names, then drops it from the address: the page
+ * moves between runs without touching the hash, and a stale one would pull a
+ * reload back to this run.
+ */
+function openLinkedLog(kind, id, file, retro) {
+  logsState.cronId = id;
+  logsState.kind = kind;
+  logsState.query = '';
+  logsState.selected = file;
+  logsState.atBottom = !retro;
+  logsState.toRetrospective = retro;
+  history.replaceState(null, '', `${kind === 'execution' ? '#/one-time' : '#'}/logs/${id}`);
 }
 
 async function route() {
@@ -3004,7 +3127,8 @@ async function route() {
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);
   clearTimeout(updateWatchTimer);
-  const { kind, section, id } = parseHash();
+  const { kind, section, id, file, retro } = parseHash();
+  if (section === 'logs' && id && file) openLinkedLog(kind, id, file, retro);
   try {
     if (section === 'settings') await renderSettings();
     else if (section === 'nodes' && id) await renderNode(decodeURIComponent(id));
@@ -3113,6 +3237,12 @@ function connectEvents() {
   }
 
   // Matches the wording the server writes into the notification drawer.
+  events.addEventListener('run:retrospective', (event) => {
+    const payload = JSON.parse(event.data);
+    const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
+    toast(`${named} left a retrospective`);
+    refreshCurrentView();
+  });
   events.addEventListener('worktree:include-failed', (event) => {
     const payload = JSON.parse(event.data);
     const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
@@ -3322,7 +3452,11 @@ function renderNotification(record, { arriving = false } = {}) {
     node.classList.add('linked');
     node.addEventListener('click', () => {
       closeDrawer();
-      location.hash = record.jobKind === 'execution' ? `#/one-time/logs/${record.cronId}` : `#/logs/${record.cronId}`;
+      location.hash = record.logFile
+        ? logHash(record.jobKind, record.cronId, record.logFile, { retro: record.kind === 'retrospective' })
+        : record.jobKind === 'execution'
+          ? `#/one-time/logs/${record.cronId}`
+          : `#/logs/${record.cronId}`;
     });
   }
   return node;
