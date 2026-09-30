@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
-import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect, sql } from 'kysely';
+import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect } from 'kysely';
 import type { Generated } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import type { Migration, MigrationResultSet } from 'kysely/migration';
@@ -119,15 +119,6 @@ function jobTable(db: Kysely<unknown>, name: string) {
     .addColumn('lifetime_runtime_seconds', 'double precision');
 }
 
-const DROPPED_SETTINGS = [
-  'importedFromFilesAt',
-  'logsMigrated',
-  'localNodeAgentCheckedAt',
-  'maxConcurrentJobs',
-  'usageDelayThresholds',
-  'defaultWorkingDirectory',
-];
-
 // Kept in code rather than read from a folder, so the compiled build carries
 // them. Column types stay to the set SQLite and Postgres both understand.
 const MIGRATIONS: Record<string, Migration> = {
@@ -188,12 +179,6 @@ const MIGRATIONS: Record<string, Migration> = {
   '20260929_002_cron_timezone': {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('crons').addColumn('timezone', 'text', (col) => col.notNull().defaultTo('')).execute();
-    },
-  },
-  // Flags and hub-wide values left by upgrade steps that have been removed.
-  '20260929_003_drop_upgrade_settings': {
-    async up(db: Kysely<unknown>): Promise<void> {
-      await sql`delete from settings where key in (${sql.join(DROPPED_SETTINGS.map((key) => sql.lit(key)))})`.execute(db);
     },
   },
 };
