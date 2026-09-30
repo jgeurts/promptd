@@ -88,6 +88,7 @@ let appliedPauseKey: string | null = null;
 let updatingTo: { version: string; since: number; holding: boolean } | null = null;
 /** Checks the wait for runs to finish on its own clock, since the hub may be out of reach. */
 let updateDrainTimer: ReturnType<typeof setInterval> | null = null;
+let drainStepRunning = false;
 const updateFailedAt = new Map<string, number>();
 /** A join code the hub refused, which is not sent again. */
 let rejectedCode: string | null = null;
@@ -455,22 +456,37 @@ async function followHub(version: string | null | undefined): Promise<void> {
 
 /** Takes the next step towards restarting into the new build; runs on its own timer, since the hub may be out of reach. */
 async function drainForUpdate(): Promise<void> {
-  if (!updatingTo) return;
-  const running = cronService.runningCount();
-  const step = nextUpdateStep({ running, waitedMs: Date.now() - updatingTo.since, holding: updatingTo.holding });
+  // One step at a time: the timer can fire again while a step awaits the pause.
+  if (!updatingTo || drainStepRunning) return;
+  drainStepRunning = true;
+  try {
+    await stepTowardsRestart(updatingTo);
+  } finally {
+    drainStepRunning = false;
+  }
+}
+
+async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promise<void> {
+  const running = cronService.activeRunCount();
+  const step = nextUpdateStep({ running, waitedMs: Date.now() - update.since, holding: update.holding });
   if (step === 'restart') {
+    if (!update.holding) {
+      // Held before the first await, so a sync landing meanwhile cannot lift the
+      // pause; then counted again, since a trigger may have been on its way to a run.
+      update.holding = true;
+      await cronService.pauseAll({ mode: 'update', label: 'for update' });
+      if (cronService.activeRunCount() > 0) return;
+    }
     if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = null;
-    // Nothing may start between here and the exit.
-    await cronService.pauseAll({ mode: 'update', label: 'for update' });
-    console.log(`[update] nothing running; exiting for launchd to start build ${updatingTo.version}`);
+    console.log(`[update] nothing running; exiting for launchd to start build ${update.version}`);
     await shutdown('update');
   } else if (step === 'hold') {
-    updatingTo.holding = true;
+    update.holding = true;
     console.log(`[update] ${running} run(s) still going after ${HOLD_AFTER_MS / 3600000}h; holding new runs until they finish`);
     await cronService.pauseAll({ mode: 'update', label: 'for update' });
   } else if (step === 'give up') {
-    await abandonUpdate(updatingTo.version, `${running} run(s) still going after ${GIVE_UP_AFTER_MS / 3600000}h`);
+    await abandonUpdate(update.version, `${running} run(s) still going after ${GIVE_UP_AFTER_MS / 3600000}h`);
   }
 }
 

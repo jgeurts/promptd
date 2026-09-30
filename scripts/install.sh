@@ -46,6 +46,16 @@ fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
+# The binary is about 65 MB and sits on disk twice for a moment, so ask for room
+# up front rather than let a half-written download fail.
+NEED_MB=200
+mkdir -p "$BIN_DIR"
+for dir in "$TMP" "$BIN_DIR"; do
+  free_mb=$(( $(df -Pk "$dir" | awk 'NR==2 {print $4}') / 1024 ))
+  [ "$free_mb" -ge "$NEED_MB" ] ||
+    die "$(scutil --get LocalHostName 2>/dev/null || hostname -s) has $free_mb MB free where $dir is; promptd needs about $NEED_MB MB. Free some space and run this again."
+done
+
 printf '\nDownloading promptd from %s\n' "$REPO"
 for file in "$ASSET" register-app-mac-os.sh sha256sums.txt; do
   curl -fsSL --retry 3 -o "$TMP/$file" "$BASE/$file" || die "could not download $BASE/$file"
@@ -54,7 +64,6 @@ grep -E "^[0-9a-f]{64}  ($ASSET|register-app-mac-os\.sh)\$" "$TMP/sha256sums.txt
 [ "$(wc -l < "$TMP/expected")" -eq 2 ] || die "the release's checksums do not list $ASSET and register-app-mac-os.sh; try again"
 (cd "$TMP" && shasum -a 256 -c expected >/dev/null) || die "the download does not match the release's checksums; try again"
 
-mkdir -p "$BIN_DIR"
 # A rename, so a promptd already running keeps the file it started from.
 NEXT="$(mktemp "$BIN_DIR/promptd.XXXXXX")"
 install -m 755 "$TMP/$ASSET" "$NEXT"
