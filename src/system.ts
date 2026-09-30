@@ -312,6 +312,17 @@ type SystemAlert = (typeof SYSTEM_ALERTS)[number] & {
   worsened?(sent: AlertAnnouncement, reading: SystemAlertReading, running: number): boolean;
 };
 
+/**
+ * Whether a reading is markedly worse than what an alert last announced, by
+ * that alert's own rule. The hub asks this of an alert a node found still
+ * firing after a restart, against what the open notification last said.
+ */
+export function alertWorsened(metric: string, sent: AlertAnnouncement, value: number, running: number): boolean {
+  const alert = (SYSTEM_ALERTS as SystemAlert[]).find((candidate) => candidate.id === metric);
+  if (!alert?.worsened) return false;
+  return alert.worsened(sent, { value, breached: true, cleared: false, summary: '' }, running);
+}
+
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 

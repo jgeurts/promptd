@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db.js';
 import type { NotificationTable } from './db.js';
 import { bus, emit } from './events.js';
+import { alertWorsened } from './system.js';
 import type { RunningJobSummary } from './system.js';
 import type { BusEvent, JobKind, UsageBlocker } from './types.js';
 
@@ -48,6 +49,9 @@ export interface NotificationRecord {
   since: string;
   /** Whether a later event can still land on this row: the alert has not cleared, the update not finished, the hold not been released. */
   open: boolean;
+  /** For a machine alert, the reading and the number of runs it last announced: what a restart's reading is judged worse against. */
+  alertValue: number | null;
+  alertRunning: number | null;
   writing?: Promise<void> | null;
 }
 
@@ -99,6 +103,7 @@ interface NotificationDraft {
   level: NotificationLevel;
   message: string;
   group?: { key: string; episode: Episode };
+  alert?: { metric: string; value: number; running: number };
   cronId?: string | null;
   cronName?: string | null;
   jobKind?: JobKind;
@@ -130,6 +135,7 @@ type DescribableEvent = BusEvent & {
   from?: string | null;
   code?: number | null;
   metric?: string;
+  value?: number;
   summary?: string;
   running?: RunningJobSummary[];
   reasons?: UsageBlocker[];
@@ -179,6 +185,8 @@ function toRow(record: NotificationRecord): NotificationTable {
     count: record.count,
     since: record.since,
     open: record.open ? 1 : 0,
+    alertValue: record.alertValue,
+    alertRunning: record.alertRunning,
   };
 }
 
@@ -385,6 +393,7 @@ function describeEvent(event: DescribableEvent, nodeId: string): NotificationDra
         level: ACTION_METRICS.has(String(event.metric)) ? 'action' : 'worth',
         message: `${event.label}: ${event.summary}. ${runningSummary(event.running)}`,
         group: { key: `system:${event.metric}:${nodeId}`, episode: event.worse ? 'worse' : event.seeded ? 'seeded' : 'same' },
+        ...(Number.isFinite(event.value) ? { alert: { metric: String(event.metric), value: Number(event.value), running: event.running?.length ?? 0 } } : {}),
       };
     default:
       return null;
@@ -454,10 +463,20 @@ export class NotificationCenter {
     }
     if (group.episode === 'new') this.close(group.key);
     const open = group.episode === 'new' ? undefined : this.openRecord(group.key);
-    // A restart is not news: the row it would repeat is still open.
-    if (open && group.episode === 'seeded') return;
+    // A restart is not news while the row it would repeat is still open —
+    // unless what the node found is worse than what that row last said.
+    if (open && group.episode === 'seeded') {
+      if (this.worseThanAnnounced(open, draft)) this.merge(open, draft, 'worse');
+      return;
+    }
     if (open) this.merge(open, draft, group.episode);
     else this.add(draft);
+  }
+
+  /** Judged by the alert's own rule, against the reading the row last announced. A row from before readings were kept is never worse. */
+  public worseThanAnnounced(record: NotificationRecord, draft: NotificationDraft): boolean {
+    if (!draft.alert || record.alertValue === null) return false;
+    return alertWorsened(draft.alert.metric, { value: record.alertValue, running: record.alertRunning ?? 0 }, draft.alert.value, draft.alert.running);
   }
 
   /** The newest row a repeat of this key would land on, if one is still open. */
@@ -488,6 +507,10 @@ export class NotificationCenter {
     record.level = draft.level;
     record.count += 1;
     record.at = new Date().toISOString();
+    if (draft.alert) {
+      record.alertValue = draft.alert.value;
+      record.alertRunning = draft.alert.running;
+    }
     if (episode === 'worse' || episode === 'last') record.read = false;
     if (episode === 'last') record.open = false;
     const index = this.items.indexOf(record);
@@ -517,6 +540,7 @@ export class NotificationCenter {
     nodeId = null,
     nodeName = null,
     group,
+    alert,
   }: NotificationDraft): NotificationRecord {
     const at = new Date().toISOString();
     const record = {
@@ -539,6 +563,8 @@ export class NotificationCenter {
       since: at,
       // A bad ending with nothing to land on is a row of its own, and already over.
       open: Boolean(group) && group!.episode !== 'last',
+      alertValue: alert?.value ?? null,
+      alertRunning: alert?.running ?? null,
     } as NotificationRecord;
     this.items.unshift(record);
     const pruned = this.items.length > MAX_NOTIFICATIONS ? this.items.splice(MAX_NOTIFICATIONS) : [];

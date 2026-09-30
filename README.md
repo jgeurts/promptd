@@ -656,7 +656,7 @@ Some events are not written down at all: a run starting or stopping, an update b
 - the update failed or gave up, which also makes the row need action;
 - the held trigger ran past the time its limits said they would reset, which does the same.
 
-Once an alert clears, or a held trigger is released or cancelled, the next one is a new row. A node that restarts does not announce again an alert that is still over its line while that alert's row is open.
+Once an alert clears, or a held trigger is released or cancelled, the next one is a new row. A node that restarts does not announce again an alert that is still over its line while that alert's row is open, unless what it finds is worse than the row last said; then the row turns unread as above.
 
 **Reading is not clicking.** An unread notification is marked read once it has been on screen for three seconds — the list is the acknowledgement, not a button. Scrolling past something faster than that leaves it unread. What has been seen is reported in one request rather than one per item, and the count travels to your other open tabs.
 
@@ -705,7 +705,7 @@ Three rules keep these from becoming noise, and all three matter:
 
 The clear level sits below the threshold on purpose. A metric hovering at the line would otherwise alternate between firing and clearing.
 
-Rule 2 has two refinements. An episode that gets markedly worse says so again, on the same notification: low disk space when half the free space it reported is gone, high CPU when crons start running on a machine that was busy without them. And a restart does not begin a new episode: the first full window after a node starts only picks up where things stand, so an alert still over its line adds nothing while its notification is open.
+Rule 2 has two refinements. An episode that gets markedly worse says so again, on the same notification: low disk space when half the free space it reported is gone, high CPU when crons start running on a machine that was busy without them. And a restart does not begin a new episode: the first full window after a node starts only picks up where things stand, so an alert still over its line adds nothing while its notification is open — unless it is markedly worse than what that notification last said, judged against the reading the hub kept with it.
 
 **On the I/O alert**, which is the one with no obvious threshold: throughput has no natural ceiling, so "high" means high _for this machine_. The baseline is the median of everything in the window older than the last minute — a median rather than a mean, because a mean would be dragged upward by the very burst being looked for and would talk itself out of alerting. The 50 MB/s floor is what stops an idle disk alerting because 0.05 MB/s became 0.4 MB/s. There is no verdict until five minutes of history exist, because before that there is no "usual" to compare against.
 

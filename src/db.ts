@@ -67,6 +67,8 @@ export interface NotificationTable {
   count: number;
   since: string | null;
   open: Flag;
+  alertValue: number | null;
+  alertRunning: number | null;
 }
 
 export interface SettingTable {
@@ -307,6 +309,14 @@ const MIGRATIONS: Record<string, Migration> = {
       await db.schema.alterTable('notifications').addColumn('count', 'integer', (col) => col.notNull().defaultTo(1)).execute();
       await db.schema.alterTable('notifications').addColumn('since', 'text').execute();
       await db.schema.alterTable('notifications').addColumn('open', 'integer', (col) => col.notNull().defaultTo(0)).execute();
+    },
+  },
+  // What a machine alert's row last announced, so a node that restarts into a
+  // worse reading than that is not taken for one repeating itself.
+  '20260930_005_notification_alert_readings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('alert_value', 'double precision').execute();
+      await db.schema.alterTable('notifications').addColumn('alert_running', 'integer').execute();
     },
   },
 };

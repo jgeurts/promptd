@@ -301,3 +301,48 @@ describe('reading a row that has changed since it was seen', () => {
     expect(center.items[0]).toMatchObject({ level: 'action', read: false });
   });
 });
+
+describe('an alert found worse after a restart', () => {
+  const seededDisk = (value: number) => disk(`${100 - value}% free`, { value, seeded: true });
+
+  it('lands on the open row and makes it unread when the reading is worse than the row last said', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:alert', seededDisk(95)));
+    expect(center.items).toHaveLength(1);
+    expect(center.items[0]).toMatchObject({ count: 2, read: false, alertValue: 95 });
+    expect(center.items[0]!.message).toContain('5% free');
+  });
+
+  it('stays quiet when the reading is no worse than that', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:alert', seededDisk(85)));
+    expect(center.items[0]).toMatchObject({ count: 1, read: true, alertValue: 80 });
+  });
+
+  it('judges a busy CPU worse once crons are running on it', async () => {
+    const cpu = { metric: 'cpu', label: 'High CPU', summary: '91% of all cores', value: 91 };
+    center.record(fromNode('mini', 'system:alert', { ...cpu, running: [] }));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('mini', 'system:alert', { ...cpu, seeded: true, running: [{ name: 'Nightly', kind: 'cron', startedAt: new Date().toISOString() }] }));
+    expect(center.items[0]).toMatchObject({ count: 2, read: false, alertRunning: 1 });
+  });
+
+  it('remembers what the row last said through a restart of the hub', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
+    await center.markRead([center.items[0]!.id]);
+    await center.items[0]!.writing;
+    const reloaded = new notifications.NotificationCenter();
+    await reloaded.load();
+    reloaded.record(fromNode('studio', 'system:alert', seededDisk(95)));
+    expect(reloaded.items[0]).toMatchObject({ count: 2, read: false });
+  });
+
+  it('never calls a row worse when it kept no reading', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('20% free', { value: undefined })));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:alert', seededDisk(99)));
+    expect(center.items[0]).toMatchObject({ count: 1, read: true });
+  });
+});
