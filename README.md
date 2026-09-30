@@ -17,7 +17,70 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - A notification centre behind the bell: everything the server announces, kept on disk, with an unread count and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
-## Run it
+## Install
+
+The install script is for macOS; a Linux or hosted hub is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Node 20 or newer, and Claude Code installed and signed in: `claude --version` should answer.
+
+One Mac runs the **hub**, which keeps your jobs and serves the web page. Every Mac that runs jobs is a **node**, the hub's Mac included. Nodes connect to the hub; the hub never connects to them.
+
+### On one Mac
+
+```bash
+git clone https://github.com/promptilicious/promptd.git
+cd promptd
+./scripts/register-app-mac-os.sh
+```
+
+Open http://127.0.0.1:4321. promptd now starts at every login and checks for updates once a day. To try it first without installing anything, `npm install && npm start` runs it in the terminal.
+
+### Adding more Macs, with Tailscale
+
+With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by its tailnet name, at home or away, and the hub stays closed to whatever network you are on.
+
+1. Install promptd on the hub's Mac as above, then share it on your tailnet:
+
+   ```bash
+   tailscale serve --bg --http=4321 4321
+   ```
+
+   If `tailscale` is not found, it lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
+
+2. Open Settings (the ⚙ button) → Nodes on the hub's page. It shows the command that adds a Mac, with the hub's tailnet address and node token filled in.
+
+3. On each other Mac, clone the project and run that command in the checkout:
+
+   ```bash
+   git clone https://github.com/promptilicious/promptd.git
+   cd promptd
+   NODE_ONLY=1 HUB_URL=http://<hub-mac>.<tailnet>.ts.net:4321 NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh
+   ```
+
+The new node shows under Settings → Nodes within a few seconds. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
+
+`tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `npm run set-password` on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
+
+### Adding more Macs, on one network
+
+Without Tailscale, the hub listens on your network, which needs a password first. Install on the hub's Mac as above, then:
+
+```bash
+npm run set-password
+HOST=0.0.0.0 FORCE=1 ./scripts/register-app-mac-os.sh
+```
+
+Settings → Nodes then shows the command for each other Mac, with the hub's `.local` address filled in. The password and session cookie cross your network unencrypted; read [Network access](docs/ADVANCED.md#network-access) before doing this anywhere but home.
+
+### Stopping and removing
+
+| Task    | Command                                                                      |
+| ------- | ---------------------------------------------------------------------------- |
+| Restart | `launchctl kickstart -k gui/$(id -u)/local.promptd`                          |
+| Stop    | `launchctl bootout gui/$(id -u)/local.promptd`                               |
+| Logs    | `tail -f ~/Library/Logs/promptd/server.log ~/Library/Logs/promptd/node.log` |
+
+A node's service is `local.promptd.node`. The install script prints every command for both when it finishes; [Start and stop](docs/ADVANCED.md#start-and-stop) has the rest.
+
+## Developing
 
 Needs Node 20 or newer, and Claude Code installed and signed in — `claude --version` should answer.
 
