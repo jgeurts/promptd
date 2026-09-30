@@ -277,7 +277,8 @@ fi
 
 if [ "$NODE_INSTALLED" = "1" ]; then
   # The node's id is this Mac's hostname unless NODE_ID says otherwise, made the way the node makes it.
-  CHECK_ID="$(printf '%s' "${NODE_ID:-$(hostname)}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-64)"
+  CHECK_ID="$(printf '%s' "${NODE_ID:-$(hostname | sed 's/\.local$//')}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-64)"
+  CHECK_ID="${CHECK_ID:-node}"
   printf '  • waiting for %s to connect' "$CHECK_ID"
   connected=0
   for _ in $(seq 1 30); do
