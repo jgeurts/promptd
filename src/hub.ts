@@ -709,7 +709,8 @@ class Hub {
     const previous = this.pauseState;
     this.pauseState = null;
     console.log(`[hub] resumed after "${previous.label}" pause (${reason})`);
-    emit('pause:changed', { ...this.pauseInfo(), resumedFrom: previous.label, reason });
+    // What kind of pause ended, which the pause info no longer says once it has.
+    emit('pause:changed', { ...this.pauseInfo(), resumedFrom: previous.label, resumedMode: previous.mode, reason });
     return this.pauseInfo();
   }
 

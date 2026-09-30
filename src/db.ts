@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
-import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect } from 'kysely';
+import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect, sql } from 'kysely';
 import type { Generated } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import type { Migration, MigrationResultSet } from 'kysely/migration';
@@ -54,6 +54,7 @@ export interface NotificationTable {
   id: string;
   at: string;
   kind: string;
+  level: string;
   message: string;
   read: Flag;
   cronId: string | null;
@@ -225,6 +226,28 @@ const MIGRATIONS: Record<string, Migration> = {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('notifications').addColumn('node_id', 'text').execute();
       await db.schema.alterTable('notifications').addColumn('node_name', 'text').execute();
+    },
+  },
+  // How much each notification asks of its reader. The rows already written
+  // are sorted by what they say, which is all they have to go on; the ones
+  // that would not be written at all now become routine, and routine is read.
+  '20260930_003_notification_levels': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('level', 'text', (col) => col.notNull().defaultTo('routine')).execute();
+      await sql`
+        update notifications set level = 'action'
+        where (kind in ('run-failed', 'worktree-failed', 'cron-broken') and message not like '% stopped%')
+          or (kind = 'system' and message like 'Low disk space%')
+          or (kind = 'update' and (message like 'Update script failed%' or message like 'Update gave up%'))
+      `.execute(db);
+      await sql`
+        update notifications set level = 'worth'
+        where kind = 'retrospective'
+          or (kind = 'system' and message not like 'Low disk space%')
+          or (kind = 'update' and message like 'Update started%')
+          or (kind = 'delayed' and (message like '% is waiting on %' or message like '% missed its trigger %'))
+      `.execute(db);
+      await sql`update notifications set ${sql.ref('read')} = 1 where level = 'routine'`.execute(db);
     },
   },
 };

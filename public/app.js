@@ -3306,13 +3306,13 @@ function connectEvents() {
   events.addEventListener('system:sample', (event) => pushSystemSample(JSON.parse(event.data)));
 
   events.addEventListener('notification:new', (event) => {
-    const { notification, unread } = JSON.parse(event.data);
-    setBellBadge(unread);
+    const { notification, counts } = JSON.parse(event.data);
+    setBellBadge(counts);
     prependNotification(notification);
   });
 
   // Another tab read something; this one's badge is now wrong.
-  events.addEventListener('notification:read', (event) => setBellBadge(JSON.parse(event.data).unread));
+  events.addEventListener('notification:read', (event) => setBellBadge(JSON.parse(event.data).counts));
 
   // A machine alert is worth interrupting for; it is also in the drawer.
   events.addEventListener('system:alert', (event) => {
@@ -3522,25 +3522,38 @@ feedbackFormEl.addEventListener('submit', async (event) => {
  * The bell, and the drawer behind it.
  *
  * Toasts are gone in a few seconds and nobody watches a dashboard all day, so
- * the server writes the same events down and this reads them back. Unread is
- * the only state that matters here: a run that succeeded arrives already read,
- * and what is left is what a person would have wanted to be told.
+ * the server writes the same events down and this reads them back. Each record
+ * has a level, and the level decides everything here: the bell counts what
+ * needs action, marks what is worth knowing, and never mentions routine.
  */
 const bellEl = document.getElementById('bell');
 const bellBadgeEl = document.getElementById('bell-badge');
+const bellDotEl = document.getElementById('bell-dot');
+const bellStatusEl = document.getElementById('bell-status');
 const drawerEl = document.getElementById('drawer');
 const drawerListEl = document.getElementById('drawer-list');
 const drawerBackdropEl = document.getElementById('drawer-backdrop');
 const drawerCloseEl = document.getElementById('drawer-close');
 const drawerUnreadEl = document.getElementById('drawer-unread');
 const drawerReadAllEl = document.getElementById('drawer-read-all');
+const drawerNodesEl = document.getElementById('drawer-nodes');
 
 /** On screen this long and it counts as read. */
 const READ_AFTER_MS = 3000;
 
+/**
+ * The drawer's sections, in the order they are read. Each has a glyph as well
+ * as a colour, so the level is never carried by colour alone.
+ */
+const LEVELS = [
+  { level: 'action', title: 'Needs action', glyph: '!', empty: 'Nothing needs action.' },
+  { level: 'worth', title: 'Worth knowing', glyph: '~', empty: 'Nothing worth knowing.' },
+  { level: 'routine', title: 'Routine', glyph: '·', empty: 'Nothing routine.' },
+];
+
 let drawerOpen = false;
-let nextBefore = null; // cursor for the next page; null once the end is reached
 let loadingPage = false;
+let listGeneration = 0; // bumped by every reset, so an answer to an older list is dropped
 const drawnIds = new Set(); // a notification arriving as both a page and an event
 const readTimers = new Map(); // id -> the timer counting out its three seconds
 const pendingRead = new Set(); // seen, not yet reported to the server
@@ -3549,31 +3562,50 @@ let viewObserver = null; // watches items for the three-second rule
 let moreObserver = null; // watches the end of the list for the next page
 let sentinelEl = null;
 let unreadOnly = false; // the filter button: show only what is still unread
+let nodeFilter = null; // the node chip: show one machine's notifications
 let drawerNodes = []; // every machine a row can name; empty when there is only one
+let sections = new Map(); // level -> its heading, list and paging cursor
+let bellCounts = null; // the last counts drawn, so only an increase is announced
 
-function setBellBadge(count) {
-  if (!bellBadgeEl) return;
-  const unread = Number(count) || 0;
-  bellBadgeEl.hidden = unread === 0;
-  bellBadgeEl.textContent = unread > 99 ? '99+' : String(unread);
-  bellEl?.setAttribute('title', unread ? `Notifications — ${unread} unread` : 'Notifications');
+/** "2 need action, 3 worth knowing", or empty when neither. */
+function countPhrase(action, worth) {
+  return [action ? `${action} need${action === 1 ? 's' : ''} action` : '', worth ? `${worth} worth knowing` : '']
+    .filter(Boolean)
+    .join(', ');
 }
 
-/** The coloured dot: what kind of thing this was, at a glance. */
-function noteKindClass(kind) {
-  if (kind === 'run-failed' || kind === 'cron-broken' || kind === 'worktree-failed') return 'bad';
-  if (kind === 'delayed' || kind === 'update' || kind === 'system') return 'warn';
-  return 'plain';
+/**
+ * The badge is a number only for what needs action; worth knowing is a hollow
+ * dot beside it, and routine never touches it. The label says both in words.
+ */
+function setBellBadge(counts) {
+  if (!bellBadgeEl || !counts) return;
+  const action = Number(counts.action) || 0;
+  const worth = Number(counts.worth) || 0;
+  bellBadgeEl.hidden = action === 0;
+  bellBadgeEl.textContent = `!${action > 99 ? '99+' : action}`;
+  if (bellDotEl) bellDotEl.hidden = worth === 0;
+  const phrase = countPhrase(action, worth);
+  const label = phrase ? `Notifications — ${phrase}` : 'Notifications';
+  bellEl?.setAttribute('title', label);
+  bellEl?.setAttribute('aria-label', label);
+  // Said aloud only when something arrives: a count going down is the reader's
+  // own doing, and the first reading is the page loading, not news.
+  if (bellStatusEl && bellCounts && (action > bellCounts.action || worth > bellCounts.worth)) bellStatusEl.textContent = phrase;
+  bellCounts = { action, worth, nodes: counts.nodes ?? {} };
+  syncNodeChips();
 }
 
 function renderNotification(record, { arriving = false } = {}) {
   const meta = `${fmtRelative(record.at)} · ${fmtDateTime(record.at)}`;
   const classes = ['note', record.read ? '' : 'unread', arriving ? 'arriving' : ''].filter(Boolean);
+  const level = LEVELS.find((entry) => entry.level === record.level) ?? LEVELS.at(-1);
   // With several machines a row says which one it is about. A record from before
   // nodes were named has no name, and gets none rather than a guess.
   const named = drawerNodes.length && record.nodeName;
   const node = el('div', { class: classes.join(' '), 'data-id': record.id }, [
-    el('span', { class: `note-dot ${noteKindClass(record.kind)}` }),
+    // The section heading says the level to a screen reader; this is for the eye.
+    el('span', { class: `note-glyph ${level.level}`, 'aria-hidden': 'true', text: level.glyph }),
     el('div', { class: 'note-body' }, [
       el('div', { class: 'note-message' }, [named ? el('span', { class: 'note-node', text: `${record.nodeName} · ` }) : null, record.message]),
       el('div', { class: 'note-meta', text: meta }),
@@ -3611,7 +3643,7 @@ function flushRead() {
     pendingRead.clear();
     try {
       const result = await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ ids }) });
-      setBellBadge(result.unread);
+      setBellBadge(result.counts);
     } catch {
       // Put them back: the next flush tries again, and the worst case is that
       // something stays unread rather than being marked read without proof.
@@ -3640,42 +3672,162 @@ function observeItem(node, record) {
   viewObserver.observe(node);
 }
 
+// ---- the drawer's sections and node chips
+
+/** One heading and list per level. Routine starts folded away: it is the long, quiet one. */
+function buildSections() {
+  sections = new Map();
+  return LEVELS.map(({ level, title }) => {
+    const open = level !== 'routine';
+    const listId = `note-section-${level}`;
+    const count = el('span', { class: 'note-section-count' });
+    const toggle = el('button', { class: 'note-section-toggle', type: 'button', 'aria-expanded': String(open), 'aria-controls': listId }, [
+      el('span', {
+        class: 'note-section-chevron',
+        'aria-hidden': 'true',
+        html: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4l4 4-4 4"/></svg>',
+      }),
+      el('span', { class: `note-glyph ${level}`, 'aria-hidden': 'true', text: LEVELS.find((entry) => entry.level === level).glyph }),
+      el('span', { class: 'note-section-title', text: title }),
+      count,
+    ]);
+    const list = el('div', { class: 'note-section-list', id: listId, hidden: open ? null : '' });
+    const section = { level, toggle, count, list, open, cursor: null, done: false, total: 0 };
+    toggle.addEventListener('click', () => toggleSection(section));
+    sections.set(level, section);
+    return el('section', { class: `note-section ${level}` }, [el('h3', { class: 'note-section-head' }, [toggle]), list]);
+  });
+}
+
+function toggleSection(section) {
+  section.open = !section.open;
+  section.toggle.setAttribute('aria-expanded', String(section.open));
+  section.list.hidden = !section.open;
+  placeSentinel();
+  if (section.open && !section.done) loadNextPage();
+}
+
+function renderSectionCount(section) {
+  section.count.textContent = section.total ? String(section.total) : '';
+}
+
+/**
+ * The first open section with more to fetch. Sections page in order, so the
+ * one sentinel sits at the end of whichever of them is still filling.
+ */
+function pagingSection() {
+  return LEVELS.map(({ level }) => sections.get(level)).find((section) => section?.open && !section.done) ?? null;
+}
+
+function placeSentinel() {
+  const section = pagingSection();
+  if (section) section.list.append(sentinelEl);
+  else sentinelEl?.remove();
+}
+
+function appendRow(section, node) {
+  if (sentinelEl?.parentNode === section.list) section.list.insertBefore(node, sentinelEl);
+  else section.list.append(node);
+}
+
+/** A section with nothing in it says so, rather than being a bare heading. */
+function markEmpty(section) {
+  if (section.list.querySelector('.note, .drawer-empty')) return;
+  section.list.append(el('div', { class: 'drawer-empty', text: unreadOnly ? 'Nothing unread.' : LEVELS.find((entry) => entry.level === section.level).empty }));
+}
+
+/** The chips only change when the machines do; their counts change as things are read. */
+function setDrawerNodes(nodes) {
+  const same = nodes.length === drawerNodes.length && nodes.every((node, index) => node.id === drawerNodes[index].id && node.name === drawerNodes[index].name);
+  drawerNodes = nodes;
+  if (!same) renderNodeChips();
+}
+
+function renderNodeChips() {
+  if (!drawerNodesEl) return;
+  drawerNodesEl.hidden = drawerNodes.length === 0;
+  const chips = [{ id: '', name: 'All' }, ...drawerNodes].map(({ id, name }) => {
+    const chip = el('button', { class: 'chip', type: 'button', 'data-node': id, 'data-name': name }, [
+      el('span', { text: name }),
+      el('span', { class: 'chip-count', 'aria-hidden': 'true' }),
+    ]);
+    chip.addEventListener('click', () => {
+      if ((nodeFilter ?? '') === id) return;
+      nodeFilter = id || null;
+      syncNodeChips();
+      if (!drawerOpen) return;
+      resetList();
+      loadNextPage();
+    });
+    return chip;
+  });
+  drawerNodesEl.replaceChildren(...chips);
+  syncNodeChips();
+}
+
+/** Which chip is pressed, and how many things on each machine need action. */
+function syncNodeChips() {
+  for (const chip of drawerNodesEl?.querySelectorAll('.chip') ?? []) {
+    const id = chip.dataset.node;
+    const action = id ? Number(bellCounts?.nodes?.[id]) || 0 : 0;
+    chip.setAttribute('aria-pressed', String((nodeFilter ?? '') === id));
+    chip.setAttribute('aria-label', action ? `${chip.dataset.name}, ${countPhrase(action, 0)}` : chip.dataset.name);
+    const countEl = chip.querySelector('.chip-count');
+    countEl.hidden = !action;
+    countEl.textContent = action ? `!${action}` : '';
+  }
+}
+
 async function loadNextPage() {
   if (loadingPage || !drawerOpen) return;
+  const section = pagingSection();
+  if (!section) return;
   loadingPage = true;
+  const generation = listGeneration;
   try {
-    const params = new URLSearchParams();
-    if (nextBefore) params.set('before', nextBefore);
+    const params = new URLSearchParams({ level: section.level });
+    if (section.cursor) params.set('before', section.cursor);
     if (unreadOnly) params.set('unread', '1');
-    const query = params.toString();
-    const page = await api(`/api/notifications${query ? `?${query}` : ''}`);
-    setBellBadge(page.unread);
-    drawerNodes = page.nodes ?? [];
+    if (nodeFilter) params.set('node', nodeFilter);
+    const page = await api(`/api/notifications?${params}`);
+    // The list was reset while this was in flight: its filter is not this one's.
+    if (generation !== listGeneration) return;
+    setDrawerNodes(page.nodes ?? []);
+    setBellBadge(page.counts);
+    for (const other of sections.values()) {
+      other.total = page.levels?.[other.level] ?? other.total;
+      renderSectionCount(other);
+    }
     for (const record of page.items) {
       if (drawnIds.has(record.id)) continue;
       drawnIds.add(record.id);
       const node = renderNotification(record);
-      drawerListEl.insertBefore(node, sentinelEl);
+      appendRow(section, node);
       observeItem(node, record);
     }
-    nextBefore = page.nextBefore;
-    if (!drawnIds.size) {
-      const empty = unreadOnly ? 'Nothing unread.' : 'Nothing yet.';
-      drawerListEl.insertBefore(el('div', { class: 'drawer-empty', text: empty }), sentinelEl);
-    }
-    // A short first page leaves the sentinel on screen, and an observer that is
+    section.cursor = page.nextBefore;
+    section.done = !page.nextBefore;
+    if (section.done) markEmpty(section);
+    placeSentinel();
+    // A short page leaves the sentinel on screen, and an observer that is
     // already intersecting will not fire again — so ask once more by hand.
-    if (nextBefore) {
+    if (pagingSection()) {
       requestAnimationFrame(() => {
+        if (!sentinelEl?.isConnected) return;
         const list = drawerListEl.getBoundingClientRect();
         const end = sentinelEl.getBoundingClientRect();
         if (end.top <= list.bottom + 120) loadNextPage();
       });
     }
   } catch (err) {
-    drawerListEl.insertBefore(el('div', { class: 'drawer-empty', text: err.message }), sentinelEl);
+    if (generation !== listGeneration) return;
+    section.done = true;
+    section.list.append(el('div', { class: 'drawer-empty', text: err.message }));
+    placeSentinel();
   } finally {
     loadingPage = false;
+    // A reset that landed mid-request asked for a first page and was turned away.
+    if (generation !== listGeneration) loadNextPage();
   }
 }
 
@@ -3685,24 +3837,31 @@ function prependNotification(record) {
   // The filter means what it says: a notice that arrives already read — a run
   // that succeeded — has no business appearing in a list of unread ones.
   if (unreadOnly && record.read) return;
+  if (nodeFilter && record.nodeId !== nodeFilter) return;
   // Only when the reader is at the top. Inserting above where they are reading
   // would move the list under them.
   if (drawerListEl.scrollTop > 40) return;
+  const section = sections.get(record.level) ?? sections.get('routine');
+  if (!section) return;
   drawnIds.add(record.id);
-  drawerListEl.querySelector('.drawer-empty')?.remove();
+  section.list.querySelector('.drawer-empty')?.remove();
   const node = renderNotification(record, { arriving: true });
-  drawerListEl.prepend(node);
+  section.list.prepend(node);
   observeItem(node, record);
+  section.total += 1;
+  renderSectionCount(section);
 }
 
-/** Empties the list and starts paging again, for an open and for the filter. */
+/** Empties the list and starts paging again, for an open and for either filter. */
 function resetList() {
+  listGeneration += 1;
   drawnIds.clear();
-  nextBefore = null;
   for (const timer of readTimers.values()) clearTimeout(timer);
   readTimers.clear();
+  if (sentinelEl) moreObserver?.unobserve(sentinelEl);
   sentinelEl = el('div', { class: 'drawer-sentinel' });
-  drawerListEl.replaceChildren(sentinelEl);
+  drawerListEl.replaceChildren(...buildSections());
+  placeSentinel();
   moreObserver?.observe(sentinelEl);
   drawerListEl.scrollTop = 0;
 }
@@ -3726,7 +3885,7 @@ function openDrawer() {
             markSeen(id, entry.target);
           }, READ_AFTER_MS));
         } else {
-          // Scrolled past before the three seconds were up: it does not count.
+          // Scrolled past, or folded away, before the three seconds were up: it does not count.
           clearTimeout(readTimers.get(id));
           readTimers.delete(id);
         }
@@ -3785,7 +3944,7 @@ drawerReadAllEl?.addEventListener('click', async () => {
   drawerReadAllEl.disabled = true;
   try {
     const result = await api('/api/notifications/read', { method: 'POST', body: JSON.stringify({ all: true }) });
-    setBellBadge(result.unread);
+    setBellBadge(result.counts);
     // Everything on screen is read now, including the rows still counting out
     // their three seconds and anything queued for the next flush.
     for (const timer of readTimers.values()) clearTimeout(timer);
@@ -4244,7 +4403,7 @@ async function checkHealth() {
       return;
     }
     setUpdateBadge(Boolean(health.updateAvailable), health.updateBehind);
-    setBellBadge(health.unreadNotifications);
+    setBellBadge(health.notificationCounts);
     setUsage(health.usage);
     setJobs({
       runningCount: health.running,
