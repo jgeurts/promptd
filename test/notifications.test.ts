@@ -259,3 +259,25 @@ describe('collapsing repeats', () => {
     expect(reloaded.items[0]!.count).toBe(3);
   });
 });
+
+describe('an alert found still firing after a restart', () => {
+  it('adds nothing while the row for its episode is open', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    await center.markRead([center.items[0]!.id]);
+    center.record(fromNode('studio', 'system:alert', disk('10% free', { seeded: true })));
+    expect(center.items).toHaveLength(1);
+    expect(center.items[0]).toMatchObject({ count: 1, read: true, open: true });
+  });
+
+  it('is a row of its own when nothing is open for it', () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free', { seeded: true })));
+    expect(center.items[0]).toMatchObject({ groupKey: 'system:disk:studio', read: false, open: true });
+  });
+
+  it('is a new row after the last episode cleared', async () => {
+    center.record(fromNode('studio', 'system:alert', disk('10% free')));
+    center.record(fromNode('studio', 'system:cleared', { metric: 'disk' }));
+    center.record(fromNode('studio', 'system:alert', disk('10% free', { seeded: true })));
+    expect(center.items.map((record) => record.open)).toEqual([true, false]);
+  });
+});

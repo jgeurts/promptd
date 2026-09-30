@@ -52,7 +52,35 @@ function outlastCooldown(metric: string): void {
   monitor.alerts.get(metric)!.lastSentAt -= system.ALERT_COOLDOWN_MS + 1;
 }
 
+/** A node that has been up a while: its first full window was quiet. */
+function settled(): void {
+  check({});
+}
+
+describe('the first window after a start', () => {
+  it('reports an alert already over its line as seeded, once', () => {
+    expect(check({ disk: 90 }).filter((event) => event.type === 'system:alert')).toMatchObject([
+      { metric: 'disk', seeded: true },
+    ]);
+    expect(check({ disk: 90 })).toEqual([]);
+  });
+
+  it('closes what the last process left open when the metric is well under its line', () => {
+    expect(check({ disk: 50 }).filter((event) => event.metric === 'disk')).toMatchObject([{ type: 'system:cleared' }]);
+  });
+
+  it('treats a seeded alert as the episode it is, so it clears and fires as usual', () => {
+    check({ disk: 90 });
+    expect(check({ disk: 60 })).toMatchObject([{ type: 'system:cleared', metric: 'disk' }]);
+    outlastCooldown('disk');
+    expect(check({ disk: 90 })).toMatchObject([{ type: 'system:alert', metric: 'disk' }]);
+    expect(heard[0]!.seeded).toBeUndefined();
+  });
+});
+
 describe('alerts that get worse', () => {
+  beforeEach(settled);
+
   it('says so again when the free disk space halves', () => {
     expect(check({ disk: 90 }).map((event) => event.worse)).toEqual([undefined]);
     outlastCooldown('disk');

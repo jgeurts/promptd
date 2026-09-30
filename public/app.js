@@ -3314,10 +3314,11 @@ function connectEvents() {
   // Another tab read something; this one's badge is now wrong.
   events.addEventListener('notification:read', (event) => setBellBadge(JSON.parse(event.data).counts));
 
-  // A machine alert is worth interrupting for; it is also in the drawer.
+  // A machine alert is worth interrupting for; it is also in the drawer. One
+  // found already under way when a node restarted is not news, so it is quiet.
   events.addEventListener('system:alert', (event) => {
-    const { metric, label, summary } = JSON.parse(event.data);
-    toast(`${label}: ${summary}`, true, `system-alert:${metric}`);
+    const { metric, label, summary, seeded } = JSON.parse(event.data);
+    if (!seeded) toast(`${label}: ${summary}`, true, `system-alert:${metric}`);
   });
 
   for (const type of ['crons:changed', 'run:started', 'run:finished', 'run:skipped', 'run:stopping', 'run:delayed', 'run:released', 'run:dropped']) {

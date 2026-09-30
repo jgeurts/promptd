@@ -38,6 +38,8 @@ export interface AlertState {
   firing: boolean;
   lastSentAt: number;
   sent: AlertAnnouncement | null;
+  /** Whether the first full window since this process started has been read. */
+  seeded: boolean;
 }
 
 export interface RunningJobSummary {
@@ -178,6 +180,11 @@ export const SYSTEM_METRICS: SystemMetric[] = [
  * Rule 2 has one exception: an episode that gets markedly worse says so again,
  * on the same notification. What "worse" means is up to each alert, and most
  * have no such rule.
+ *
+ * Rule 2 also has to survive a restart, which forgets every episode. So the
+ * first full window after a start only seeds the state: an alert already over
+ * its line is reported as `seeded`, and the hub adds it to the drawer only when
+ * no notification is open for that episode already.
  */
 export const ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -727,10 +734,16 @@ class SystemMonitor {
   public checkAlerts(): void {
     const now = Date.now();
     for (const alert of SYSTEM_ALERTS as SystemAlert[]) {
-      const state = this.alerts.get(alert.id) ?? { firing: false, lastSentAt: 0, sent: null };
+      const state = this.alerts.get(alert.id) ?? { firing: false, lastSentAt: 0, sent: null, seeded: false };
       this.alerts.set(alert.id, state);
       const reading = alert.read(this.samples, SAMPLE_INTERVAL_MS);
       if (!reading) continue;
+
+      if (!state.seeded) {
+        state.seeded = true;
+        this.seed(alert, reading, state, now);
+        continue;
+      }
 
       if (state.firing) {
         // Still over the line is the same episode, not a new one.
@@ -743,7 +756,7 @@ class SystemMonitor {
         }
         if (!state.sent || !alert.worsened || now - state.lastSentAt < ALERT_COOLDOWN_MS) continue;
         const running = this.runningCrons();
-        if (alert.worsened(state.sent, reading, running.length)) this.announce(alert, reading, state, running, now, true);
+        if (alert.worsened(state.sent, reading, running.length)) this.announce(alert, reading, state, running, now, 'worse');
         continue;
       }
       if (!reading.breached) continue;
@@ -752,14 +765,35 @@ class SystemMonitor {
       // a cooldown expiring mid-episode does not produce a late one.
       state.firing = true;
       if (now - state.lastSentAt < ALERT_COOLDOWN_MS) continue;
-      this.announce(alert, reading, state, this.runningCrons(), now, false);
+      this.announce(alert, reading, state, this.runningCrons(), now, 'new');
     }
   }
 
-  private announce(alert: SystemAlert, reading: SystemAlertReading, state: AlertState, running: RunningJobSummary[], now: number, worse: boolean): void {
+  /**
+   * What this process finds on its first full window. Over the line is an
+   * episode that may have started before the restart; well under it means any
+   * episode left open by the last process has ended while nobody was looking.
+   */
+  private seed(alert: SystemAlert, reading: SystemAlertReading, state: AlertState, now: number): void {
+    if (reading.breached) {
+      state.firing = true;
+      this.announce(alert, reading, state, this.runningCrons(), now, 'seeded');
+    } else if (reading.cleared) {
+      emit('system:cleared', { metric: alert.id, label: alert.label });
+    }
+  }
+
+  private announce(
+    alert: SystemAlert,
+    reading: SystemAlertReading,
+    state: AlertState,
+    running: RunningJobSummary[],
+    now: number,
+    how: 'new' | 'seeded' | 'worse',
+  ): void {
     state.lastSentAt = now;
     state.sent = { value: reading.value, running: running.length };
-    console.warn(`[system] ${alert.label}${worse ? ', and worse' : ''}: ${reading.summary}`);
+    console.warn(`[system] ${alert.label}${how === 'worse' ? ', and worse' : how === 'seeded' ? ', since before the start' : ''}: ${reading.summary}`);
     emit('system:alert', {
       metric: alert.id,
       label: alert.label,
@@ -767,7 +801,7 @@ class SystemMonitor {
       value: round1(reading.value),
       threshold: alert.threshold ?? null,
       running,
-      ...(worse ? { worse: true } : {}),
+      ...(how === 'worse' ? { worse: true } : how === 'seeded' ? { seeded: true } : {}),
     });
   }
 

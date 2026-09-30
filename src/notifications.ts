@@ -89,8 +89,10 @@ export const HUB_NODE: NotificationNode = { id: 'hub', name: 'hub' };
  * - `worse`: more of it, and worse — it lands on the row and makes it unread.
  * - `last`: the end of it, as bad news — it lands on the row, makes it unread
  *   and closes it.
+ * - `seeded`: found already under way when its machine started. It is only a
+ *   row when none is open for it; otherwise the row already says it all.
  */
-export type Episode = 'new' | 'same' | 'worse' | 'last';
+export type Episode = 'new' | 'same' | 'worse' | 'last' | 'seeded';
 
 interface NotificationDraft {
   kind: string;
@@ -132,6 +134,7 @@ type DescribableEvent = BusEvent & {
   running?: RunningJobSummary[];
   reasons?: UsageBlocker[];
   worse?: boolean;
+  seeded?: boolean;
   late?: boolean;
   target?: string | null;
   /** Stamped by the hub on everything a node reports; absent on the hub's own events. */
@@ -381,7 +384,7 @@ function describeEvent(event: DescribableEvent, nodeId: string): NotificationDra
         // A full disk stops runs; a busy machine only slows them.
         level: ACTION_METRICS.has(String(event.metric)) ? 'action' : 'worth',
         message: `${event.label}: ${event.summary}. ${runningSummary(event.running)}`,
-        group: { key: `system:${event.metric}:${nodeId}`, episode: event.worse ? 'worse' : 'same' },
+        group: { key: `system:${event.metric}:${nodeId}`, episode: event.worse ? 'worse' : event.seeded ? 'seeded' : 'same' },
       };
     default:
       return null;
@@ -451,6 +454,8 @@ export class NotificationCenter {
     }
     if (group.episode === 'new') this.close(group.key);
     const open = group.episode === 'new' ? undefined : this.openRecord(group.key);
+    // A restart is not news: the row it would repeat is still open.
+    if (open && group.episode === 'seeded') return;
     if (open) this.merge(open, draft, group.episode);
     else this.add(draft);
   }
