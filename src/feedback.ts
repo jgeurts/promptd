@@ -87,6 +87,7 @@ export function feedbackExecution(
     workingDirectory: projectDir,
     useWorktree: false,
     cleanupWorktree: true,
+    retrospective: false,
     model: '',
     effort: '',
     usageDelay: normalizeUsageDelay(null),

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db.js';
 import { cronToRow, rowToCron } from './jobRows.js';
 import { LOGS_DIR } from './paths.js';
+import { hasRetrospectiveSection } from './retrospective.js';
 import { normalizeUsageDelay } from './usage.js';
 import type { Cron, CronInput } from './types.js';
 
@@ -56,6 +57,7 @@ export async function createCron(input: CronInput): Promise<Cron> {
     workingDirectory: input.workingDirectory ?? '',
     useWorktree: Boolean(input.useWorktree),
     cleanupWorktree: Boolean(input.cleanupWorktree),
+    retrospective: Boolean(input.retrospective),
     model: input.model ?? '',
     effort: input.effort ?? '',
     usageDelay: normalizeUsageDelay(input.usageDelay),
@@ -83,6 +85,7 @@ export async function updateCron(id: string, input: CronInput): Promise<Cron | n
     workingDirectory: input.workingDirectory ?? '',
     useWorktree: Boolean(input.useWorktree),
     cleanupWorktree: Boolean(input.cleanupWorktree),
+    retrospective: Boolean(input.retrospective),
     model: input.model ?? '',
     effort: input.effort ?? '',
     usageDelay: normalizeUsageDelay(input.usageDelay),
@@ -179,6 +182,22 @@ export async function filterLogs(cronId: string, logs: LogFile[], query: string)
     ),
   );
   return logs.filter((_, i) => matches[i]);
+}
+
+/**
+ * Which of `logs` end with a retrospective. Read on the one page that shows it,
+ * not in listLogs, which pruning calls after every run.
+ */
+export async function retrospectiveLogs(cronId: string, logs: LogFile[]): Promise<Set<string>> {
+  const found = await Promise.all(
+    logs.map((log) =>
+      readLog(cronId, log.file).then(
+        (text) => hasRetrospectiveSection(text),
+        () => false,
+      ),
+    ),
+  );
+  return new Set(logs.filter((_, i) => found[i]).map((log) => log.file));
 }
 
 /** Keeps the newest MAX_LOGS_PER_CRON runs for one cron, deleting the rest. */

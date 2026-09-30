@@ -26,6 +26,8 @@ export interface JobBase extends LifetimeStats {
   workingDirectory: string;
   useWorktree: boolean;
   cleanupWorktree: boolean;
+  /** Ends each run with a retrospective, written into its log. */
+  retrospective: boolean;
   model: string;
   effort: string;
   usageDelay: UsageDelay;
@@ -65,6 +67,7 @@ export type CronInput = Pick<
   | 'name'
   | 'nodeId'
   | 'prompt'
+  | 'retrospective'
   | 'usageDelay'
   | 'useWorktree'
   | 'workingDirectory'
@@ -211,13 +214,17 @@ export interface Settings {
   defaultPrompt: string;
   commonCommands: string;
   defaultWorktreeInclude: string;
+  retrospectivePrompt: string;
   logsMigrated: boolean;
   defaultNodeId: string;
   localNodeAgentCheckedAt: string | null;
 }
 
 /** The part of the settings a node needs to run its jobs. */
-export type NodeSettings = Pick<Settings, 'defaultWorktreeInclude' | 'maxConcurrentJobs' | 'usageDelayThresholds'>;
+export type NodeSettings = Pick<
+  Settings,
+  'defaultWorktreeInclude' | 'maxConcurrentJobs' | 'retrospectivePrompt' | 'usageDelayThresholds'
+>;
 
 /** Everything on the event bus has a type and a time; the rest depends on the type. */
 export interface BusEvent {
