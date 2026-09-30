@@ -2424,11 +2424,11 @@ function nodesList() {
   };
 
   // The command is a read-only field rather than text so it can be selected in
-  // one click: the clipboard API is missing on a page served over plain HTTP.
+  // one click, and Copy falls back to execCommand: the clipboard API is missing
+  // on a page served over plain HTTP, as it is through `tailscale serve --http`.
   const joinCommand = el('input', {
     type: 'text',
-    class: 'mono',
-    style: 'flex: 1; min-width: 0',
+    class: 'mono join-command',
     readonly: 'readonly',
     'aria-label': 'Command that adds a Mac as a node',
     onfocus: () => joinCommand.select(),
@@ -2438,12 +2438,13 @@ function nodesList() {
     class: 'btn small',
     text: 'Copy',
     onclick: async () => {
+      joinCommand.select();
       try {
-        await navigator.clipboard.writeText(joinCommand.value);
+        if (navigator.clipboard) await navigator.clipboard.writeText(joinCommand.value);
+        else if (!document.execCommand('copy')) throw new Error('the browser refused');
         toast('Command copied to clipboard');
       } catch (err) {
-        joinCommand.select();
-        toast(`Could not copy to clipboard: ${err.message}. The command is selected; copy it yourself.`, true);
+        toast(`Could not copy to clipboard: ${err.message}. The command is selected; press ⌘C.`, true);
       }
     },
   });
@@ -2455,6 +2456,7 @@ function nodesList() {
     } catch (err) {
       joinNote.className = 'hint warn';
       joinNote.textContent = `Could not load the command: ${err.message}`;
+      copyJoin.disabled = true;
       return;
     }
     joinCommand.value = join.command;

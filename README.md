@@ -19,7 +19,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 
 ## Install
 
-The install script is for macOS; a Linux or hosted hub is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Node 20 or newer, and Claude Code installed and signed in: `claude --version` should answer.
+The install script is for macOS; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Node 20 or newer, and Claude Code installed and signed in: `claude --version` should answer.
 
 One Mac runs the **hub**, which keeps your jobs and serves the web page. Every Mac that runs jobs is a **node**, the hub's Mac included. Nodes connect to the hub; the hub never connects to them.
 
@@ -57,7 +57,7 @@ With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by
 
 The new node shows under Settings → Nodes within a few seconds. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
 
-`tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `npm run set-password` on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
+`tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `npm run set-password` in the checkout on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
 
 ### Adding more Macs, on one network
 
@@ -76,6 +76,7 @@ Settings → Nodes then shows the command for each other Mac, with the hub's `.l
 | ------- | ---------------------------------------------------------------------------- |
 | Restart | `launchctl kickstart -k gui/$(id -u)/local.promptd`                          |
 | Stop    | `launchctl bootout gui/$(id -u)/local.promptd`                               |
+| Remove  | `launchctl bootout gui/$(id -u)/local.promptd && rm ~/Library/LaunchAgents/local.promptd.plist` |
 | Logs    | `tail -f ~/Library/Logs/promptd/server.log ~/Library/Logs/promptd/node.log` |
 
 A node's service is `local.promptd.node`. The install script prints every command for both when it finishes; [Start and stop](docs/ADVANCED.md#start-and-stop) has the rest.
