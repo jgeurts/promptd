@@ -52,6 +52,7 @@ export async function createCron(input: CronInput): Promise<Cron> {
   const cron: Cron = {
     id: randomUUID(),
     name: input.name,
+    nameInferred: Boolean(input.nameInferred),
     description: input.description ?? '',
     cron: input.cron,
     timezone: input.timezone ?? '',
@@ -77,6 +78,8 @@ export async function updateCron(id: string, input: CronInput): Promise<Cron | n
   const cron: Cron = {
     ...existing,
     name: input.name,
+    // A name saved back unchanged is still the one taken from the prompt.
+    nameInferred: Boolean(input.nameInferred) || (input.name === existing.name && existing.nameInferred),
     description: input.description ?? '',
     cron: input.cron,
     timezone: input.timezone ?? '',

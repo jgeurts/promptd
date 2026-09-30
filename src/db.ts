@@ -18,6 +18,7 @@ type Setting<T> = T | null;
 interface JobColumns {
   id: string;
   name: string;
+  nameInferred: Flag;
   description: string;
   workingDirectory: string;
   useWorktree: Setting<Flag>;
@@ -263,6 +264,14 @@ const MIGRATIONS: Record<string, Migration> = {
           const full = JSON.stringify(Object.fromEntries(['session', 'weekly', 'fable', 'credits'].map((id) => [id, Boolean(stored[id])])));
           if (full !== row.usageDelay) await sql`update ${sql.table(table)} set usage_delay = ${full} where id = ${row.id}`.execute(db);
         }
+      }
+    },
+  },
+  // Whether a job's name was taken from its prompt, so a title from claude may still replace it.
+  '20260930_003_name_inferred': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      for (const table of ['crons', 'executions']) {
+        await db.schema.alterTable(table).addColumn('name_inferred', 'integer', (col) => col.notNull().defaultTo(0)).execute();
       }
     },
   },

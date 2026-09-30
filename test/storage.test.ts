@@ -102,6 +102,13 @@ describe.each(targets)('storage on $name', ({ url }) => {
     expect(await store.getCron(id)).toEqual(updated);
   });
 
+  it('keeps a name inferred while it is saved back unchanged', async () => {
+    const created = await store.createCron({ ...cronInput, name: 'Tidy up', nameInferred: true });
+    expect(await store.getCron(created.id)).toMatchObject({ name: 'Tidy up', nameInferred: true });
+    expect((await store.updateCron(created.id, { ...cronInput, name: 'Tidy up' }))?.nameInferred).toBe(true);
+    expect((await store.updateCron(created.id, { ...cronInput, name: 'Mine' }))?.nameInferred).toBe(false);
+  });
+
   it('deletes a cron once', async () => {
     const { id } = await store.createCron(cronInput);
     expect(await store.deleteCron(id)).toBe(true);

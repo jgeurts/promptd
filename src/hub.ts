@@ -6,11 +6,12 @@ import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
-import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
+import { getCron, listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
 import { readJobDefaults } from './jobDefaults.js';
+import { TITLE_PROMPT_LIMIT, titleToApply } from './naming.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
@@ -23,6 +24,7 @@ import type {
   Execution,
   JobDefaults,
   JobDefaultsOverride,
+  JobKind,
   JobPatch,
   JobView,
   LogChunk,
@@ -45,6 +47,8 @@ const COMMAND_TTL_MS = 60 * 1000;
 const JOBS_CACHE_MS = 10 * 1000;
 const MODEL_REFRESH_WAIT_MS = 90 * 1000;
 const BROWSE_WAIT_MS = 8 * 1000;
+// Claude's own minute, and a couple of syncs either side of it.
+const TITLE_WAIT_MS = 75 * 1000;
 
 const BOOKKEEPING_FIELDS = new Set([
   'lastRunAt',
@@ -415,6 +419,28 @@ class Hub {
     const answer = await this.ask(nodeId, 'browse', { path: typed }, BROWSE_WAIT_MS);
     if (!answer.ok) throw new HubError(answer.error ?? 'the node could not list folders', 502);
     return answer.result as unknown as BrowseResult;
+  }
+
+  /**
+   * Asks the job's node for a title from claude, and puts it in place of the
+   * name taken from the prompt, if that is still the job's name when it comes.
+   * Waits on nothing and never fails the caller: when the node is offline, the
+   * call fails, or the answer is not a title, the first words stay.
+   */
+  public requestTitle(kind: JobKind, job: Cron | Execution): void {
+    const askedName = job.name;
+    this.ask(this.nodeIdFor(job), 'title', { prompt: job.prompt.slice(0, TITLE_PROMPT_LIMIT) }, TITLE_WAIT_MS)
+      .then(async (answer) => {
+        if (!answer.ok) return;
+        const current = kind === 'cron' ? await getCron(job.id) : await getExecution(job.id);
+        const title = titleToApply(current, askedName, answer.result?.title);
+        if (!title) return;
+        await (kind === 'cron' ? patchCron(job.id, { name: title }) : patchExecution(job.id, { name: title }));
+        this.jobsChanged();
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof HubError)) console.error(`[hub] could not title "${askedName}": ${errorMessage(err)}`);
+      });
   }
 
   public jobsChanged(): void {

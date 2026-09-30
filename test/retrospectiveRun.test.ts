@@ -43,6 +43,7 @@ function cron(id: string): Cron {
   return {
     id,
     name: id,
+    nameInferred: false,
     description: '',
     cron: '0 9 * * *',
     timezone: '',

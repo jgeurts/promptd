@@ -17,6 +17,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   return {
     id: 'e1',
     name: 'once',
+    nameInferred: false,
     description: '',
     scheduledAt: '2026-09-24T12:00:00.000Z',
     workingDirectory: '',

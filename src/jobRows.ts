@@ -25,6 +25,7 @@ function toColumns(job: JobBase): JobColumns {
   return {
     id: job.id,
     name: job.name,
+    nameInferred: job.nameInferred ? 1 : 0,
     description: job.description ?? '',
     workingDirectory: job.workingDirectory ?? '',
     useWorktree: flag(job.useWorktree),
@@ -55,6 +56,7 @@ function fromColumns(row: JobColumns): JobBase {
   const job: JobBase = {
     id: row.id,
     name: row.name,
+    nameInferred: Boolean(row.nameInferred),
     description: row.description,
     workingDirectory: row.workingDirectory,
     useWorktree: readFlag(row.useWorktree),

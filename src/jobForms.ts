@@ -1,5 +1,6 @@
 import { parseScheduledAt } from './executions.js';
 import { effectiveJobSettings, readFlagOverride, readTextOverride, readUsageDelayOverride } from './jobDefaults.js';
+import { MAX_NAME_LENGTH, nameFromPrompt } from './naming.js';
 import { EFFORT_LEVELS, isEffortLevel, isTimeZone, validateCronExpression } from './schedule.js';
 import type { CronInput, ExecutionInput, JobDefaults, JobSettingOverrides, JobSettings } from './types.js';
 
@@ -35,17 +36,23 @@ function readSettings(body: FormBody, errors: string[]): JobSettingOverrides {
   };
 }
 
-function readName(body: FormBody, errors: string[]): string {
+/**
+ * The name as given, or, left blank, one taken from the prompt's first words
+ * and marked inferred, which a title from claude may replace later.
+ */
+function readName(body: FormBody, errors: string[]): { name: string; nameInferred: boolean } {
   const name = String(body?.name ?? '').trim();
-  if (!name) errors.push('Name is required.');
-  if (name.length > 120) errors.push('Name must be 120 characters or fewer.');
-  return name;
+  if (name.length > MAX_NAME_LENGTH) errors.push(`Name must be ${MAX_NAME_LENGTH} characters or fewer.`);
+  if (name) return { name, nameInferred: false };
+  const prompt = String(body?.prompt ?? '');
+  // With no prompt either there is nothing to name it from, and Prompt is required says so.
+  return { name: prompt.trim() ? nameFromPrompt(prompt) : '', nameInferred: true };
 }
 
 /** Validates and normalizes the cron form payload. */
 export function readCronForm(body: FormBody): FormResult<CronInput> {
   const errors: string[] = [];
-  const name = readName(body, errors);
+  const { name, nameInferred } = readName(body, errors);
   const expression = String(body?.cron ?? '').trim();
   if (!expression) errors.push('Cron is required.');
   else {
@@ -60,6 +67,7 @@ export function readCronForm(body: FormBody): FormResult<CronInput> {
     errors,
     value: {
       name,
+      nameInferred,
       description: String(body?.description ?? '').trim(),
       cron: expression,
       timezone,
@@ -83,7 +91,7 @@ export function readCronForm(body: FormBody): FormResult<CronInput> {
  */
 export function readExecutionForm(body: FormBody): FormResult<ExecutionInput> {
   const errors: string[] = [];
-  const name = readName(body, errors);
+  const { name, nameInferred } = readName(body, errors);
   const scheduledAt = parseScheduledAt(body?.scheduledAt);
   if (!String(body?.scheduledAt ?? '').trim()) errors.push('Date and time are required.');
   else if (!scheduledAt) errors.push('Date and time is not a valid date.');
@@ -93,6 +101,7 @@ export function readExecutionForm(body: FormBody): FormResult<ExecutionInput> {
     errors,
     value: {
       name,
+      nameInferred,
       description: String(body?.description ?? '').trim(),
       // Stored as UTC ISO, whatever the browser sent, so the record reads the
       // same wherever it is opened from.

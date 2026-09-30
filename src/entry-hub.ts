@@ -451,6 +451,7 @@ app.post('/api/crons', async (req, res, next) => {
     if (errors.length) return res.status(400).json({ error: errors.join(' ') });
     const cron = await createCron(value);
     hub.jobsChanged();
+    if (value.nameInferred) hub.requestTitle('cron', cron);
     res.status(201).json(decorate(cron));
   } catch (err) {
     next(err);
@@ -465,6 +466,7 @@ app.put('/api/crons/:id', async (req, res, next) => {
     const cron = await updateCron(req.params.id, value);
     if (!cron) return res.status(404).json({ error: 'cron not found' });
     hub.jobsChanged();
+    if (value.nameInferred) hub.requestTitle('cron', cron);
     res.json(decorate(cron));
   } catch (err) {
     next(err);
@@ -555,6 +557,7 @@ app.post('/api/executions', async (req, res, next) => {
     // A date already past is armed and run by the same reload that arms the
     // rest, so saving one is how you say "run this now, behind the queue".
     hub.jobsChanged();
+    if (value.nameInferred) hub.requestTitle('execution', execution);
     res.status(201).json(decorateExecution(execution));
   } catch (err) {
     next(err);
@@ -586,6 +589,7 @@ app.put('/api/executions/:id', async (req, res, next) => {
     const execution = await updateExecution(req.params.id, value);
     if (!execution) return res.status(404).json({ error: 'execution not found' });
     hub.jobsChanged();
+    if (value.nameInferred) hub.requestTitle('execution', execution);
     res.json(decorateExecution(execution));
   } catch (err) {
     next(err);

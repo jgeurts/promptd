@@ -80,6 +80,7 @@ export async function createExecution(input: ExecutionInput): Promise<Execution>
   const execution: Execution = {
     id: randomUUID(),
     name: input.name,
+    nameInferred: Boolean(input.nameInferred),
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',
@@ -119,6 +120,8 @@ export async function updateExecution(id: string, input: ExecutionInput): Promis
   const execution: Execution = {
     ...existing,
     name: input.name,
+    // A name saved back unchanged is still the one taken from the prompt.
+    nameInferred: Boolean(input.nameInferred) || (input.name === existing.name && existing.nameInferred),
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',

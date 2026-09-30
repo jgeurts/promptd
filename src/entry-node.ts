@@ -21,6 +21,7 @@ import {
 } from './jobCache.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, normalizeMaxConcurrentJobs } from './settings.js';
 import { browseDirectories } from './browse.js';
+import { suggestTitle } from './title.js';
 import { setUsageThresholds, usageMonitor } from './usage.js';
 import { modelCatalog } from './models.js';
 import { systemMonitor } from './system.js';
@@ -296,10 +297,34 @@ async function applyPause(pause: PauseState | null | undefined): Promise<void> {
   await cronService.pauseAll({ mode: pause.mode, label: pause.label, option: pause.option, ms: null });
 }
 
+/**
+ * Titles a job from its prompt, in the background: claude can take most of a
+ * minute, and the sync must keep reporting meanwhile or the hub would count
+ * this node offline. The answer goes back with whichever report follows it.
+ */
+function titleCommand(command: NodeCommand): void {
+  const started = Date.now();
+  const seconds = (): string => ((Date.now() - started) / 1000).toFixed(1);
+  suggestTitle(String(command.args?.prompt ?? '')).then(
+    (title) => {
+      console.log(`[node] titled a job "${title}" in ${seconds()}s`);
+      commandResults.push({ id: command.id, ok: true, result: { title } });
+    },
+    (err: Error) => {
+      console.error(`[node] could not title a job after ${seconds()}s, so it keeps its first words: ${err.message}`);
+      commandResults.push({ id: command.id, ok: false, error: err.message });
+    },
+  );
+}
+
 async function runCommand(command: NodeCommand): Promise<void> {
   if (handledCommands.has(command.id)) return;
   handledCommands.add(command.id);
   if (handledCommands.size > MAX_REMEMBERED_COMMANDS) handledCommands.delete(handledCommands.values().next().value!);
+  if (command.type === 'title') {
+    titleCommand(command);
+    return;
+  }
   try {
     let result: Record<string, unknown> | null = null;
     if (command.type === 'run') {

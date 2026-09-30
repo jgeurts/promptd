@@ -54,6 +54,8 @@ export interface JobSettingOverrides {
 export interface JobBase extends LifetimeStats, JobSettingOverrides {
   id: string;
   name: string;
+  /** The name was taken from the prompt because none was given, so a title from claude may replace it. */
+  nameInferred: boolean;
   description: string;
   workingDirectory: string;
   prompt: string;
@@ -112,7 +114,8 @@ export type CronInput = Pick<
   | 'usageDelay'
   | 'useWorktree'
   | 'workingDirectory'
->;
+> &
+  Partial<Pick<Cron, 'nameInferred'>>;
 
 export type ExecutionInput = Omit<CronInput, 'cron' | 'timezone'> & Pick<Execution, 'scheduledAt'>;
 
@@ -362,7 +365,7 @@ export interface LogChunk {
   data: string;
 }
 
-export type NodeCommandType = 'browse' | 'refreshModels' | 'run' | 'stop';
+export type NodeCommandType = 'browse' | 'refreshModels' | 'run' | 'stop' | 'title';
 
 export interface NodeCommand {
   id: string;
