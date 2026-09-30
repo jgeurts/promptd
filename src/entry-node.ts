@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { BuildNotReleasedError, installVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
+import { BuildNotReleasedError, GIVE_UP_AFTER_MS, HOLD_AFTER_MS, installVersion, nextUpdateStep, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -62,9 +62,7 @@ const MAX_REMEMBERED_COMMANDS = 500;
 const UPLOADS_FILE = path.join(NODE_HOME, 'uploads.json');
 // The hub's token, from trading a join code, on a node away from the hub.
 const PAIRED_TOKEN_FILE = path.join(NODE_HOME, 'hub-token');
-// A binary node waits this long for its runs to finish before giving up on an
-// update, and tries a build that failed again after an hour; the hub's update waits alike.
-const UPDATE_DRAIN_LIMIT_MS = 4 * 60 * 60 * 1000;
+// A build that failed to install is tried again after an hour.
 const UPDATE_RETRY_MS = 60 * 60 * 1000;
 const INSTANCE = randomUUID();
 const STARTED_AT = new Date().toISOString();
@@ -86,8 +84,8 @@ const uploads = new Map<string, Upload>();
 let commit: string | null = null;
 let reconciled = false;
 let appliedPauseKey: string | null = null;
-/** The hub's build this binary is installed as and waiting to restart into. */
-let updatingTo: { version: string; since: number } | null = null;
+/** The hub's build this binary is installed as and waiting to restart into, and whether new runs are held for it. */
+let updatingTo: { version: string; since: number; holding: boolean } | null = null;
 /** Checks the wait for runs to finish on its own clock, since the hub may be out of reach. */
 let updateDrainTimer: ReturnType<typeof setInterval> | null = null;
 const updateFailedAt = new Map<string, number>();
@@ -341,7 +339,7 @@ async function reconcileOnce(): Promise<void> {
 
 async function applyPause(pause: PauseState | null | undefined): Promise<void> {
   // The node's own update pause holds until it restarts, whatever the hub says.
-  if (updatingTo) return;
+  if (updatingTo?.holding) return;
   if (!pause) {
     appliedPauseKey = null;
     if (cronService.isPaused()) await cronService.resumeAll('lifted on the hub');
@@ -398,9 +396,11 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
   console.error(`[update] ${why}; trying again in an hour`);
   updateFailedAt.set(version, Date.now());
   if (!updatingTo) return;
+  const { holding } = updatingTo;
   updatingTo = null;
   if (updateDrainTimer) clearInterval(updateDrainTimer);
   updateDrainTimer = null;
+  if (!holding) return;
   appliedPauseKey = null;
   await cronService.resumeAll('update abandoned');
 }
@@ -408,8 +408,8 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
 /**
  * A binary node runs its hub's build, so the two always agree on what they send
  * each other. The new build is downloaded while runs carry on, since the running
- * process keeps its own file; then new runs are held, and once the last one
- * finishes the node exits for launchd to start the new build.
+ * process keeps its own file, and the node restarts into it the moment nothing
+ * is running. Only a node still busy after an hour holds new runs to get there.
  */
 async function followHub(version: string | null | undefined): Promise<void> {
   if (!BINARY_VERSION || !version || version === BINARY_VERSION || unreleasedBuilds.has(version)) return;
@@ -444,9 +444,8 @@ async function followHub(version: string | null | undefined): Promise<void> {
     if (!underLaunchd()) {
       return abandonUpdate(version, `build ${version} is on disk, but launchd is not running this node, so restart it to finish`);
     }
-    updatingTo = { version, since: Date.now() };
-    console.log(`[update] build ${version} installed; holding new runs until the running ones finish`);
-    await cronService.pauseAll({ mode: 'update', label: 'for update' });
+    updatingTo = { version, since: Date.now(), holding: false };
+    console.log(`[update] build ${version} installed; restarting into it once nothing is running`);
     updateDrainTimer = setInterval(() => {
       drainForUpdate().catch((err: Error) => console.error(`[update] ${err.message}`));
     }, SYNC_MS);
@@ -454,17 +453,24 @@ async function followHub(version: string | null | undefined): Promise<void> {
   }
 }
 
-/** Restarts into the new build once no run is left, or gives up after the limit. */
+/** Takes the next step towards restarting into the new build; runs on its own timer, since the hub may be out of reach. */
 async function drainForUpdate(): Promise<void> {
   if (!updatingTo) return;
   const running = cronService.runningCount();
-  if (running === 0) {
+  const step = nextUpdateStep({ running, waitedMs: Date.now() - updatingTo.since, holding: updatingTo.holding });
+  if (step === 'restart') {
     if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = null;
-    console.log(`[update] exiting for launchd to start build ${updatingTo.version}`);
+    // Nothing may start between here and the exit.
+    await cronService.pauseAll({ mode: 'update', label: 'for update' });
+    console.log(`[update] nothing running; exiting for launchd to start build ${updatingTo.version}`);
     await shutdown('update');
-  } else if (Date.now() - updatingTo.since >= UPDATE_DRAIN_LIMIT_MS) {
-    await abandonUpdate(updatingTo.version, `${running} run(s) still going after ${UPDATE_DRAIN_LIMIT_MS / 3600000}h`);
+  } else if (step === 'hold') {
+    updatingTo.holding = true;
+    console.log(`[update] ${running} run(s) still going after ${HOLD_AFTER_MS / 3600000}h; holding new runs until they finish`);
+    await cronService.pauseAll({ mode: 'update', label: 'for update' });
+  } else if (step === 'give up') {
+    await abandonUpdate(updatingTo.version, `${running} run(s) still going after ${GIVE_UP_AFTER_MS / 3600000}h`);
   }
 }
 

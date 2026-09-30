@@ -58,6 +58,22 @@ async function download(url: string): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer());
 }
 
+// A node with a new build on disk restarts into it the moment nothing is
+// running. If it stays busy this long it holds new runs so the running ones
+// can finish, and after the second limit it gives up and carries on.
+export const HOLD_AFTER_MS = 60 * 60 * 1000;
+export const GIVE_UP_AFTER_MS = 4 * 60 * 60 * 1000;
+
+export type UpdateStep = 'restart' | 'hold' | 'wait' | 'give up';
+
+/** What a node waiting to restart into a new build does next. */
+export function nextUpdateStep({ running, waitedMs, holding }: { running: number; waitedMs: number; holding: boolean }): UpdateStep {
+  if (running === 0) return 'restart';
+  if (waitedMs >= GIVE_UP_AFTER_MS) return 'give up';
+  if (!holding && waitedMs >= HOLD_AFTER_MS) return 'hold';
+  return 'wait';
+}
+
 /** The newest build's version, or null when the newest release is not a build. */
 export async function latestVersion(): Promise<string | null> {
   return versionOfTag((await github<{ tag_name: string }>('/releases/latest')).tag_name);

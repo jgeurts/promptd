@@ -29,7 +29,7 @@ One Mac runs the **hub**, which keeps your jobs and serves the web page. Every M
 curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash
 ```
 
-Open http://127.0.0.1:4321. promptd is one file, `~/.local/bin/promptd`. It starts at every login and updates itself from the latest release once a day.
+Open http://127.0.0.1:4321. promptd is one file, `~/.local/bin/promptd`. It starts at every login and checks for a new release every hour; an update waits for running jobs to finish.
 
 Already running promptd from a checkout? Put `FORCE=1` before `bash` to switch its services to the binary.
 

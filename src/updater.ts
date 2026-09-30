@@ -266,9 +266,20 @@ class SelfUpdater {
       console.log(`[update] no update applied: ${result.reason}`);
       return { ...result, launched: false };
     }
-    console.log(`[update] ${result.behind} commit(s) behind ${REMOTE}/${BRANCH}; holding schedules for the restart`);
     await patchSettings({ lastUpdateLaunchedAt: new Date().toISOString(), lastUpdateFromCommit: result.head });
     this.target = result.target ?? null;
+
+    // Runs belong to the nodes, which keep going while the hub restarts and catch
+    // it up afterwards, so a binary hub has nothing to hold. Each node restarts
+    // into the new build on its own once it is idle.
+    if (BINARY_VERSION) {
+      console.log(`[update] build ${this.target} is ${result.behind} commit(s) ahead; installing it now`);
+      emit('update:launched', { behind: result.behind, from: result.head, pid: null, ...this.state() });
+      this.installBuild();
+      return { ...result, launched: true, waiting: false, pid: null, ...this.state() };
+    }
+
+    console.log(`[update] ${result.behind} commit(s) behind ${REMOTE}/${BRANCH}; holding schedules for the restart`);
 
     // Nothing new may start between here and the restart, and this pause cannot
     // be cancelled from the page.
@@ -411,13 +422,12 @@ class SelfUpdater {
     };
     const giveUp = (why: string): void => {
       this.installing = false;
-      console.error(`[update] ${why}. Resuming schedules.`);
+      console.error(`[update] ${why}; still on build ${BINARY_VERSION}`);
       emit('update:failed', { code: null, updateLog: UPDATE_LOG });
-      hub.resumeAll('update finished without restarting').catch((err: Error) => console.error(`[cron] resume failed: ${err.message}`));
     };
     if (!target) return giveUp('no build to update to');
     this.installing = true;
-    log(`no runs in flight; installing build ${target} over ${BINARY_VERSION}`);
+    log(`installing build ${target} over ${BINARY_VERSION}`);
     // A hub left outside launchd already has the build on disk from the last try.
     versionOnDisk()
       .then((onDisk) => (onDisk === target ? undefined : installVersion(target)))

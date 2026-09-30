@@ -405,9 +405,11 @@ The checker refuses rather than guesses, and says why in the server log and in `
 
 ### A binary updates from releases
 
-promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. Every commit on `main` is published as a `build-<commit>` GitHub release, and the check asks for the latest one instead of fetching `origin/main`. Applying it goes as above until step 4: once nothing is running, the hub downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and exits for launchd to start it again.
+promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. Every commit on `main` is published as a `build-<commit>` GitHub release, and a binary checks for the latest one every hour instead of fetching `origin/main`.
 
-Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it while its runs carry on, holds new runs, and exits once the last one finishes. Outside launchd, a new build is left on disk for the next restart, and the log says so.
+A hub restart interrupts no run: runs belong to the nodes, which keep going while the hub is down and catch it up afterwards. So a binary hub holds nothing. It downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and exits for launchd to start it again, a gap of a few seconds.
+
+Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it while its runs carry on, then restarts into it the moment nothing is running. A node still busy an hour later holds new runs until the running ones finish, and gives up after four hours. Outside launchd, a new build is left on disk for the next restart, and the log says so.
 
 A node can follow only a hub whose build has a release: a binary hub, or a checkout on a commit from `main`. A Docker hub reports no build, so its binary nodes stay on the one they were installed with; run the installer on each again to update it. Only the newest 100 builds are kept.
 
