@@ -55,6 +55,7 @@ function cron(id: string): Cron {
     usageDelay: { credits: false, fable: false, session: false, weekly: false },
     prompt: 'Do the task.',
     isActive: false,
+    projectId: null,
     createdAt: '2026-09-29T00:00:00.000Z',
     updatedAt: '2026-09-29T00:00:00.000Z',
     lastRunAt: null,

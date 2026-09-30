@@ -26,6 +26,7 @@ interface JobColumns {
   prompt: string;
   isActive: Flag;
   nodeId: string;
+  projectId: string | null;
   createdAt: string;
   updatedAt: string;
   lastRunAt: string | null;
@@ -71,6 +72,14 @@ export interface SecretTable {
   value: string;
 }
 
+export interface ProjectTable {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface NodeTable {
   id: string;
   name: string;
@@ -88,6 +97,7 @@ export interface Tables {
   notifications: NotificationTable;
   settings: SettingTable;
   nodes: NodeTable;
+  projects: ProjectTable;
   secrets: SecretTable;
 }
 
@@ -190,6 +200,21 @@ const MIGRATIONS: Record<string, Migration> = {
       }
       // The run a notification is about, so its link can open that log.
       await db.schema.alterTable('notifications').addColumn('log_file', 'text').execute();
+    },
+  },
+  '20260930_001_projects': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('projects')
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('name', 'text', (col) => col.notNull())
+        .addColumn('description', 'text', (col) => col.notNull().defaultTo(''))
+        .addColumn('created_at', 'text', (col) => col.notNull())
+        .addColumn('updated_at', 'text', (col) => col.notNull())
+        .execute();
+      for (const table of ['crons', 'executions']) {
+        await db.schema.alterTable(table).addColumn('project_id', 'text').execute();
+      }
     },
   },
 };

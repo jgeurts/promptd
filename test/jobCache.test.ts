@@ -28,6 +28,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
     usageDelay: { credits: false, fable: false, session: false, weekly: false },
     prompt: 'x',
     isActive: true,
+    projectId: null,
     status: 'scheduled',
     createdAt: '2026-09-24T00:00:00.000Z',
     updatedAt: '2026-09-24T00:00:00.000Z',
