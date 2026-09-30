@@ -103,49 +103,256 @@ a {
 }
 
 /*
- * Subscription usage: one small meter per limit window the account reports.
- * Severity comes from the API rather than a threshold picked here, so the
- * colours match what the CLI's own usage view shows.
+ * The cluster chips: nodes, running jobs, one per Claude account, and a machine
+ * reading only while one is over its line. Each is a button onto the panel.
+ * Amber and red always come with the ▲ and a word, never on their own.
  */
-.usage {
+/* When everything is worth a chip at once, they wrap to a second row rather than overrun the buttons. */
+.cluster {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
-  /* Meters hold their width rather than squeezing into each other. When the
-     header runs out of room a whole group is dropped instead, below. */
-  flex: none;
+  justify-content: flex-end;
+  gap: 6px 8px;
+  min-width: 0;
 }
 
-.usage[hidden] {
+.cluster[hidden] {
   display: none;
 }
 
-.usage-meter {
-  position: relative;
+/* Inline text rather than flex, so the spaces between label and number survive. */
+.chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.chip:hover,
+.chip[aria-expanded='true'] {
+  background: var(--panel-2);
+  border-color: #3a4152;
+}
+
+.chip:focus-visible,
+.cluster-panel a:focus-visible,
+.cluster-panel .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.chip-label,
+.chip.muted,
+.chip-stale,
+.chip-more {
+  color: var(--muted);
+}
+
+.chip-more {
+  margin-left: 6px;
+}
+
+.chip-email {
+  margin-right: 8px;
+  font-weight: 500;
+}
+
+.chip.warning {
+  color: var(--amber);
+  border-color: rgba(229, 185, 92, 0.45);
+}
+
+.chip.warning .chip-label {
+  color: inherit;
+}
+
+/* Last-known numbers: dimmed to the muted colour rather than faded, so they stay readable. */
+.chip.stale {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.chip.stale .chip-email {
+  font-weight: 400;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+.win.warning {
+  color: var(--amber);
+}
+
+.win.critical {
+  color: var(--red);
+}
+
+.glyph {
+  margin-right: 4px;
+  font-size: 0.8em;
+}
+
+/* Read by a screen reader, not drawn: the word that goes with a ▲. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The narrow forms, swapped in by the breakpoints below. */
+.email-short,
+.chip-narrow,
+.chip.usage-summary {
+  display: none;
+}
+
+@media (max-width: 1160px) {
+  .email-full,
+  .chip-wide {
+    display: none;
+  }
+  .email-short,
+  .chip-narrow {
+    display: inline;
+  }
+}
+
+/* One button for every account, naming only those at warning or worse. */
+@media (max-width: 900px) {
+  .chip.account {
+    display: none;
+  }
+  .chip.usage-summary {
+    display: inline-block;
+  }
+}
+
+/* A phone: the chips take their own row rather than pushing the page sideways. */
+@media (max-width: 640px) {
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+  .topbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    row-gap: 8px;
+  }
+}
+
+/*
+ * The panel every chip opens: each account with its windows written out, the
+ * nodes on it, and the job counts underneath. Under the header, not over it,
+ * so the chip that opened it stays in view.
+ */
+.cluster-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 16px;
+  z-index: 25;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  min-width: 62px;
-  cursor: help;
+  width: min(900px, calc(100vw - 32px));
+  max-height: calc(100vh - 90px);
+  background: #0b0d12;
+  border: 1px solid #3a4152;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  outline: none;
 }
 
-.usage-head {
+.cluster-panel[hidden] {
+  display: none;
+}
+
+.cluster-panel-head {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 10px;
+}
+
+.cluster-panel-head h2 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.cluster-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 16px 4px;
+}
+
+.acct-group {
+  padding: 12px 0 14px;
+  border-top: 1px solid var(--border);
+}
+
+.acct-head {
+  display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 6px;
-  font-size: 10.5px;
-  line-height: 1;
-  color: var(--muted);
-  white-space: nowrap;
+  gap: 4px 12px;
 }
 
-.usage-pct {
-  font-variant-numeric: tabular-nums;
-  color: var(--text);
+.acct-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.acct-read {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.acct-read.stale {
+  color: var(--amber);
+}
+
+.acct-windows {
+  display: grid;
+  grid-template-columns: max-content minmax(90px, 180px) 3.2em 1fr;
+  align-items: center;
+  gap: 7px 12px;
+  margin: 10px 0 12px;
+  font-size: 12px;
+}
+
+.win-row {
+  display: contents;
+}
+
+.win-pct {
+  text-align: right;
+}
+
+.win-reset {
+  font-size: 11.5px;
+  color: var(--muted);
 }
 
 .usage-track {
+  display: block;
   height: 4px;
   border-radius: 999px;
   background: var(--border);
@@ -153,80 +360,165 @@ a {
 }
 
 .usage-fill {
+  display: block;
   height: 100%;
   border-radius: 999px;
   background: var(--green);
-  transition: width 240ms ease;
 }
 
-.usage-meter.warning .usage-fill {
+.win-row.warning .win-label,
+.win-row.warning .win-pct {
+  color: var(--amber);
+}
+
+.win-row.warning .usage-fill {
   background: var(--amber);
 }
 
-.usage-meter.warning .usage-pct {
-  color: var(--amber);
-}
-
-.usage-meter.critical .usage-fill {
-  background: var(--red);
-}
-
-.usage-meter.critical .usage-pct {
+.win-row.critical .win-label,
+.win-row.critical .win-pct {
   color: var(--red);
 }
 
-/* The clock ahead of the meters, hovered for when the reading was pulled. */
-.usage-stamp {
-  position: relative;
-  display: flex;
-  align-items: center;
+.win-row.critical .usage-fill {
+  background: var(--red);
+}
+
+.node-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+}
+
+.node-table th {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.node-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid rgba(39, 44, 56, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The one cell that runs long: "offline · seen 3h 12m ago". */
+.node-table td[data-label='Status'] {
+  white-space: normal;
+}
+
+.node-table tr:last-child td {
+  border-bottom: none;
+}
+
+.node-table .n {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.node-table .muted,
+.node-table tr.offline td {
   color: var(--muted);
-  cursor: help;
 }
 
-.usage-stamp.stale {
-  color: var(--amber);
-}
-
-/* Last-known numbers, dimmed: the server is serving its previous lookup. */
-.usage-meter.stale {
-  opacity: 0.55;
-}
-
-/* Same tooltip treatment as the cron field, anchored under the header instead. */
-.usage-meter::after,
-.usage-stamp::after {
-  content: attr(data-tip);
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: max-content;
-  max-width: 260px;
-  white-space: pre-line;
-  text-align: left;
-  background: #0b0d12;
-  color: var(--text);
-  border: 1px solid #3a4152;
-  border-radius: 7px;
-  padding: 6px 9px;
+.node-table .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11.5px;
-  line-height: 1.45;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 90ms ease;
-  z-index: 20;
 }
 
-/* The clock is the leftmost thing here, so its tooltip opens rightwards. */
-.usage-stamp::after {
-  right: auto;
-  left: 0;
+.node-name {
+  font-weight: 500;
 }
 
-.usage-meter:hover::after,
-.usage-stamp:hover::after {
-  opacity: 1;
+.node-default {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The job counts the Running chip sums: what is happening, then what is merely armed. */
+.cluster-panel-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.foot-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.foot-group + .foot-group {
+  padding-left: 18px;
+  border-left: 1px solid var(--border);
+}
+
+.foot-item {
+  display: flex;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.foot-item dt {
+  color: var(--muted);
+}
+
+.foot-item dd {
+  margin: 0;
+}
+
+/* Narrow: each node becomes a block of labelled readings instead of a row too wide to show. */
+@media (max-width: 720px) {
+  .acct-windows {
+    grid-template-columns: max-content 1fr 3.2em;
+  }
+  .win-reset {
+    grid-column: 1 / -1;
+    margin-top: -4px;
+  }
+  .node-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .node-table,
+  .node-table tbody {
+    display: block;
+  }
+  .node-table tr {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+    gap: 6px 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .node-table td,
+  .node-table td.n {
+    padding: 0;
+    border: none;
+    text-align: left;
+  }
+  .node-table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--muted);
+    font-size: 10.5px;
+  }
+  .node-table td.node-name {
+    grid-column: 1 / -1;
+  }
+  .node-table td.node-name::before {
+    content: none;
+  }
 }
 
 /*
@@ -437,122 +729,20 @@ a {
 }
 
 /*
- * Running jobs: the leftmost meter, and the only one about the app's own work
- * rather than the machine or the account. It carries the same rule the machine
- * group does so the three groups read as three.
+ * A node's machine, on its own page: one tile per reading, each a 15-minute
+ * chart with the numbers behind it written underneath.
  */
-.usage.jobs {
-  padding-right: 14px;
-  border-right: 1px solid var(--border);
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
 }
 
-.jobs-meter {
-  min-width: 82px;
-}
-
-.jobs-meter .usage-fill {
-  background: var(--accent);
-}
-
-/* The text tooltip is for the usage meters; this one carries a panel instead. */
-.jobs-meter::after {
-  display: none;
-}
-
-/*
- * The panel under the jobs meter. Width follows the longest row so the numbers
- * sit against the right edge whatever they read.
- */
-.jobs-pop {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  width: max-content;
-  min-width: 150px;
-  background: #0b0d12;
-  border: 1px solid #3a4152;
+.metric-tile {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 8px 10px;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 90ms ease;
-  z-index: 20;
-  cursor: default;
-}
-
-.jobs-meter:hover .jobs-pop {
-  opacity: 1;
-}
-
-.jobs-pop-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 18px;
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--muted);
-}
-
-.jobs-pop-value {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-
-/* What is running now, above; what is merely armed, below. */
-.jobs-pop-rule {
-  margin: 6px 0;
-  border-top: 1px solid var(--border);
-}
-
-/*
- * Machine stats: the same meter as above, drawn from this computer rather than
- * the account, and separated from the subscription ones by a rule so the two
- * groups do not read as one row of eight.
- */
-.usage.system {
-  gap: 14px;
-  padding-right: 14px;
-  border-right: 1px solid var(--border);
-}
-
-.system-meter {
-  min-width: 76px;
-}
-
-/* The text tooltip above is for the usage meters; these carry a chart instead. */
-.system-meter::after {
-  display: none;
-}
-
-.system-meter .usage-fill {
-  background: var(--accent);
-}
-
-/*
- * The chart, under the meter on hover. Fixed width so the SVG's viewBox and the
- * box it is drawn in agree, which is what keeps the line from stretching.
- */
-.metric-pop {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: 252px;
-  background: #0b0d12;
-  border: 1px solid #3a4152;
-  border-radius: 8px;
-  padding: 9px 11px 10px;
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.5);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 90ms ease;
-  z-index: 20;
-  cursor: default;
-}
-
-.system-meter:hover .metric-pop {
-  opacity: 1;
+  padding: 10px 12px 11px;
 }
 
 .pop-title {
@@ -560,15 +750,24 @@ a {
   align-items: baseline;
   justify-content: space-between;
   gap: 8px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
+}
+
+.tile-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-tile.warning .tile-value {
+  color: var(--amber);
+}
+
+.metric-tile.critical .tile-value {
+  color: var(--red);
 }
 
 /* What the top of the chart is worth, which a rate needs and a percentage says anyway. */
 .spark-top {
-  font-size: 10px;
-  font-weight: 400;
-  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -581,7 +780,7 @@ a {
 
 .spark {
   display: block;
-  width: 228px;
+  width: 100%;
   height: 52px;
   margin: 8px 0 2px;
   overflow: visible;
@@ -649,24 +848,6 @@ a {
 .pop-detail[hidden],
 .pop-note[hidden] {
   display: none;
-}
-
-/*
- * The header runs out of room from the left: the machine meters go first, the
- * subscription ones next, since the second group is about the account and stays
- * useful on a laptop screen.
- */
-@media (max-width: 1160px) {
-  .usage.system {
-    display: none;
-  }
-}
-
-/* The meters are the first thing to go when the header runs out of room. */
-@media (max-width: 900px) {
-  .usage {
-    display: none;
-  }
 }
 
 .conn {

@@ -577,11 +577,11 @@ class Hub {
         queueChanged = true;
         continue;
       }
+      // Every node's samples go out, tagged with the node below: its own page charts them live.
       if (event?.type === 'system:sample') {
         node.samples.push(event.sample as SystemSample);
         const oldest = Date.now() - HISTORY_WINDOW_MS;
         while (node.samples.length && Date.parse(node.samples[0]!.at) < oldest) node.samples.shift();
-        if (node.id !== this.defaultNodeId()) continue;
       }
       if (event?.type === 'run:finished' && event.cronId) {
         pruneLogs(event.cronId).catch((err: unknown) => console.error(`[hub] log cleanup failed for ${event.cronId}: ${errorMessage(err)}`));

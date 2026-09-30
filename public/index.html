@@ -17,9 +17,15 @@
         <span id="brand-name">promptd</span>
       </a>
       <div class="topbar-right">
-        <div id="jobs" class="usage jobs" hidden></div>
-        <div id="system" class="usage system" hidden></div>
-        <div id="usage" class="usage" hidden></div>
+        <div id="cluster" class="cluster" hidden></div>
+        <div id="cluster-panel" class="cluster-panel" role="dialog" aria-labelledby="cluster-panel-title" tabindex="-1" hidden>
+          <div class="cluster-panel-head">
+            <h2 id="cluster-panel-title">Nodes and usage</h2>
+            <button id="cluster-panel-close" class="btn small icon" type="button" title="Close" aria-label="Close">&times;</button>
+          </div>
+          <div id="cluster-panel-body" class="cluster-panel-body"></div>
+          <div id="cluster-panel-foot" class="cluster-panel-foot"></div>
+        </div>
         <a id="update-badge" class="badge-update" href="#/settings" hidden>Update available</a>
         <span id="conn" class="conn" title="Live connection">connecting</span>
         <a class="btn small icon" href="#/settings" title="Settings" aria-label="Settings">&#9881;</a>

@@ -10,6 +10,7 @@ import { databaseTarget, migrate, openDatabase } from './db.js';
 import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs } from './paths.js';
 import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
 import { HubError, hub } from './hub.js';
+import { SYSTEM_METRICS } from './system.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
@@ -297,6 +298,8 @@ app.get('/api/nodes', (_req, res) => {
   res.json({
     nodes: hub.listNodes(),
     cluster: hub.cluster(runningCommit),
+    // The machine columns, named and formatted the way the node pages chart them.
+    metrics: SYSTEM_METRICS,
     defaultNodeId: hub.defaultNodeId(),
     hubCommit: runningCommit,
     tokenSource: process.env.PROMPTD_NODE_TOKEN?.trim() ? 'environment' : 'file',
