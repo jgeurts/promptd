@@ -22,6 +22,7 @@ import {
 import { DEFAULT_MAX_CONCURRENT_JOBS, normalizeMaxConcurrentJobs } from './settings.js';
 import { browseDirectories } from './browse.js';
 import { setUsageThresholds, usageMonitor } from './usage.js';
+import { accountMonitor } from './account.js';
 import { modelCatalog } from './models.js';
 import { systemMonitor } from './system.js';
 import type {
@@ -249,6 +250,7 @@ async function status(): Promise<NodeStatus> {
     jobs: await jobViews(),
     activeLogs: [...uploads.values()].map(({ jobId, file }) => ({ jobId, file })),
     usage: await usageMonitor.state(),
+    account: await accountMonitor.state(),
     models: modelCatalog.state(),
     system,
   };
