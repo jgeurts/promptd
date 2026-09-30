@@ -44,6 +44,15 @@ class AccountMonitor {
   /** The account as last read, re-read once the last read is a minute old. Never throws. */
   public async state(): Promise<ClaudeAccount | null> {
     if (Date.now() - this.readAt < REREAD_MS) return this.current;
+    return this.reread();
+  }
+
+  /**
+   * Reads the config now. A usage lookup calls this just before it reads the
+   * login, so its numbers are recorded against the account they belong to and
+   * this monitor learns of a new sign-in at the same moment.
+   */
+  public reread(): Promise<ClaudeAccount | null> {
     this.reading ??= fsp
       .readFile(claudeConfig().configFile, 'utf8')
       .then((text) => readAccount(JSON.parse(text)))

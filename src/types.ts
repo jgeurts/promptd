@@ -108,6 +108,8 @@ export interface UsageReading {
   windows: UsageWindow[];
   checkedAt: string | null;
   stale: boolean;
+  /** The account these numbers are for; absent from a node older than the field. */
+  accountId?: string | null;
 }
 
 /** The Claude account a node's CLI is signed in as: its account id, and the email the header names it by. */
