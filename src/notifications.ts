@@ -577,19 +577,22 @@ export class NotificationCenter {
   /**
    * Marks the given ids read, and answers with what is still unread.
    *
-   * `revisions` is the count each row had when it was seen. A repeat that
-   * landed on the row since then is something the reader has not seen, so an
-   * acknowledgement of an older revision leaves the row unread.
+   * `revisions` is the count each row had when it was seen, and a row is only
+   * marked read when that is its count now. A repeat that landed on it since is
+   * something the reader has not seen; so is any row whose count was not sent,
+   * as from a page loaded before rows could change. Marking everything read
+   * regardless is `markAllRead`, the one button that means it.
    */
   public async markRead(
     ids: string | string[] | null | undefined,
-    revisions: Record<string, number> = {},
+    revisions: Record<string, unknown>,
   ): Promise<{ marked: number; unread: number; counts: NotificationCounts }> {
     await this.ready;
     const wanted = new Set(([] as string[]).concat(ids ?? []));
     const changed: NotificationRecord[] = [];
     for (const record of this.items) {
-      if (!record.read && wanted.has(record.id) && (revisions[record.id] === undefined || revisions[record.id] === record.count)) {
+      const seen = revisions[record.id];
+      if (!record.read && wanted.has(record.id) && Number.isInteger(seen) && seen === record.count) {
         record.read = true;
         changed.push(record);
       }

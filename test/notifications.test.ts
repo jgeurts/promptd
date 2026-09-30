@@ -43,6 +43,11 @@ function fromNode(nodeId: string, type: string, fields: Record<string, unknown> 
 
 const failed = { cronId: 'c1', cronName: 'Nightly', kind: 'cron', status: 'failed', seconds: 4 };
 
+/** What the drawer sends for rows it has shown: each id with the count it had on screen. */
+function acknowledge(...ids: string[]) {
+  return center.markRead(ids, Object.fromEntries(ids.map((id) => [id, center.items.find((record) => record.id === id)!.count])));
+}
+
 describe('the node a notification names', () => {
   it('keeps the node the hub stamped on a relayed event', () => {
     center.record(fromNode('studio', 'run:finished', failed));
@@ -144,8 +149,8 @@ describe('the bell counts', () => {
     center.record(event('run:finished', failed));
     center.record(event('run:retrospective', job));
     const [action, worth] = center.items.map((record) => record.id).reverse();
-    expect((await center.markRead([action!])).counts).toMatchObject({ action: 0, worth: 1 });
-    expect((await center.markRead([worth!])).counts).toMatchObject({ action: 0, worth: 0 });
+    expect((await acknowledge(action!)).counts).toMatchObject({ action: 0, worth: 1 });
+    expect((await acknowledge(worth!)).counts).toMatchObject({ action: 0, worth: 0 });
   });
 
   it('leaves an old unread routine record out of the count', () => {
@@ -179,7 +184,7 @@ describe('collapsing repeats', () => {
     center.record(fromNode('studio', 'system:alert', disk('10.5% free')));
     const first = center.items[0]!;
     const firstAt = first.at;
-    await center.markRead([first.id]);
+    await acknowledge(first.id);
     await new Promise((resolve) => setTimeout(resolve, 5));
     center.record(fromNode('studio', 'run:finished', failed));
     center.record(fromNode('studio', 'system:alert', disk('9.8% free')));
@@ -200,7 +205,7 @@ describe('collapsing repeats', () => {
 
   it('starts a new, unread row for an episode after a clear', async () => {
     center.record(fromNode('studio', 'system:alert', disk('10% free')));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:cleared', { metric: 'disk' }));
     center.record(fromNode('studio', 'system:alert', disk('11% free')));
     expect(center.items.map((record) => [record.count, record.read, record.open])).toEqual([
@@ -211,7 +216,7 @@ describe('collapsing repeats', () => {
 
   it('makes a row unread again when it gets worse', async () => {
     center.record(fromNode('studio', 'system:alert', disk('10% free')));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:alert', disk('5% free', { worse: true })));
     expect(center.items).toHaveLength(1);
     expect(center.items[0]).toMatchObject({ count: 2, read: false });
@@ -219,7 +224,7 @@ describe('collapsing repeats', () => {
 
   it('keeps an update to one row, unread again and closed when it fails', async () => {
     center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(event('update:failed', { code: 1, target: 'def5678' }));
     expect(center.items).toHaveLength(1);
     expect(center.items[0]).toMatchObject({ level: 'action', count: 2, read: false, open: false });
@@ -229,7 +234,7 @@ describe('collapsing repeats', () => {
 
   it('turns a hold that passed its expected start into one that needs action', async () => {
     center.record(fromNode('studio', 'run:delayed', held));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'run:delayed', { ...held, late: true }));
     expect(center.items).toHaveLength(1);
     expect(center.items[0]).toMatchObject({ level: 'action', count: 2, read: false });
@@ -263,7 +268,7 @@ describe('collapsing repeats', () => {
 describe('an alert found still firing after a restart', () => {
   it('adds nothing while the row for its episode is open', async () => {
     center.record(fromNode('studio', 'system:alert', disk('10% free')));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:alert', disk('10% free', { seeded: true })));
     expect(center.items).toHaveLength(1);
     expect(center.items[0]).toMatchObject({ count: 1, read: true, open: true });
@@ -293,6 +298,23 @@ describe('reading a row that has changed since it was seen', () => {
     expect(center.items[0]!.read).toBe(true);
   });
 
+  it('marks nothing read without the count each row was seen at', async () => {
+    center.record(event('run:finished', failed));
+    const { id } = center.items[0]!;
+    expect((await center.markRead([id], {})).marked).toBe(0);
+    expect((await center.markRead([id], { [id]: '1' })).marked).toBe(0);
+    expect((await center.markRead([id], { [id]: 1.5 })).marked).toBe(0);
+    expect(center.items[0]!.read).toBe(false);
+  });
+
+  it('still marks everything read when that is what was asked for', async () => {
+    center.record(event('run:finished', failed));
+    center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
+    center.record(event('update:failed', { code: 1, target: 'def5678' }));
+    expect((await center.markAllRead()).counts).toMatchObject({ action: 0, worth: 0 });
+    expect(center.items.every((record) => record.read)).toBe(true);
+  });
+
   it('leaves a failed update unread when only its launch was seen', async () => {
     center.record(event('update:launched', { from: 'abc1234', target: 'def5678' }));
     const { id } = center.items[0]!;
@@ -307,7 +329,7 @@ describe('an alert found worse after a restart', () => {
 
   it('lands on the open row and makes it unread when the reading is worse than the row last said', async () => {
     center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:alert', seededDisk(95)));
     expect(center.items).toHaveLength(1);
     expect(center.items[0]).toMatchObject({ count: 2, read: false, alertValue: 95 });
@@ -324,7 +346,7 @@ describe('an alert found worse after a restart', () => {
 
   it('stays quiet when the reading is no worse than that', async () => {
     center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:alert', seededDisk(85)));
     expect(center.items[0]).toMatchObject({ count: 1, read: true, alertValue: 80 });
   });
@@ -332,14 +354,14 @@ describe('an alert found worse after a restart', () => {
   it('judges a busy CPU worse once crons are running on it', async () => {
     const cpu = { metric: 'cpu', label: 'High CPU', summary: '91% of all cores', value: 91 };
     center.record(fromNode('mini', 'system:alert', { ...cpu, running: [] }));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('mini', 'system:alert', { ...cpu, seeded: true, running: [{ name: 'Nightly', kind: 'cron', startedAt: new Date().toISOString() }] }));
     expect(center.items[0]).toMatchObject({ count: 2, read: false, alertRunning: 1 });
   });
 
   it('remembers what the row last said through a restart of the hub', async () => {
     center.record(fromNode('studio', 'system:alert', disk('20% free', { value: 80 })));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     await center.items[0]!.writing;
     const reloaded = new notifications.NotificationCenter();
     await reloaded.load();
@@ -349,7 +371,7 @@ describe('an alert found worse after a restart', () => {
 
   it('never calls a row worse when it kept no reading', async () => {
     center.record(fromNode('studio', 'system:alert', disk('20% free', { value: undefined })));
-    await center.markRead([center.items[0]!.id]);
+    await acknowledge(center.items[0]!.id);
     center.record(fromNode('studio', 'system:alert', seededDisk(99)));
     expect(center.items[0]).toMatchObject({ count: 1, read: true });
   });

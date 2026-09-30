@@ -284,10 +284,13 @@ app.post('/api/notifications/read', async (req: JsonRequest, res, next) => {
     if (req.body?.all === true) return res.json(await notificationCenter.markAllRead());
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
     if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array' });
-    // What each row's count was when it was seen: a row that has had more land on it since stays unread.
-    const given = req.body?.revisions && typeof req.body.revisions === 'object' ? (req.body.revisions as Record<string, unknown>) : {};
-    const revisions = Object.fromEntries(Object.entries(given).filter(([, count]) => Number.isInteger(count))) as Record<string, number>;
-    res.json(await notificationCenter.markRead(ids, revisions));
+    // What each row's count was when it was seen. Without it nothing is marked:
+    // the row may have changed since, and only Mark all read reads it regardless.
+    const revisions = req.body?.revisions;
+    if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) {
+      return res.status(400).json({ error: 'revisions must give the count each id had when it was seen' });
+    }
+    res.json(await notificationCenter.markRead(ids, revisions as Record<string, unknown>));
   } catch (err) {
     next(err);
   }
