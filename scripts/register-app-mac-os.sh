@@ -21,6 +21,8 @@
 #                             folder when the hub is on this Mac
 #   NODE_ID, NODE_NAME        how the node names itself (default: this Mac's hostname)
 #   FORCE=1                   replace agents that are already registered
+#   PROMPTD_BIN=/path/promptd run this promptd binary rather than the checkout;
+#                             install.sh sets it
 set -uo pipefail
 
 PORT="${PORT:-4321}"
@@ -28,6 +30,7 @@ HOST="${HOST:-127.0.0.1}"
 LABEL="${LABEL:-local.promptd}"
 NODE_LABEL="${NODE_LABEL:-$LABEL.node}"
 NODE_ONLY="${NODE_ONLY:-0}"
+PROMPTD_BIN="${PROMPTD_BIN:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
 NODE_ID="${NODE_ID:-}"
 NODE_NAME="${NODE_NAME:-}"
@@ -63,15 +66,22 @@ printf '\nRegistering promptd with launchd\n\n'
 
 # --- what launchd will need to run ------------------------------------
 
-NODE_BIN="$(command -v node || true)"
-[ -n "$NODE_BIN" ] || die "node is not on your PATH. Install Node 20 or newer, then run this again."
-NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
-NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-[ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die "Node 20 or newer is required, found $("$NODE_BIN" -v 2>/dev/null || echo none)"
-ok "node $("$NODE_BIN" -v) at $NODE_BIN"
+if [ -n "$PROMPTD_BIN" ]; then
+  [ -x "$PROMPTD_BIN" ] || die "$PROMPTD_BIN is not an executable promptd binary"
+  ok "promptd $("$PROMPTD_BIN" version) at $PROMPTD_BIN"
+  SET_PASSWORD="$PROMPTD_BIN set-password"
+else
+  NODE_BIN="$(command -v node || true)"
+  [ -n "$NODE_BIN" ] || die "node is not on your PATH. Install Node 20 or newer, then run this again."
+  NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
+  NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  [ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die "Node 20 or newer is required, found $("$NODE_BIN" -v 2>/dev/null || echo none)"
+  ok "node $("$NODE_BIN" -v) at $NODE_BIN"
 
-[ -f "$PROJECT_DIR/src/server.js" ] && [ -f "$PROJECT_DIR/src/node.js" ] || die "$PROJECT_DIR does not look like the project (no src/server.js or src/node.js)"
-ok "project at $PROJECT_DIR"
+  [ -f "$PROJECT_DIR/src/server.js" ] && [ -f "$PROJECT_DIR/src/node.js" ] || die "$PROJECT_DIR does not look like the project (no src/server.js or src/node.js)"
+  ok "project at $PROJECT_DIR"
+  SET_PASSWORD="npm run set-password"
+fi
 
 if [ "$NODE_ONLY" != "1" ]; then
   case "$HOST" in
@@ -80,7 +90,7 @@ if [ "$NODE_ONLY" != "1" ]; then
       ;;
     *)
       warn "binding $HOST — reachable from your network."
-      warn "The hub will not start without an admin password (npm run set-password)."
+      warn "The hub will not start without an admin password ($SET_PASSWORD)."
       warn "Anyone who has it can run arbitrary Claude prompts on every node, and it"
       warn "crosses the network unencrypted. Only do this on a network you trust, and"
       warn "see 'Network access' in docs/ADVANCED.md."
@@ -105,21 +115,23 @@ fi
 
 AGENT_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 [ -n "$CLAUDE_DIR" ] && case ":$AGENT_PATH:" in *":$CLAUDE_DIR:"*) ;; *) AGENT_PATH="$CLAUDE_DIR:$AGENT_PATH" ;; esac
-NODE_DIR="$(dirname "$NODE_BIN")"
-case ":$AGENT_PATH:" in *":$NODE_DIR:"*) ;; *) AGENT_PATH="$NODE_DIR:$AGENT_PATH" ;; esac
+if [ -z "$PROMPTD_BIN" ]; then
+  NODE_DIR="$(dirname "$NODE_BIN")"
+  case ":$AGENT_PATH:" in *":$NODE_DIR:"*) ;; *) AGENT_PATH="$NODE_DIR:$AGENT_PATH" ;; esac
 
-# --- dependencies -----------------------------------------------------
+  # --- dependencies ---------------------------------------------------
 
-if [ ! -d "$PROJECT_DIR/node_modules/typescript" ]; then
-  info "dependencies are missing, running npm install"
-  (cd "$PROJECT_DIR" && npm install --no-audit --no-fund >/dev/null 2>&1) || die "npm install failed; run it by hand and try again"
-  ok "dependencies installed"
-else
-  ok "dependencies present"
+  if [ ! -d "$PROJECT_DIR/node_modules/typescript" ]; then
+    info "dependencies are missing, running npm install"
+    (cd "$PROJECT_DIR" && npm install --no-audit --no-fund >/dev/null 2>&1) || die "npm install failed; run it by hand and try again"
+    ok "dependencies installed"
+  else
+    ok "dependencies present"
+  fi
+
+  (cd "$PROJECT_DIR" && npm run build >/dev/null 2>&1) || die "the build failed; run npm run build in $PROJECT_DIR to see why"
+  ok "built"
 fi
-
-(cd "$PROJECT_DIR" && npm run build >/dev/null 2>&1) || die "the build failed; run npm run build in $PROJECT_DIR to see why"
-ok "built"
 
 mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents" || die "could not create $LOG_DIR"
 
@@ -142,6 +154,19 @@ needs_agent() {
 
 agent_plist() {
   local label="$1" script="$2" log="$3" env="$4"
+  # A binary takes its role as an argument; a checkout runs the role's script.
+  local program workdir
+  if [ -n "$PROMPTD_BIN" ]; then
+    local role=node
+    [ "$script" = server.js ] && role=hub
+    program="    <string>$PROMPTD_BIN</string>
+    <string>$role</string>"
+    workdir="$(dirname "$PROMPTD_BIN")"
+  else
+    program="    <string>$NODE_BIN</string>
+    <string>$PROJECT_DIR/src/$script</string>"
+    workdir="$PROJECT_DIR"
+  fi
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -150,10 +175,9 @@ agent_plist() {
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE_BIN</string>
-    <string>$PROJECT_DIR/src/$script</string>
+$program
   </array>
-  <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
+  <key>WorkingDirectory</key><string>$workdir</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>$HOME</string>
