@@ -292,9 +292,11 @@ app.get('/api/system', (_req, res) => {
   res.json(hub.systemState());
 });
 
+/** Every node with its account, usage and latest machine sample, and the cluster grouped by account: all the header's panel draws. */
 app.get('/api/nodes', (_req, res) => {
   res.json({
     nodes: hub.listNodes(),
+    cluster: hub.cluster(runningCommit),
     defaultNodeId: hub.defaultNodeId(),
     hubCommit: runningCommit,
     tokenSource: process.env.PROMPTD_NODE_TOKEN?.trim() ? 'environment' : 'file',
@@ -895,7 +897,7 @@ app.get('/api/health', async (_req, res) => {
   await notificationCenter.ready;
   res.json({
     ok: true,
-    ...hub.health(),
+    ...hub.health(runningCommit),
     commit: runningCommit,
     startedAt: STARTED_AT,
     // What the limit means when it is 0: the header's jobs meter fills against

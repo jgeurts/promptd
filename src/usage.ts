@@ -251,7 +251,7 @@ function readSpend(spend: ApiSpend | null | undefined): UsageWindow | null {
  * the `kind` field, so the key — which has always started with the kind — is the
  * fallback rather than letting a restored cache match nothing.
  */
-function kindOf(window: UsageWindow | null | undefined): string | undefined {
+export function kindOf(window: UsageWindow | null | undefined): string | undefined {
   return window?.kind ?? String(window?.key ?? '').split(':')[0];
 }
 
