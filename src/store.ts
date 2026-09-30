@@ -120,8 +120,7 @@ export async function deleteCron(id: string): Promise<boolean> {
 /**
  * Logs live under the cron's id, not its name: two crons may share a name, and
  * an id never moves. `safeName` still runs over it so a hand-edited id cannot
- * escape the logs folder. Folders written by older versions are renamed on boot
- * by migrateLogDirs.
+ * escape the logs folder.
  */
 export function logDir(cronId: string): string {
   return path.join(LOGS_DIR, safeName(cronId));

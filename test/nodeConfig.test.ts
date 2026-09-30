@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { NodeConfigError, effectiveNodeConfig, legacyNodeConfig, patchNodeConfig, readNodeConfig } from '../src/nodeConfig.js';
+import { NodeConfigError, effectiveNodeConfig, patchNodeConfig, readNodeConfig } from '../src/nodeConfig.js';
 
 const DEFAULTS = { session: 90, weekly: 95, fable: 95, credits: 90 };
 
@@ -28,14 +28,5 @@ describe('node config', () => {
   it('reads a stored config, dropping what it cannot use', () => {
     expect(readNodeConfig('{"maxConcurrentJobs":"x","defaultWorkingDirectory":"~/src"}')).toEqual({ defaultWorkingDirectory: '~/src' });
     expect(readNodeConfig('not json')).toEqual({});
-  });
-
-  it('carries over old hub-wide values, except the ones still at their defaults', () => {
-    expect(legacyNodeConfig({ maxConcurrentJobs: 2, usageDelayThresholds: DEFAULTS, defaultWorkingDirectory: '~/' }, 2)).toEqual({});
-    expect(legacyNodeConfig({ maxConcurrentJobs: 4, usageDelayThresholds: { ...DEFAULTS, weekly: 80 }, defaultWorkingDirectory: '~/dev' }, 2)).toEqual({
-      maxConcurrentJobs: 4,
-      usageDelayThresholds: { ...DEFAULTS, weekly: 80 },
-      defaultWorkingDirectory: '~/dev',
-    });
   });
 });

@@ -1,18 +1,15 @@
-import { execFile, spawn } from 'node:child_process';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
 import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
-import { DEFAULT_MAX_CONCURRENT_JOBS, deleteSettings, loadSettings, patchSettings } from './settings.js';
-import { LEGACY_NODE_KEYS, effectiveNodeConfig, legacyNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
+import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
+import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
@@ -40,8 +37,6 @@ import type {
   UsageReading,
 } from './types.js';
 
-const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const REGISTER_SCRIPT = path.join(PROJECT_DIR, 'scripts', 'register-app-mac-os.sh');
 const OFFLINE_AFTER_MS = 15 * 1000;
 const COMMAND_TTL_MS = 60 * 1000;
 const JOBS_CACHE_MS = 10 * 1000;
@@ -164,7 +159,6 @@ class Hub {
   private pauseTimer: ReturnType<typeof setTimeout> | null;
   public jobsCache: JobsCache | null;
   private saveTimer: ReturnType<typeof setTimeout> | null;
-  private legacyConfig: NodeConfig | null;
   private waiting: Map<string, (result: CommandResult) => void>;
 
   public constructor() {
@@ -175,7 +169,6 @@ class Hub {
     this.pauseTimer = null;
     this.jobsCache = null;
     this.saveTimer = null;
-    this.legacyConfig = null;
     this.waiting = new Map();
   }
 
@@ -183,7 +176,6 @@ class Hub {
     this.settings = settings;
     this.token = await this.ensureToken();
     await this.loadNodes();
-    await this.carryOverLegacyConfig();
     bus.on('event', (event: BusEvent) => {
       if (event.type === 'crons:changed') this.jobsCache = null;
     });
@@ -212,32 +204,6 @@ class Hub {
     for (const saved of await db().selectFrom('nodes').selectAll().execute()) {
       this.nodes.set(saved.id, { ...saved, config: readNodeConfig(saved.settings), instance: null, status: null, samples: [], commands: [] });
     }
-  }
-
-  /**
-   * The job limit, usage thresholds and working directory were once one set for
-   * the whole hub. They go to every node already known, or wait for the first to
-   * connect: on an install from before nodes, that is the one on this machine.
-   */
-  private async carryOverLegacyConfig(): Promise<void> {
-    const stored = (await loadSettings()) as unknown as Record<string, unknown>;
-    if (!LEGACY_NODE_KEYS.some((key) => key in stored)) return;
-    const config = legacyNodeConfig(stored, DEFAULT_MAX_CONCURRENT_JOBS);
-    if (!this.nodes.size) {
-      this.legacyConfig = config;
-      return;
-    }
-    for (const node of this.nodes.values()) await this.writeNodeConfig(node, { ...config, ...node.config });
-    await deleteSettings(LEGACY_NODE_KEYS);
-  }
-
-  private async adoptLegacyConfig(node: HubNode): Promise<void> {
-    const config = this.legacyConfig;
-    if (!config) return;
-    this.legacyConfig = null;
-    node.config = { ...config, ...node.config };
-    this.saveNodes();
-    await deleteSettings(LEGACY_NODE_KEYS);
   }
 
   private async writeNodeConfig(node: HubNode, config: NodeConfig): Promise<void> {
@@ -523,7 +489,6 @@ class Hub {
 
   private async ingest(body: Record<string, unknown>): Promise<{ ok: true; logOffsets: Record<string, number> }> {
     const node = this.claim(body.node);
-    await this.adoptLegacyConfig(node);
     if (!this.defaultNodeId()) {
       this.settings = await patchSettings({ defaultNodeId: node.id });
       console.log(`[hub] "${node.name}" is the default node`);
@@ -840,37 +805,6 @@ class Hub {
       if (!this.defaultNode()) break;
     }
     return this.models();
-  }
-
-
-  /**
-   * An install registered before nodes existed has a launchd agent for the hub
-   * and none for the node, so after the update that brings this code nothing
-   * would run its jobs.
-   */
-  public async ensureLocalNodeAgent(): Promise<void> {
-    if (process.platform !== 'darwin' || this.settings.localNodeAgentCheckedAt) return;
-    const label = process.env.PROMPTD_LAUNCHD_LABEL ?? 'local.promptd';
-    const hubPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
-    if (process.ppid !== 1 || !fs.existsSync(hubPlist)) return;
-    const nodeLabel = process.env.PROMPTD_NODE_LAUNCHD_LABEL ?? `${label}.node`;
-    const registered = await new Promise<boolean>((resolve) => {
-      execFile('launchctl', ['print', `gui/${process.getuid!()}/${nodeLabel}`], (err) => resolve(!err));
-    });
-    if (!registered) {
-      console.log(`[hub] no launchd agent for the local node; registering ${nodeLabel}`);
-      const child = spawn('/bin/bash', [REGISTER_SCRIPT], {
-        cwd: PROJECT_DIR,
-        stdio: 'inherit',
-        env: { ...process.env, NODE_ONLY: '1', LABEL: label, NODE_LABEL: nodeLabel },
-      });
-      const code = await new Promise<number | null>((resolve) => child.on('exit', resolve));
-      if (code !== 0) {
-        console.error(`[hub] registering the local node agent failed (exit ${code}); run ${REGISTER_SCRIPT} by hand`);
-        return;
-      }
-    }
-    this.settings = await patchSettings({ localNodeAgentCheckedAt: new Date().toISOString() });
   }
 }
 

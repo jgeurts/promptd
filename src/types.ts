@@ -215,9 +215,7 @@ export interface Settings {
   commonCommands: string;
   defaultWorktreeInclude: string;
   retrospectivePrompt: string;
-  logsMigrated: boolean;
   defaultNodeId: string;
-  localNodeAgentCheckedAt: string | null;
 }
 
 /** What each node is set to on its own page. A key left out takes the node's default. */

@@ -1,10 +1,6 @@
 import os from 'node:os';
-import path from 'node:path';
 import { db } from './db.js';
-import { ROOT } from './paths.js';
 import type { Settings } from './types.js';
-
-export const LEGACY_SETTINGS_FILE = path.join(ROOT, 'settings.json');
 
 /**
  * How many runs may be in flight at once, out of the box.
@@ -46,11 +42,8 @@ export const DEFAULT_SETTINGS: Settings = {
   // The prompt a job with Retrospective on ends its run with. Blank uses the
   // built-in one in retrospective.ts, so an untouched setting follows it.
   retrospectivePrompt: '',
-  // Set once the log folders have been renamed from cron names to cron ids.
-  logsMigrated: false,
   // The node that runs a job with no node of its own. Set to the first node that connects.
   defaultNodeId: '',
-  localNodeAgentCheckedAt: null,
 };
 
 function parseValue(text: string): unknown {
@@ -86,10 +79,6 @@ async function writeKeys(values: Partial<Settings>): Promise<void> {
 export async function saveSettings(settings: Settings): Promise<Settings> {
   await writeKeys(settings);
   return settings;
-}
-
-export async function deleteSettings(keys: readonly string[]): Promise<void> {
-  if (keys.length) await db().deleteFrom('settings').where('key', 'in', [...keys]).execute();
 }
 
 /** Writes only the keys given, so two saves of different settings cannot undo each other. */

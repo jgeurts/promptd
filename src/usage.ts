@@ -311,9 +311,9 @@ export function normalizeUsageThresholds(input: unknown): UsageThresholds {
 export const DEFAULT_USAGE_THRESHOLDS = normalizeUsageThresholds({});
 
 /**
- * The thresholds in force. Held in memory like the concurrent job limit: the
- * server sets them from settings.json at boot and again on every save, so a
- * trigger deciding whether to hold never waits on a disk read.
+ * The thresholds in force on this node. Held in memory like the concurrent job
+ * limit: the node sets them from each sync with the hub, so a trigger deciding
+ * whether to hold never waits on a request.
  */
 let thresholds = DEFAULT_USAGE_THRESHOLDS;
 
