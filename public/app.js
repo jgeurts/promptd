@@ -2422,6 +2422,57 @@ function nodesList() {
     );
     body.replaceChildren(...(rows.length ? rows : [el('div', { class: 'hint warn', text: 'No node has connected yet, so nothing runs.' })]));
   };
+
+  // The command is a read-only field rather than text so it can be selected in
+  // one click: the clipboard API is missing on a page served over plain HTTP.
+  const joinCommand = el('input', {
+    type: 'text',
+    class: 'mono',
+    style: 'flex: 1; min-width: 0',
+    readonly: 'readonly',
+    'aria-label': 'Command that adds a Mac as a node',
+    onfocus: () => joinCommand.select(),
+  });
+  const copyJoin = el('button', {
+    type: 'button',
+    class: 'btn small',
+    text: 'Copy',
+    onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(joinCommand.value);
+        toast('Command copied to clipboard');
+      } catch (err) {
+        joinCommand.select();
+        toast(`Could not copy to clipboard: ${err.message}. The command is selected; copy it yourself.`, true);
+      }
+    },
+  });
+  const joinNote = el('div', { class: 'hint' });
+  const paintJoin = async () => {
+    let join;
+    try {
+      join = await api('/api/join');
+    } catch (err) {
+      joinNote.className = 'hint warn';
+      joinNote.textContent = `Could not load the command: ${err.message}`;
+      return;
+    }
+    joinCommand.value = join.command;
+    joinNote.className = join.hubUrl ? 'hint' : 'hint warn';
+    joinNote.replaceChildren(
+      ...(join.hubUrl
+        ? ['It points the node at ', el('span', { class: 'mono', text: join.hubUrl }), ' and carries ', tokenWhere, '.']
+        : [
+            'Other Macs cannot reach this server yet: it listens on this machine only. Share it on your tailnet with ',
+            el('span', { class: 'mono', text: `tailscale serve --bg --http=${join.port} ${join.port}` }),
+            ' and reload this page, or see the README for your own network.',
+          ]),
+    );
+  };
+
+  // Once per visit, not on every repaint: finding the address runs `tailscale`.
+  paintJoin();
+
   return {
     paint,
     parts: [
@@ -2429,12 +2480,10 @@ function nodesList() {
       el('div', { class: 'hint' }, [
         'A node is a machine that runs jobs. Each one fetches its work from this server and reports back every few seconds, ',
         'so only this server needs to be reachable. A job with no node of its own runs on the default node. ',
-        'To add a Mac, run ',
-        el('span', { class: 'mono', text: 'NODE_ONLY=1 HUB_URL=<this server> NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh' }),
-        ' in a checkout there, with ',
-        tokenWhere,
-        '.',
+        'To add a Mac, install Node and Claude Code there, clone this project, and run this in the checkout:',
       ]),
+      el('div', { class: 'preset-row' }, [joinCommand, copyJoin]),
+      joinNote,
     ],
   };
 }
