@@ -1,7 +1,5 @@
 import fsp from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { bus, sseInit, sseSend } from './events.js';
@@ -12,6 +10,8 @@ import { EFFORT_LEVELS, PAUSE_OPTIONS, isTimeZone, pauseOption, previewNextRun, 
 import { HubError, hub } from './hub.js';
 import { joinCommand, joinUrl } from './join.js';
 import { SYSTEM_METRICS } from './system.js';
+import { sendPublicFile, sendSharedModule, servePublic } from './publicFiles.js';
+import { BINARY_REPO } from './binary.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
@@ -53,8 +53,6 @@ const STARTED_AT = new Date().toISOString();
 const PORT = Number(process.env.PORT || 4321);
 const HOST = process.env.HOST || '127.0.0.1';
 const SELF_UPDATE = process.env.PROMPTD_SELF_UPDATE !== '0';
-const BUILD_DIR = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(BUILD_DIR, '..', 'public');
 
 type JsonRequest = Request<Record<string, string>, unknown, Record<string, unknown>>;
 
@@ -85,12 +83,12 @@ if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustPr
 app.use('/api/node', hub.router());
 app.use(authRouter());
 app.use(requireLogin());
-app.get('/login', (_req, res) => res.sendFile(path.join(PUBLIC_DIR, 'login.html')));
+app.get('/login', (_req, res) => sendPublicFile(res, 'login.html'));
 app.use(express.json({ limit: '1mb' }));
-app.use(express.static(PUBLIC_DIR));
+app.use(servePublic());
 // Rules the job form shares with the hub, compiled from src/naming.ts and
 // src/jobFormRules.ts: the name a blank Name will get, and what a save sends.
-app.get('/shared/:module(naming|jobFormRules).js', (req, res) => res.sendFile(path.join(BUILD_DIR, `${req.params.module}.js`)));
+app.get('/shared/:module(naming|jobFormRules).js', (req, res) => sendSharedModule(res, req.params.module!));
 
 async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
   if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');
@@ -230,11 +228,12 @@ app.get('/api/nodes', (_req, res) => {
   });
 });
 
-/** The command that adds another Mac as a node, with the address it should use and the token filled in. */
-app.get('/api/join', async (req, res, next) => {
+/** A fresh join code, and the command that adds another Mac as a node with it and the address it should use. */
+app.post('/api/join', async (req, res, next) => {
   try {
     const hubUrl = await joinUrl({ host: HOST, port: PORT, origin: `${req.protocol}://${req.get('host')}` });
-    res.json({ hubUrl, port: PORT, command: joinCommand(hubUrl ?? '<hub-address>', hub.nodeToken() ?? '<token>') });
+    const { code, expiresAt } = hub.createJoinCode();
+    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command: joinCommand(hubUrl ?? '<hub-address>', code, BINARY_REPO) });
   } catch (err) {
     next(err);
   }
@@ -877,6 +876,7 @@ try {
 // behind the server coming up.
 notificationCenter.start();
 runningCommit = await currentCommit();
+hub.setVersion(runningCommit);
 await hub.start(await loadSettings()); // writes the defaults on first run
 if (SELF_UPDATE) selfUpdater.start();
 

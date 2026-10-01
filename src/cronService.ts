@@ -422,6 +422,11 @@ class CronService {
     return this.running.size;
   }
 
+  /** Runs in flight plus triggers on their way to being one: what a restart has to wait for. */
+  public activeRunCount(): number {
+    return this.activeCount();
+  }
+
   /** JSON-safe pause state for the API and the status badges. */
   public pauseInfo(): PauseInfo {
     if (!this.pauseState) {
@@ -847,7 +852,14 @@ class CronService {
    * trigger whose usage limit just cleared all come through here, so there is a
    * single place the limit is enforced.
    */
-  private async admit(job: Job, source: RunSource, waits: RunWait[] = [], arrivedAt: string | null = null): Promise<TriggerResult> {
+  private async admit(job: Job, source: RunSource, waits: RunWait[] = [], arrivedAt: string | null = null): Promise<TriggerResult | null> {
+    // A trigger can pass the pause check and then wait on its usage reading while
+    // an update pause begins. The update is waiting for the last run to end, so
+    // nothing starts once it holds.
+    if (this.pauseState?.mode === 'update') {
+      console.warn(`[cron] "${job.name}" ${source} trigger dropped: paused ${this.pauseState.label}`);
+      return null;
+    }
     const limit = this.concurrencyLimit;
     if (limit > 0 && this.activeCount() >= limit) {
       return { delayed: this.holdForSlot(job, source, waits, arrivedAt) };

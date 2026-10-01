@@ -5,8 +5,9 @@
 # Run once, from anywhere:
 #   ./scripts/register-app-mac-os.sh
 #
-# On another Mac, to add it as a node of a hub running elsewhere:
-#   NODE_ONLY=1 HUB_URL=http://hub-host:4321 NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh
+# On another Mac, to add it as a node of a hub running elsewhere, with the
+# command Settings → Nodes on the hub shows:
+#   NODE_ONLY=1 HUB_URL=http://hub-host:4321 JOIN_CODE=<code> ./scripts/register-app-mac-os.sh
 #
 # Overrides:
 #   PORT=4321                 port the hub listens on
@@ -17,10 +18,14 @@
 #   NODE_LABEL=$LABEL.node    launchd name of the node
 #   NODE_ONLY=1               register only the node
 #   HUB_URL=http://...        where the node finds the hub (default: this Mac)
-#   NODE_TOKEN=...            the hub's node token; read from the hub's storage
-#                             folder when the hub is on this Mac
+#   JOIN_CODE=1234-5678       a one-time code from the hub, which the node trades
+#                             for the hub's token on its first connection
+#   NODE_TOKEN=...            the hub's node token itself, in place of a join code;
+#                             read from the hub's storage folder when the hub is on this Mac
 #   NODE_ID, NODE_NAME        how the node names itself (default: this Mac's hostname)
 #   FORCE=1                   replace agents that are already registered
+#   PROMPTD_BIN=/path/promptd run this promptd binary rather than the checkout;
+#                             install.sh sets it
 set -uo pipefail
 
 PORT="${PORT:-4321}"
@@ -28,10 +33,14 @@ HOST="${HOST:-127.0.0.1}"
 LABEL="${LABEL:-local.promptd}"
 NODE_LABEL="${NODE_LABEL:-$LABEL.node}"
 NODE_ONLY="${NODE_ONLY:-0}"
+PROMPTD_BIN="${PROMPTD_BIN:-}"
 NODE_TOKEN="${NODE_TOKEN:-}"
+JOIN_CODE="${JOIN_CODE:-}"
 NODE_ID="${NODE_ID:-}"
 NODE_NAME="${NODE_NAME:-}"
 FORCE="${FORCE:-0}"
+# A node given a code or token is registered with it, whatever was there before.
+if [ "$NODE_ONLY" = "1" ] && { [ -n "$JOIN_CODE" ] || [ -n "$NODE_TOKEN" ]; }; then FORCE=1; fi
 
 # 0.0.0.0 and :: listen on every interface; anything else is reachable at itself.
 case "$HOST" in
@@ -63,15 +72,22 @@ printf '\nRegistering promptd with launchd\n\n'
 
 # --- what launchd will need to run ------------------------------------
 
-NODE_BIN="$(command -v node || true)"
-[ -n "$NODE_BIN" ] || die "node is not on your PATH. Install Node 20 or newer, then run this again."
-NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
-NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-[ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die "Node 20 or newer is required, found $("$NODE_BIN" -v 2>/dev/null || echo none)"
-ok "node $("$NODE_BIN" -v) at $NODE_BIN"
+if [ -n "$PROMPTD_BIN" ]; then
+  [ -x "$PROMPTD_BIN" ] || die "$PROMPTD_BIN is not an executable promptd binary"
+  ok "promptd $("$PROMPTD_BIN" version) at $PROMPTD_BIN"
+  SET_PASSWORD="$PROMPTD_BIN set-password"
+else
+  NODE_BIN="$(command -v node || true)"
+  [ -n "$NODE_BIN" ] || die "node is not on your PATH. Install Node 20 or newer, then run this again."
+  NODE_BIN="$(cd "$(dirname "$NODE_BIN")" && pwd)/$(basename "$NODE_BIN")"
+  NODE_MAJOR="$("$NODE_BIN" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  [ "$NODE_MAJOR" -ge 20 ] 2>/dev/null || die "Node 20 or newer is required, found $("$NODE_BIN" -v 2>/dev/null || echo none)"
+  ok "node $("$NODE_BIN" -v) at $NODE_BIN"
 
-[ -f "$PROJECT_DIR/src/server.js" ] && [ -f "$PROJECT_DIR/src/node.js" ] || die "$PROJECT_DIR does not look like the project (no src/server.js or src/node.js)"
-ok "project at $PROJECT_DIR"
+  [ -f "$PROJECT_DIR/src/server.js" ] && [ -f "$PROJECT_DIR/src/node.js" ] || die "$PROJECT_DIR does not look like the project (no src/server.js or src/node.js)"
+  ok "project at $PROJECT_DIR"
+  SET_PASSWORD="npm run set-password"
+fi
 
 if [ "$NODE_ONLY" != "1" ]; then
   case "$HOST" in
@@ -80,7 +96,7 @@ if [ "$NODE_ONLY" != "1" ]; then
       ;;
     *)
       warn "binding $HOST — reachable from your network."
-      warn "The hub will not start without an admin password (npm run set-password)."
+      warn "The hub will not start without an admin password ($SET_PASSWORD)."
       warn "Anyone who has it can run arbitrary Claude prompts on every node, and it"
       warn "crosses the network unencrypted. Only do this on a network you trust, and"
       warn "see 'Network access' in docs/ADVANCED.md."
@@ -88,8 +104,8 @@ if [ "$NODE_ONLY" != "1" ]; then
   esac
 fi
 
-if [ -z "$NODE_TOKEN" ] && [ ! -f "$STORAGE_ROOT/node-token" ] && [ "$NODE_ONLY" = "1" ]; then
-  die "no node token. Pass NODE_TOKEN=<token>, copied from $STORAGE_ROOT/node-token on the hub's machine."
+if [ -z "$NODE_TOKEN" ] && [ -z "$JOIN_CODE" ] && [ ! -f "$STORAGE_ROOT/node-token" ] && [ "$NODE_ONLY" = "1" ]; then
+  die "no join code. Press Add a Mac under Settings → Nodes on the hub, and run the command it shows."
 fi
 
 # launchd gets a minimal PATH, so claude has to be findable from the one we set.
@@ -105,21 +121,23 @@ fi
 
 AGENT_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 [ -n "$CLAUDE_DIR" ] && case ":$AGENT_PATH:" in *":$CLAUDE_DIR:"*) ;; *) AGENT_PATH="$CLAUDE_DIR:$AGENT_PATH" ;; esac
-NODE_DIR="$(dirname "$NODE_BIN")"
-case ":$AGENT_PATH:" in *":$NODE_DIR:"*) ;; *) AGENT_PATH="$NODE_DIR:$AGENT_PATH" ;; esac
+if [ -z "$PROMPTD_BIN" ]; then
+  NODE_DIR="$(dirname "$NODE_BIN")"
+  case ":$AGENT_PATH:" in *":$NODE_DIR:"*) ;; *) AGENT_PATH="$NODE_DIR:$AGENT_PATH" ;; esac
 
-# --- dependencies -----------------------------------------------------
+  # --- dependencies ---------------------------------------------------
 
-if [ ! -d "$PROJECT_DIR/node_modules/typescript" ]; then
-  info "dependencies are missing, running npm install"
-  (cd "$PROJECT_DIR" && npm install --no-audit --no-fund >/dev/null 2>&1) || die "npm install failed; run it by hand and try again"
-  ok "dependencies installed"
-else
-  ok "dependencies present"
+  if [ ! -d "$PROJECT_DIR/node_modules/typescript" ]; then
+    info "dependencies are missing, running npm install"
+    (cd "$PROJECT_DIR" && npm install --no-audit --no-fund >/dev/null 2>&1) || die "npm install failed; run it by hand and try again"
+    ok "dependencies installed"
+  else
+    ok "dependencies present"
+  fi
+
+  (cd "$PROJECT_DIR" && npm run build >/dev/null 2>&1) || die "the build failed; run npm run build in $PROJECT_DIR to see why"
+  ok "built"
 fi
-
-(cd "$PROJECT_DIR" && npm run build >/dev/null 2>&1) || die "the build failed; run npm run build in $PROJECT_DIR to see why"
-ok "built"
 
 mkdir -p "$LOG_DIR" "$HOME/Library/LaunchAgents" || die "could not create $LOG_DIR"
 
@@ -142,6 +160,19 @@ needs_agent() {
 
 agent_plist() {
   local label="$1" script="$2" log="$3" env="$4"
+  # A binary takes its role as an argument; a checkout runs the role's script.
+  local program workdir
+  if [ -n "$PROMPTD_BIN" ]; then
+    local role=node
+    [ "$script" = server.js ] && role=hub
+    program="    <string>$PROMPTD_BIN</string>
+    <string>$role</string>"
+    workdir="$(dirname "$PROMPTD_BIN")"
+  else
+    program="    <string>$NODE_BIN</string>
+    <string>$PROJECT_DIR/src/$script</string>"
+    workdir="$PROJECT_DIR"
+  fi
   cat <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -150,10 +181,9 @@ agent_plist() {
   <key>Label</key><string>$label</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$NODE_BIN</string>
-    <string>$PROJECT_DIR/src/$script</string>
+$program
   </array>
-  <key>WorkingDirectory</key><string>$PROJECT_DIR</string>
+  <key>WorkingDirectory</key><string>$workdir</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key><string>$HOME</string>
@@ -185,6 +215,13 @@ install_agent() {
   plutil -lint "$plist" >/dev/null 2>&1 || die "generated an invalid plist at $plist"
   ok "wrote $plist"
   launchctl bootstrap "$DOMAIN" "$plist" 2>&1 || die "launchctl bootstrap of $label failed. See $log"
+  # Loading a job does not always start it, RunAtLoad or not, so start it now and see that it ran.
+  launchctl kickstart "$DOMAIN/$label" >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do
+    launchctl print "$DOMAIN/$label" 2>/dev/null | grep -qE '^[[:space:]]*runs = [1-9]' && return 0
+    sleep 0.5
+  done
+  die "launchd registered $label but will not start it. Allow promptd under System Settings → General → Login Items & Extensions → Allow in the Background, then run this again."
 }
 
 HUB_INSTALLED=0
@@ -210,12 +247,20 @@ if needs_agent "$NODE_LABEL"; then
 $STORAGE_ENV"
   [ -n "$NODE_TOKEN" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_TOKEN "$NODE_TOKEN")"
+  [ -n "$JOIN_CODE" ] && NODE_ENV="$NODE_ENV
+$(env_entry PROMPTD_JOIN_CODE "$JOIN_CODE")"
   [ -n "$NODE_ID" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_ID "$NODE_ID")"
   [ -n "$NODE_NAME" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_NAME "$NODE_NAME")"
+  # A token kept from pairing with this or another hub would win over the new code.
+  [ -n "$JOIN_CODE" ] && rm -f "${PROMPTD_NODE_HOME:-$STORAGE_ROOT/node}/hub-token"
+  # What the node writes from here on is this install's, and so is its start time.
+  NODE_LOG_START=0
+  [ -f "$NODE_LOG" ] && NODE_LOG_START="$(wc -c < "$NODE_LOG" | tr -d ' ')"
+  NODE_SINCE="$(date -u +%Y-%m-%dT%H:%M:%S)"
   install_agent "$NODE_LABEL" "$NODE_PLIST" node.js "$NODE_LOG" "$NODE_ENV"
-  [ -n "$NODE_TOKEN" ] && chmod 600 "$NODE_PLIST"
+  { [ -n "$NODE_TOKEN" ] || [ -n "$JOIN_CODE" ]; } && chmod 600 "$NODE_PLIST"
   NODE_INSTALLED=1
 fi
 
@@ -239,24 +284,48 @@ if [ "$HUB_INSTALLED" = "1" ]; then
 fi
 
 if [ "$NODE_INSTALLED" = "1" ]; then
-  printf '  • waiting for the node to connect'
+  # The node's id is this Mac's hostname unless NODE_ID says otherwise, made the way the node makes it.
+  CHECK_ID="$(printf '%s' "${NODE_ID:-$(hostname | sed 's/\.local$//')}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-64)"
+  CHECK_ID="${CHECK_ID:-node}"
+  printf '  • waiting for %s to connect' "$CHECK_ID"
   connected=0
   for _ in $(seq 1 30); do
-    nodes="$(curl -sS -w '\n%{http_code}' "$HUB_URL/api/nodes" 2>/dev/null || true)"
-    case "$nodes" in
+    answer="$(curl -sS -w '\n%{http_code}' "$HUB_URL/api/nodes/$CHECK_ID" 2>/dev/null || true)"
+    case "$answer" in
       *$'\n'401) connected=locked; break ;;
-      *'"online":true'*) connected=1; break ;;
+      *'"online":true'*$'\n'200)
+        # Online as the process started just now, not as another Mac of the same name.
+        started="$(printf '%s' "$answer" | grep -o '"startedAt":"[^"]*"' | head -1 | cut -d'"' -f4)"
+        [[ -n "$started" && ! "$started" < "$NODE_SINCE" ]] && { connected=1; break; } ;;
     esac
     printf '.'
     sleep 1
   done
   printf '\n'
   if [ "$connected" = "1" ]; then
-    ok "node connected to $HUB_URL"
+    ok "$CHECK_ID connected to $HUB_URL"
   elif [ "$connected" = "locked" ]; then
     ok "node registered; the hub requires a login, so check it under Settings → Nodes"
   else
-    warn "the node is registered but no node showed as online at $HUB_URL within 30s. Check $NODE_LOG"
+    since_install="$(tail -c +$((NODE_LOG_START + 1)) "$NODE_LOG" 2>/dev/null)"
+    # A node launchd is not running cannot be trying; say what launchd says.
+    job="$(launchctl print "$DOMAIN/$NODE_LABEL" 2>/dev/null)"
+    if ! printf '%s' "$job" | grep -qE '^[[:space:]]*pid = [0-9]+'; then
+      exit_code="$(printf '%s' "$job" | grep -m1 'last exit code' | sed -E 's/.*= *//')"
+      die "launchd is not running the node (last exit: ${exit_code:-none}). See $NODE_LOG, and launchctl print $DOMAIN/$NODE_LABEL"
+    fi
+    case "$since_install" in
+      *"refused join code"*)
+        die "the hub refused join code $JOIN_CODE: it was used, has expired, or was mistyped. Press Add a Mac on the hub for a new one, and run its command here." ;;
+      *"already syncing as node"*)
+        die "another Mac is already connected as $CHECK_ID. Run the command again with NODE_ID=<a name of its own> in front of bash." ;;
+      *"no longer takes this node's token"*)
+        die "the hub no longer takes this node's token. Press Add a Mac on the hub for a new command, and run it here." ;;
+      *)
+        warn "$CHECK_ID has not reached $HUB_URL yet. It keeps trying, and shows up under Settings → Nodes once it does."
+        last="$(printf '%s\n' "$since_install" | grep -E 'cannot sync|pairing got' | tail -n 1)"
+        [ -n "$last" ] && warn "its log says: $last" ;;
+    esac
   fi
 fi
 
@@ -270,7 +339,8 @@ for label in $([ "$NODE_ONLY" != "1" ] && echo "$LABEL") "$NODE_LABEL"; do
 done
 printf '\n  Logs        tail -f %s/*.log\n\n' "$LOG_DIR"
 if [ "$HUB_INSTALLED" = "1" ]; then
-  printf 'To add another Mac as a node, open Settings → Nodes at http://%s:%s\n' "$CHECK_HOST" "$PORT"
-  printf 'and run the command it shows in a checkout on that Mac.\n\n'
+  if [ -n "$PROMPTD_BIN" ]; then JOIN_COMMAND="$PROMPTD_BIN join-command"; else JOIN_COMMAND="npm run -s join-command"; fi
+  printf 'To add another Mac as a node, press Add a Mac under Settings → Nodes at\n'
+  printf 'http://%s:%s, or run %s here, and run what it gives you on that Mac.\n\n' "$CHECK_HOST" "$PORT" "$JOIN_COMMAND"
 fi
 exit 0

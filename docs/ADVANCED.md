@@ -19,13 +19,19 @@ Usage limits, model discovery and machine stats all belong to a node. The header
 
 ### Adding a node on another Mac
 
-Clone the project there, then:
+Press **Add a Mac** under Settings → Nodes on the hub's page, or run `promptd join-command` on the hub's machine, and run the command it gives on the other Mac. For a hub installed from a release it is the installer:
 
 ```bash
-NODE_ONLY=1 HUB_URL=http://<hub-address>:4321 NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh
+curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://<hub-address>:4321 --code <code>
 ```
 
-Settings → Nodes on the hub's page shows this command with the hub's address and token filled in. The address is the one `tailscale serve` shares the hub on, else the one the browser reached it by, else the Mac's `.local` name when the hub listens beyond loopback. Otherwise, copy the token from `~/.claude/promptd/node-token` on the hub's machine. The hub has to be reachable from the node, which on another network usually means binding it to `0.0.0.0` — read [Network access](#network-access) first. The token protects the node API; the web page has its own password — see [Signing in](#signing-in).
+For a hub run from a checkout it is the register script, run in a checkout there:
+
+```bash
+NODE_ONLY=1 HUB_URL=http://<hub-address>:4321 JOIN_CODE=<code> ./scripts/register-app-mac-os.sh
+```
+
+The address is the one `tailscale serve` shares the hub on, else the one the browser reached it by, else the Mac's `.local` name when the hub listens beyond loopback. The join code works once, within a day: on its first connection the node trades it for the hub's token and keeps that in `hub-token` in its storage folder. Ten wrong codes in 15 minutes stop the hub taking any for the rest of them. A hub restart voids every code not yet used. `NODE_TOKEN=<token>`, copied from `~/.claude/promptd/node-token` on the hub's machine, still works in place of a code. The hub has to be reachable from the node, which on another network usually means binding it to `0.0.0.0` — read [Network access](#network-access) first. The token protects the node API; the web page has its own password — see [Signing in](#signing-in).
 
 ## Deploying a hub
 
@@ -437,6 +443,18 @@ The checker refuses rather than guesses, and says why in the server log and in `
 
 `git pull --ff-only` means a merge is never attempted. All of these are re-checked inside the detached script too, since the working tree could have changed between the decision and the pull.
 
+### A binary updates from releases
+
+promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. Every commit on `main` is published as a `build-<commit>` GitHub release, and a binary checks for the latest one every hour instead of fetching `origin/main`.
+
+A hub restart interrupts no run: runs belong to the nodes, which keep going while the hub is down and catch it up afterwards. So a binary hub holds nothing. It downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and exits for launchd to start it again, a gap of a few seconds.
+
+Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it while its runs carry on, then restarts into it the moment nothing is running. A node still busy an hour later holds new runs until the running ones finish, and gives up after four hours. Outside launchd, a new build is left on disk for the next restart, and the log says so.
+
+A node can follow only a hub whose build has a release: a binary hub, or a checkout on a commit from `main`. A Docker hub reports no build, so its binary nodes stay on the one they were installed with; run the installer on each again to update it. Only the newest 100 builds are kept.
+
+To go back to an earlier build, turn self update off first, then run the installer with `PROMPTD_RELEASE=build-<commit>` and `FORCE=1` in front of `bash`. Download promptd with the installer rather than a browser: macOS quarantines what a browser downloads, and the binary is not notarized.
+
 ### The restart needs the launchd agent
 
 Only launchd can bring a process back after it stops, so the updater restarts the node registered under `local.promptd.node` and then the hub under `local.promptd` (override with `PROMPTD_NODE_LAUNCHD_LABEL` and `PROMPTD_LAUNCHD_LABEL`). An update pulls this checkout only: a node on another Mac runs its own checkout and is updated there. See [Start at login](#start-at-login-macos).
@@ -753,6 +771,7 @@ Two Server-Sent Event streams, no polling loops in the UI:
 | `PROMPTD_NODE_LAUNCHD_LABEL`  | `$PROMPTD_LAUNCHD_LABEL.node`                    | The local node's launchd service, which the updater restarts first                                                                               |
 | `PROMPTD_HUB_URL`             | `http://127.0.0.1:$PORT`                         | Node: where the hub is                                                                                                                           |
 | `PROMPTD_NODE_TOKEN`          | read from `node-token`                           | Node: the hub's token, when the hub is on another machine                                                                                        |
+| `PROMPTD_JOIN_CODE`           | unset                                            | Node: a join code to trade for the hub's token on the first connection                                                                           |
 | `PROMPTD_NODE_ID`             | the hostname, lowercased                         | Node: its id. Must be unique across nodes                                                                                                        |
 | `PROMPTD_NODE_NAME`           | the hostname                                     | Node: the name the page shows                                                                                                                    |
 | `PROMPTD_NODE_HOME`           | `$PROMPTD_HOME/node`                             | Node: where it keeps its state and unsent logs                                                                                                   |
@@ -834,11 +853,13 @@ As the field changes, a green line below it shows when the expression next fires
 | POST             | `/api/auth/login`, `/api/auth/logout`       | Sign in with `{"password": "..."}`, or sign out. 401 on a wrong password, 429 after five in 15 minutes                                                                                                                                                                                                                   |
 | GET              | `/api/auth/status`                          | Whether a password is set, and whether this request is signed in                                                                                                                                                                                                                                                         |
 | GET              | `/api/nodes`                                | Every node that has connected, whether it is online, which is the default, whether it runs beside the hub, its settings and commit, its Claude account, usage reading, latest machine sample and readings over their alert line, the `cluster` summary `/api/health` also carries, and where the node token is kept |
-| GET              | `/api/join`                                 | The command that adds another Mac as a node: `hubUrl` (null when nothing off this machine can reach the hub), the hub's `port`, and `command` with the address and token filled in                                                                                                                                          |
+| POST             | `/api/join`                                 | A fresh join code and the command that adds another Mac with it: `hubUrl` (null when nothing off this machine can reach the hub), `port`, `code`, `expiresAt`, `fromCheckout`, and `command`                                                                                                                                |
 | GET              | `/api/nodes/:id`                            | One node, with its queue, usage reading and fifteen-minute machine window, and the hub's commit                                                                                                                                                                                                                         |
 | PUT              | `/api/nodes/:id/settings`                   | Write the node's `maxConcurrentJobs`, `usageDelayThresholds`, `defaultWorkingDirectory` and `jobDefaults` (any subset of the six); `null` resets one, or all of `jobDefaults`                                                                                                                                              |
 | DELETE           | `/api/nodes/:id`                            | Forget a node (409 while it is online)                                                                                                                                                                                                                                                                                   |
 | POST             | `/api/node/report`, `/api/node/leave`       | Node API, bearer token required: a node's status, log output, run results and events; and its sign-off on shutdown                                                                                                                                                                                                       |
+| POST             | `/api/node/pair`                            | Node API, no token: trade a join code, `{"code": "1234-5678"}`, for the hub's token. 401 for a wrong, used or expired code                                                                                                                                                                                               |
+| POST             | `/api/node/join-codes`                      | Node API, bearer token required: a fresh join code, for `promptd join-command`                                                                                                                                                                                                                                           |
 | GET              | `/api/node/work`                            | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                                                                                                                                                              |
 | GET              | `/api/config`                               | Storage paths, the log and notification retention limits, effort levels, the usage-delay categories with the default node's percentages, and whether self update is on                                                                                                                                                   |
 | GET              | `/api/system`                               | Machine stats: the current reading, the last fifteen minutes behind it, what each meter means, and this machine's cores, memory and storage path                                                                                                                                                                         |

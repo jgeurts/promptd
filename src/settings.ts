@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { BINARY_VERSION } from './binary.js';
 import { db } from './db.js';
 import { BUILT_IN_JOB_DEFAULTS, readJobDefaults } from './jobDefaults.js';
 import type { Settings } from './types.js';
@@ -25,9 +26,10 @@ export const DEFAULT_SETTINGS: Settings = {
   // The accent and the band across the header bar, as #rrggbb. Blank is the default orange.
   serverColor: '',
   // Check once a day whether the project's main branch is behind its remote,
-  // and if so pull and restart. Set false to leave updates to you.
+  // and if so pull and restart. Set false to leave updates to you. A binary
+  // checks hourly: its update holds no work, so it costs a few seconds.
   selfUpdate: true,
-  updateCheckIntervalHours: 24,
+  updateCheckIntervalHours: BINARY_VERSION ? 1 : 24,
   // Filled in by the checker so "once a day" survives a restart.
   lastUpdateCheckAt: null,
   lastUpdateLaunchedAt: null,

@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { BINARY_VERSION } from './binary.js';
+import { compareBuilds, installVersion, latestVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { emit } from './events.js';
 import { LOGS_DIR } from './paths.js';
 import { loadSettings, patchSettings } from './settings.js';
@@ -20,7 +22,7 @@ export interface UpdateCheck {
   behind?: number;
   ahead?: number;
   head?: string;
-  /** The commit an update would move to: what one update's notifications share. */
+  /** The commit or build an update would move to: what one update's notifications share, and what a binary installs. */
   target?: string;
 }
 
@@ -105,6 +107,7 @@ function git(args: string[], timeout = 60000): Promise<GitResult> {
 
 /** The commit the project is checked out at, or null outside a repository. */
 export async function currentCommit(): Promise<string | null> {
+  if (BINARY_VERSION) return BINARY_VERSION;
   const head = await git(['rev-parse', '--short', 'HEAD'], 10000);
   return head.ok && head.out ? head.out : null;
 }
@@ -114,6 +117,7 @@ export async function currentCommit(): Promise<string | null> {
  * count whenever the question cannot be answered safely.
  */
 export async function checkForUpdates(): Promise<UpdateCheck> {
+  if (BINARY_VERSION) return checkForBuild(BINARY_VERSION);
   const repo = await git(['rev-parse', '--is-inside-work-tree']);
   if (!repo.ok || repo.out !== 'true') return { updatable: false, reason: 'not a git repository' };
 
@@ -149,6 +153,28 @@ export async function checkForUpdates(): Promise<UpdateCheck> {
   };
 }
 
+/** Is there a newer build of this binary? Asks GitHub, which is where the builds are. */
+async function checkForBuild(current: string): Promise<UpdateCheck> {
+  let latest: string | null;
+  try {
+    latest = await latestVersion();
+  } catch (err) {
+    return { updatable: false, reason: `could not check for a newer build: ${(err as Error).message}` };
+  }
+  if (!latest) return { updatable: false, reason: 'no build has been released' };
+  if (latest === current) return { updatable: false, behind: 0, head: current, reason: 'already up to date' };
+  let behind: number;
+  let ahead: number;
+  try {
+    ({ behind, ahead } = await compareBuilds(current, latest));
+  } catch (err) {
+    return { updatable: false, reason: `could not compare build ${current} with ${latest}: ${(err as Error).message}` };
+  }
+  // As with a checkout, only a straight line forward is taken.
+  if (ahead > 0) return { updatable: false, reason: `diverged: ${ahead} ahead, ${behind} behind`, behind, ahead, head: current };
+  return { updatable: behind > 0, behind, ahead, head: current, target: latest, reason: behind > 0 ? null : 'already up to date' };
+}
+
 class SelfUpdater {
   public timer: NodeJS.Timeout | null;
   public busy: boolean;
@@ -156,8 +182,11 @@ class SelfUpdater {
   public drainTimer: NodeJS.Timeout | null;
   public drainStartedAt: number | null;
   public waitingCount: number | null;
-  public target: string | null;
   public lastCheck: LastCheck;
+  /** The commit or build the update under way is going to, named on each of its events. */
+  public target: string | null;
+  /** Set while a binary downloads and swaps in a build, after the drain has ended. */
+  public installing: boolean;
 
   public constructor() {
     this.timer = null;
@@ -168,14 +197,14 @@ class SelfUpdater {
     this.drainStartedAt = null;
     /** The run count in the last "still waiting" announcement; null before the first. */
     this.waitingCount = null;
-    /** The commit the update under way is going to, named on each of its events. */
-    this.target = null;
     /**
      * The last answer to "is main behind?", whoever asked. Checking happens on
      * the interval whether or not selfUpdate is on, so the header badge can
      * offer an update the server has been told not to apply on its own.
      */
     this.lastCheck = { updatable: false, behind: 0, head: null, reason: null, at: null };
+    this.target = null;
+    this.installing = false;
   }
 
   /** What the health endpoint and the header badge read. */
@@ -236,7 +265,7 @@ class SelfUpdater {
    * tick and the Update now button, so both behave identically.
    */
   public async applyIfBehind(): Promise<UpdateOutcome> {
-    if (this.draining) {
+    if (this.draining || this.installing) {
       // Already committed to updating; a second press just reports the wait.
       return { updatable: true, launched: true, waiting: true, pid: null, ...this.state() };
     }
@@ -245,14 +274,25 @@ class SelfUpdater {
       console.log(`[update] no update applied: ${result.reason}`);
       return { ...result, launched: false };
     }
-    console.log(`[update] ${result.behind} commit(s) behind ${REMOTE}/${BRANCH}; holding schedules for the restart`);
     await patchSettings({ lastUpdateLaunchedAt: new Date().toISOString(), lastUpdateFromCommit: result.head });
+    this.target = result.target ?? null;
+
+    // Runs belong to the nodes, which keep going while the hub restarts and catch
+    // it up afterwards, so a binary hub has nothing to hold. Each node restarts
+    // into the new build on its own once it is idle.
+    if (BINARY_VERSION) {
+      console.log(`[update] build ${this.target} is ${result.behind} commit(s) ahead; installing it now`);
+      emit('update:launched', { behind: result.behind, from: result.head, target: this.target, pid: null, ...this.state() });
+      this.installBuild();
+      return { ...result, launched: true, waiting: false, pid: null, ...this.state() };
+    }
+
+    console.log(`[update] ${result.behind} commit(s) behind ${REMOTE}/${BRANCH}; holding schedules for the restart`);
 
     // Nothing new may start between here and the restart, and this pause cannot
     // be cancelled from the page.
     this.draining = true;
     this.drainStartedAt = Date.now();
-    this.target = result.target ?? null;
     await hub.pauseAll({ mode: 'update', label: 'for update' });
     emit('update:launched', { behind: result.behind, from: result.head, target: this.target, pid: null, ...this.state() });
 
@@ -310,7 +350,7 @@ class SelfUpdater {
    * an update can be offered without ever being taken.
    */
   public async tick(force = false): Promise<UpdateOutcome | null> {
-    if (this.busy || this.draining) return null;
+    if (this.busy || this.draining || this.installing) return null;
     const settings = await loadSettings();
     if (!force && !this.due(settings)) return null;
 
@@ -341,6 +381,10 @@ class SelfUpdater {
    * server being restarted, which is the last thing it does.
    */
   public launch(): number | undefined {
+    if (BINARY_VERSION) {
+      this.installBuild();
+      return undefined;
+    }
     console.log('[update] no runs in flight; starting the update script');
     const logFd = fs.openSync(UPDATE_LOG, 'a');
     const child = spawn('/bin/bash', [UPDATE_SCRIPT], {
@@ -372,6 +416,44 @@ class SelfUpdater {
     fs.closeSync(logFd);
     console.log(`[update] updater started (pid ${child.pid}); progress in ${UPDATE_LOG}`);
     return child.pid;
+  }
+
+  /**
+   * A binary's update: the new build replaces the file, then the hub exits for
+   * launchd to start it again. Each node follows once it sees the hub's new build.
+   */
+  public installBuild(): void {
+    const target = this.target;
+    const log = (line: string): void => {
+      console.log(`[update] ${line}`);
+      fs.appendFileSync(UPDATE_LOG, `[${new Date().toISOString()}] ${line}\n`);
+    };
+    const giveUp = (why: string): void => {
+      this.installing = false;
+      console.error(`[update] ${why}; still on build ${BINARY_VERSION}`);
+      emit('update:failed', { code: null, updateLog: UPDATE_LOG, target });
+    };
+    if (!target) return giveUp('no build to update to');
+    this.installing = true;
+    log(`installing build ${target} over ${BINARY_VERSION}`);
+    // A hub left outside launchd already has the build on disk from the last try.
+    versionOnDisk()
+      .then((onDisk) => (onDisk === target ? undefined : installVersion(target)))
+      .then(
+      () => {
+        // Killing a hub that nothing would restart would be worse than leaving it on the old build.
+        if (!underLaunchd()) {
+          log(`build ${target} is on disk, but launchd is not running this hub, so it keeps running ${BINARY_VERSION} until you restart it`);
+          return giveUp('no restart is coming');
+        }
+        log(`build ${target} installed; exiting for launchd to start it`);
+        process.exit(0);
+      },
+      (err: Error) => {
+        log(`could not install build ${target}: ${err.message}`);
+        giveUp(`could not install build ${target}`);
+      },
+    );
   }
 }
 

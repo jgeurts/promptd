@@ -5,6 +5,8 @@ import type { FileHandle } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BINARY_VERSION } from './binary.js';
+import { BuildNotReleasedError, GIVE_UP_AFTER_MS, HOLD_AFTER_MS, installVersion, nextUpdateStep, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -60,6 +62,10 @@ const MAX_LOG_BYTES_PER_REPORT = 2 * 1024 * 1024;
 const MAX_QUEUED_EVENTS = 2000;
 const MAX_REMEMBERED_COMMANDS = 500;
 const UPLOADS_FILE = path.join(NODE_HOME, 'uploads.json');
+// The hub's token, from trading a join code, on a node away from the hub.
+const PAIRED_TOKEN_FILE = path.join(NODE_HOME, 'hub-token');
+// A build that failed to install is tried again after an hour.
+const UPDATE_RETRY_MS = 60 * 60 * 1000;
 const INSTANCE = randomUUID();
 const STARTED_AT = new Date().toISOString();
 
@@ -80,6 +86,23 @@ const uploads = new Map<string, Upload>();
 let commit: string | null = null;
 let reconciled = false;
 let appliedPauseKey: string | null = null;
+/** The hub's build this binary is installed as and waiting to restart into, and whether new runs are held for it. */
+let updatingTo: { version: string; since: number; holding: boolean } | null = null;
+/** Checks the wait for runs to finish on its own clock, since the hub may be out of reach. */
+let updateDrainTimer: ReturnType<typeof setInterval> | null = null;
+let drainStepRunning = false;
+const updateFailedAt = new Map<string, number>();
+/** A join code the hub refused, which is not sent again. */
+let rejectedCode: string | null = null;
+interface Download {
+  version: string;
+  settled: boolean;
+  error: Error | null;
+}
+/** The hub's build being downloaded, while the node carries on. */
+let download: Download | null = null;
+/** Builds the hub runs that have no release, which are not asked for again. */
+const unreleasedBuilds = new Set<string>();
 let lastError: string | null = null;
 
 bus.on('event', (event) => {
@@ -115,17 +138,52 @@ function saveUploads(): void {
     .catch((err) => console.error(`[node] could not save ${UPLOADS_FILE}: ${(err as Error).message}`));
 }
 
-async function readToken(): Promise<string> {
-  if (process.env.PROMPTD_NODE_TOKEN) return process.env.PROMPTD_NODE_TOKEN.trim();
+async function readFileToken(file: string): Promise<string | null> {
   try {
-    return (await fsp.readFile(NODE_TOKEN_FILE, 'utf8')).trim();
+    return (await fsp.readFile(file, 'utf8')).trim() || null;
   } catch {
-    throw new Error(`no token: set PROMPTD_NODE_TOKEN, or run on the hub's machine where ${NODE_TOKEN_FILE} exists`);
+    return null;
   }
 }
 
+/** Trades the join code for the hub's token, and keeps the token for every restart after. */
+async function pair(code: string): Promise<string> {
+  const res = await fetch(`${HUB_URL}/api/node/pair`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  });
+  const answer = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+  if (res.status === 401) {
+    // Asking again with the same code would only use up the hub's wrong-code allowance.
+    rejectedCode = code;
+    throw new Error(`the hub refused join code ${code}: ${answer.error ?? 'refused'}`);
+  }
+  // Anything else, such as tailscale serve's 502 while the hub restarts, is tried again next sync.
+  if (!res.ok || !answer.token) throw new Error(`pairing got ${res.status} from the hub; trying again`);
+  await fsp.writeFile(PAIRED_TOKEN_FILE, `${answer.token}\n`, { mode: 0o600 });
+  console.log(`[node] paired with ${HUB_URL}; its token is kept in ${PAIRED_TOKEN_FILE}`);
+  return answer.token;
+}
+
+async function readToken(): Promise<{ token: string; paired: boolean }> {
+  if (process.env.PROMPTD_NODE_TOKEN) return { token: process.env.PROMPTD_NODE_TOKEN.trim(), paired: false };
+  const own = await readFileToken(NODE_TOKEN_FILE);
+  if (own) return { token: own, paired: false };
+  const saved = await readFileToken(PAIRED_TOKEN_FILE);
+  if (saved) return { token: saved, paired: true };
+  const code = process.env.PROMPTD_JOIN_CODE?.trim();
+  if (code && code !== rejectedCode) return { token: await pair(code), paired: true };
+  throw new Error(
+    code
+      ? `join code ${code} was refused; make a new one on the hub and run the installer again`
+      : `no token: set PROMPTD_NODE_TOKEN or PROMPTD_JOIN_CODE, or run on the hub's machine where ${NODE_TOKEN_FILE} exists`,
+  );
+}
+
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
-  const token = await readToken();
+  const { token, paired } = await readToken();
   const res = await fetch(`${HUB_URL}${route}`, {
     method,
     headers: {
@@ -138,6 +196,11 @@ async function request<T>(method: string, route: string, body?: unknown): Promis
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const payload = (await res.json().catch(() => ({}))) as { error?: string };
+  if (res.status === 401 && paired) {
+    // A token from another hub, or from before this one's token changed: it will never work again.
+    await fsp.rm(PAIRED_TOKEN_FILE, { force: true });
+    throw new Error("the hub no longer takes this node's token; press Add a Mac on the hub and run its command here again");
+  }
   if (!res.ok) throw new Error(`hub answered ${res.status}: ${payload.error ?? res.statusText}`);
   return payload as T;
 }
@@ -291,6 +354,8 @@ async function reconcileOnce(): Promise<void> {
 }
 
 async function applyPause(pause: PauseState | null | undefined): Promise<void> {
+  // The node's own update pause holds until it restarts, whatever the hub says.
+  if (updatingTo?.holding) return;
   if (!pause) {
     appliedPauseKey = null;
     if (cronService.isPaused()) await cronService.resumeAll('lifted on the hub');
@@ -364,6 +429,109 @@ async function fetchWork(): Promise<void> {
   if (jobsChanged || firstRebuild) await cronService.reload();
   await applyPause(work.pause);
   for (const command of work.commands ?? []) await runCommand(command);
+  await followHub(work.hubVersion);
+}
+
+async function abandonUpdate(version: string, why: string): Promise<void> {
+  console.error(`[update] ${why}; trying again in an hour`);
+  updateFailedAt.set(version, Date.now());
+  if (!updatingTo) return;
+  const { holding } = updatingTo;
+  updatingTo = null;
+  if (updateDrainTimer) clearInterval(updateDrainTimer);
+  updateDrainTimer = null;
+  if (!holding) return;
+  appliedPauseKey = null;
+  await cronService.resumeAll('update abandoned');
+}
+
+/**
+ * A binary node runs its hub's build, so the two always agree on what they send
+ * each other. The new build is downloaded while runs carry on, since the running
+ * process keeps its own file, and the node restarts into it the moment nothing
+ * is running. Only a node still busy after an hour holds new runs to get there.
+ */
+async function followHub(version: string | null | undefined): Promise<void> {
+  if (!BINARY_VERSION || !version || version === BINARY_VERSION || unreleasedBuilds.has(version)) return;
+  // A restart under way finishes first, holding what it holds; the next build is followed after it.
+  if (drainStepRunning) return;
+  const failedAt = updateFailedAt.get(version);
+  if (failedAt !== undefined && Date.now() - failedAt < UPDATE_RETRY_MS) return;
+
+  if (updatingTo?.version !== version) {
+    // The download runs beside the sync, so the node keeps reporting and the
+    // hub never sees it go quiet; each cycle looks in on it until it settles.
+    if (download?.version !== version) {
+      const started: Download = { version, settled: false, error: null };
+      download = started;
+      versionOnDisk()
+        .then((onDisk) => (onDisk === version ? undefined : installVersion(version)))
+        .catch((err: Error) => {
+          started.error = err;
+        })
+        .finally(() => {
+          started.settled = true;
+        });
+      return;
+    }
+    if (!download.settled) return;
+    const { error } = download;
+    download = null;
+    if (error instanceof BuildNotReleasedError) {
+      unreleasedBuilds.add(version);
+      console.error(`[update] the hub runs build ${version}, which has no release to download (${error.message}); staying on ${BINARY_VERSION}`);
+      return;
+    }
+    if (error) return abandonUpdate(version, `could not install the hub's build ${version}: ${error.message}`);
+    if (!underLaunchd()) {
+      return abandonUpdate(version, `build ${version} is on disk, but launchd is not running this node, so restart it to finish`);
+    }
+    // A newer build replacing one already waited for keeps its hold, so no run starts in between,
+    // and its start, so a stuck run cannot put off giving up for ever.
+    updatingTo = updatingTo?.holding ? { ...updatingTo, version } : { version, since: Date.now(), holding: false };
+    console.log(`[update] build ${version} installed; restarting into it once nothing is running`);
+    if (updateDrainTimer) clearInterval(updateDrainTimer);
+    updateDrainTimer = setInterval(() => {
+      drainForUpdate().catch((err: Error) => console.error(`[update] ${err.message}`));
+    }, SYNC_MS);
+    await drainForUpdate();
+  }
+}
+
+/** Takes the next step towards restarting into the new build; runs on its own timer, since the hub may be out of reach. */
+async function drainForUpdate(): Promise<void> {
+  // One step at a time: the timer can fire again while a step awaits the pause.
+  if (!updatingTo || drainStepRunning) return;
+  drainStepRunning = true;
+  try {
+    await stepTowardsRestart(updatingTo);
+  } finally {
+    drainStepRunning = false;
+  }
+}
+
+async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promise<void> {
+  const running = cronService.activeRunCount();
+  const step = nextUpdateStep({ running, waitedMs: Date.now() - update.since, holding: update.holding });
+  if (step === 'restart') {
+    if (!update.holding) {
+      // Held before the first await, so a sync landing meanwhile cannot lift the
+      // pause; then counted again, since a trigger may have been on its way to a run.
+      update.holding = true;
+      await cronService.pauseAll({ mode: 'update', label: 'for update' });
+      if (cronService.activeRunCount() > 0) return;
+    }
+    if (updateDrainTimer) clearInterval(updateDrainTimer);
+    updateDrainTimer = null;
+    console.log(`[update] nothing running; exiting for launchd to start build ${update.version}`);
+    await shutdown('update');
+  } else if (step === 'hold') {
+    update.holding = true;
+    console.log(`[update] ${running} run(s) still going after ${HOLD_AFTER_MS / 3600000}h; holding new runs until they finish`);
+    await cronService.pauseAll({ mode: 'update', label: 'for update' });
+  } else if (step === 'give up') {
+    await abandonUpdate(update.version, `${running} run(s) still going after ${GIVE_UP_AFTER_MS / 3600000}h`);
+  }
 }
 
 async function cycle(): Promise<void> {
@@ -385,6 +553,7 @@ async function cycle(): Promise<void> {
 }
 
 function readCommit(): Promise<string | null> {
+  if (BINARY_VERSION) return Promise.resolve(BINARY_VERSION);
   return new Promise((resolve) => {
     execFile('git', ['-C', PROJECT_DIR, 'rev-parse', '--short', 'HEAD'], { timeout: 10000 }, (err, stdout) => {
       resolve(err ? null : String(stdout).trim() || null);

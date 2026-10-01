@@ -95,7 +95,15 @@ function shellQuote(value: string): string {
   return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** The command that registers another Mac as a node of this hub, run from a checkout there. */
-export function joinCommand(hubUrl: string, token: string): string {
-  return `NODE_ONLY=1 HUB_URL=${shellQuote(hubUrl)} NODE_TOKEN=${shellQuote(token)} ./scripts/register-app-mac-os.sh`;
+/**
+ * The command that adds another Mac as a node of this hub with a join code: the
+ * installer from `repo`'s latest release for a hub that is a binary, else the
+ * register script, run from a checkout there.
+ */
+export function joinCommand(hubUrl: string, code: string, repo: string | null): string {
+  if (repo) {
+    const installer = `https://github.com/${repo}/releases/latest/download/install.sh`;
+    return `curl -fsSL ${installer} | bash -s -- --hub ${shellQuote(hubUrl)} --code ${shellQuote(code)}`;
+  }
+  return `NODE_ONLY=1 HUB_URL=${shellQuote(hubUrl)} JOIN_CODE=${shellQuote(code)} ./scripts/register-app-mac-os.sh`;
 }

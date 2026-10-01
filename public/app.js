@@ -2688,7 +2688,6 @@ function projectsList() {
 /** The node list on the Settings page, each linking to the node's own page. */
 function nodesList() {
   const body = el('div', {});
-  const tokenWhere = el('span', {}, ['the token in ', el('span', { class: 'mono', text: 'node-token' }), ' on this machine']);
   const paint = async () => {
     let state;
     try {
@@ -2697,11 +2696,6 @@ function nodesList() {
       body.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the nodes: ${err.message}` }));
       return;
     }
-    tokenWhere.replaceChildren(
-      ...(state.tokenSource === 'environment'
-        ? ['the token this server was started with in ', el('span', { class: 'mono', text: 'PROMPTD_NODE_TOKEN' })]
-        : ['the token in ', el('span', { class: 'mono', text: state.tokenFile }), ' on this machine']),
-    );
     const describe = (node) =>
       [
         node.hostname,
@@ -2755,32 +2749,42 @@ function nodesList() {
       }
     },
   });
+  const joinRow = el('div', { class: 'preset-row', hidden: 'hidden' }, [joinCommand, copyJoin]);
   const joinNote = el('div', { class: 'hint' });
-  const paintJoin = async () => {
-    let join;
-    try {
-      join = await api('/api/join');
-    } catch (err) {
-      joinNote.className = 'hint warn';
-      joinNote.textContent = `Could not load the command: ${err.message}`;
-      copyJoin.disabled = true;
-      return;
-    }
-    joinCommand.value = join.command;
-    joinNote.className = join.hubUrl ? 'hint' : 'hint warn';
-    joinNote.replaceChildren(
-      ...(join.hubUrl
-        ? ['It points the node at ', el('span', { class: 'mono', text: join.hubUrl }), ' and carries ', tokenWhere, '.']
-        : [
-            'Other Macs cannot reach this server yet: it listens on this machine only. Share it on your tailnet with ',
-            el('span', { class: 'mono', text: `tailscale serve --bg --http=${join.port} ${join.port}` }),
-            ' and reload this page, or see the README for your own network.',
-          ]),
-    );
-  };
-
-  // Once per visit, not on every repaint: finding the address runs `tailscale`.
-  paintJoin();
+  // Each press makes a new one-time code, which the new node trades for this server's token.
+  const addMac = el('button', {
+    type: 'button',
+    class: 'btn small',
+    text: 'Add a Mac',
+    onclick: async () => {
+      let join;
+      try {
+        join = await api('/api/join', { method: 'POST' });
+      } catch (err) {
+        joinNote.className = 'hint warn';
+        joinNote.textContent = `Could not make a join code: ${err.message}`;
+        return;
+      }
+      joinCommand.value = join.command;
+      joinRow.hidden = false;
+      const until = new Date(join.expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+      joinNote.className = join.hubUrl ? 'hint' : 'hint warn';
+      joinNote.replaceChildren(
+        ...(join.hubUrl
+          ? [
+              join.fromCheckout ? 'Run it in a checkout of this project on the other Mac. ' : 'Run it in a terminal on the other Mac. ',
+              `Its code works once, until ${until}, and points the node at `,
+              el('span', { class: 'mono', text: join.hubUrl }),
+              '.',
+            ]
+          : [
+              'Other Macs cannot reach this server yet: it listens on this machine only. Share it on your tailnet with ',
+              el('span', { class: 'mono', text: `tailscale serve --bg --http=${join.port} ${join.port}` }),
+              ' and press Add a Mac again, or see the README for your own network.',
+            ]),
+      );
+    },
+  });
 
   return {
     paint,
@@ -2789,9 +2793,10 @@ function nodesList() {
       el('div', { class: 'hint' }, [
         'A node is a machine that runs jobs. Each one fetches its work from this server and reports back every few seconds, ',
         'so only this server needs to be reachable. A job with no node of its own runs on the default node. ',
-        'To add a Mac, install Node and Claude Code there, clone this project, and run this in the checkout:',
+        'To add a Mac, install Claude Code there and sign in, then press Add a Mac for the command to run on it.',
       ]),
-      el('div', { class: 'preset-row' }, [joinCommand, copyJoin]),
+      el('div', { class: 'preset-row' }, [addMac]),
+      joinRow,
       joinNote,
     ],
   };

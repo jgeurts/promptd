@@ -63,15 +63,21 @@ describe('joinUrl', () => {
 });
 
 describe('joinCommand', () => {
-  it('fills in the hub address and token', () => {
-    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', 'abc123')).toBe(
-      'NODE_ONLY=1 HUB_URL=http://laptop.tail1234.ts.net:4321 NODE_TOKEN=abc123 ./scripts/register-app-mac-os.sh',
+  it('uses the release installer for a hub that is a binary', () => {
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', 'promptilicious/promptd')).toBe(
+      'curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://laptop.tail1234.ts.net:4321 --code 1234-5678',
+    );
+  });
+
+  it('uses the register script for a hub run from a checkout', () => {
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', null)).toBe(
+      'NODE_ONLY=1 HUB_URL=http://laptop.tail1234.ts.net:4321 JOIN_CODE=1234-5678 ./scripts/register-app-mac-os.sh',
     );
   });
 
   it('quotes a value the shell would split', () => {
-    expect(join.joinCommand("http://it's here", 'abc')).toBe(
-      `NODE_ONLY=1 HUB_URL='http://it'\\''s here' NODE_TOKEN=abc ./scripts/register-app-mac-os.sh`,
+    expect(join.joinCommand("http://it's here", '1234-5678', null)).toBe(
+      `NODE_ONLY=1 HUB_URL='http://it'\\''s here' JOIN_CODE=1234-5678 ./scripts/register-app-mac-os.sh`,
     );
   });
 });

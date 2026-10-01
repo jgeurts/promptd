@@ -23,19 +23,19 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 
 ## Install
 
-The install script is for macOS; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Node 20 or newer, and Claude Code installed and signed in: `claude --version` should answer.
+The installer is for Apple silicon Macs; a hub on a server is covered in [Deploying a hub](docs/ADVANCED.md#deploying-a-hub). Every Mac that runs jobs needs Claude Code installed and signed in: `claude --version` should answer.
 
 One Mac runs the **hub**, which keeps your jobs and serves the web page. Every Mac that runs jobs is a **node**, the hub's Mac included. Nodes connect to the hub; the hub never connects to them.
 
 ### On one Mac
 
 ```bash
-git clone https://github.com/promptilicious/promptd.git
-cd promptd
-./scripts/register-app-mac-os.sh
+curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash
 ```
 
-Open http://127.0.0.1:4321. promptd now starts at every login and checks for updates once a day. To try it first without installing anything, `npm install && npm start` runs it in the terminal.
+Open http://127.0.0.1:4321. promptd is one file, `~/.local/bin/promptd`. It starts at every login and checks for a new release every hour; an update waits for running jobs to finish.
+
+Already running promptd from a checkout? Put `FORCE=1` before `bash` to switch its services to the binary.
 
 ### Adding more Macs, with Tailscale
 
@@ -49,30 +49,40 @@ With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by
 
    If `tailscale` is not found, it lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
 
-2. Open Settings (the ⚙ button) → Nodes on the hub's page. It shows the command that adds a Mac, with the hub's tailnet address and node token filled in.
+2. Open Settings (the ⚙ button) → Nodes on the hub's page, and press **Add a Mac**. It shows a command with the hub's tailnet address and a join code.
 
-3. On each other Mac, clone the project and run that command in the checkout:
+3. Run that command in a terminal on the other Mac:
 
    ```bash
-   git clone https://github.com/promptilicious/promptd.git
-   cd promptd
-   NODE_ONLY=1 HUB_URL=http://<hub-mac>.<tailnet>.ts.net:4321 NODE_TOKEN=<token> ./scripts/register-app-mac-os.sh
+   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://<hub-mac>.<tailnet>.ts.net:4321 --code 1234-5678
    ```
 
-The new node shows under Settings → Nodes within a few seconds. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
+   A join code works once, within a day, so press **Add a Mac** again for the next one. `promptd join-command` on the hub's Mac prints the same command.
 
-`tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `npm run set-password` in the checkout on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
+The new node shows under Settings → Nodes within a few seconds, and from then on it runs the same build as the hub. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
+
+`tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `promptd set-password` on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
 
 ### Adding more Macs, on one network
 
 Without Tailscale, the hub listens on your network, which needs a password first. Install on the hub's Mac as above, then:
 
 ```bash
-npm run set-password
-HOST=0.0.0.0 FORCE=1 ./scripts/register-app-mac-os.sh
+promptd set-password
+curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | HOST=0.0.0.0 FORCE=1 bash
 ```
 
-Settings → Nodes then shows the command for each other Mac, with the hub's `.local` address filled in. The password and session cookie cross your network unencrypted; read [Network access](docs/ADVANCED.md#network-access) before doing this anywhere but home.
+**Add a Mac** then fills in the hub's `.local` address. The password and session cookie cross your network unencrypted; read [Network access](docs/ADVANCED.md#network-access) before doing this anywhere but home.
+
+### From a checkout
+
+To run the source instead, clone it and register it with launchd; it updates itself with `git pull` rather than from releases. This needs Node 20 or newer:
+
+```bash
+git clone https://github.com/promptilicious/promptd.git
+cd promptd
+./scripts/register-app-mac-os.sh
+```
 
 ### Stopping and removing
 
@@ -83,7 +93,7 @@ Settings → Nodes then shows the command for each other Mac, with the hub's `.l
 | Remove  | `launchctl bootout gui/$(id -u)/local.promptd && rm ~/Library/LaunchAgents/local.promptd.plist` |
 | Logs    | `tail -f ~/Library/Logs/promptd/server.log ~/Library/Logs/promptd/node.log` |
 
-A node's service is `local.promptd.node`. The install script prints every command for both when it finishes; [Start and stop](docs/ADVANCED.md#start-and-stop) has the rest.
+A node's service is `local.promptd.node`. The installer prints every command for both when it finishes, and `rm ~/.local/bin/promptd` removes the binary; [Start and stop](docs/ADVANCED.md#start-and-stop) has the rest.
 
 ## Developing
 

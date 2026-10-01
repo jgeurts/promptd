@@ -1,0 +1,59 @@
+name: release
+
+# Every commit on main becomes a release that installed binaries update to.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  binaries:
+    # Every installed binary updates to the latest release, so only main publishes one.
+    if: github.ref == 'refs/heads/main'
+    needs: check
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: npm ci
+      - name: Build
+        run: |
+          echo "VERSION=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_ENV"
+          PROMPTD_BUILD_VERSION="$(git rev-parse --short=7 HEAD)" bun scripts/build-binary.ts
+      - name: Check the binary runs
+        run: test "$(dist/bin/promptd-darwin-arm64 version)" = "$VERSION"
+      - name: Checksums
+        working-directory: dist/bin
+        run: |
+          cp ../../scripts/install.sh ../../scripts/register-app-mac-os.sh .
+          # The installer defaults to the repository that published it, so a fork's installs update from the fork.
+          sed -i '' "s|promptilicious/promptd|$GITHUB_REPOSITORY|g" install.sh
+          shasum -a 256 promptd-* install.sh register-app-mac-os.sh > sha256sums.txt
+      - name: Publish
+        run: >
+          gh release create "build-$VERSION" dist/bin/*
+          --title "promptd $VERSION" --notes "Built from $GITHUB_SHA." --target "$GITHUB_SHA" --latest
+      - name: Keep the newest 100 builds
+        run: |
+          gh release list --limit 300 --json tagName,createdAt -q 'sort_by(.createdAt) | reverse | .[].tagName' |
+            grep '^build-' | tail -n +101 | while read -r tag; do gh release delete "$tag" --cleanup-tag --yes; done
