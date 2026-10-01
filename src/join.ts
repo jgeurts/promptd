@@ -95,12 +95,23 @@ export function shellQuote(value: string): string {
   return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+export interface JoinSource {
+  /** Whether the hub serves its installer and build itself. */
+  servesBuild: boolean;
+  /** The GitHub repository a binary hub was released from, or null for a checkout. */
+  repo: string | null;
+}
+
 /**
  * The command that adds another Mac as a node of this hub with a join code: the
- * installer from `repo`'s latest release for a hub that is a binary, else the
- * register script, run from a checkout there.
+ * hub's own installer when it can serve the node its build, else the installer
+ * from `repo`'s latest release for a hub that is a binary, else the register
+ * script, run from a checkout there.
  */
-export function joinCommand(hubUrl: string, code: string, repo: string | null): string {
+export function joinCommand(hubUrl: string, code: string, { servesBuild, repo }: JoinSource): string {
+  if (servesBuild) {
+    return `curl -fsSL ${shellQuote(`${hubUrl.replace(/\/+$/, '')}/install.sh`)} | bash -s -- --code ${shellQuote(code)}`;
+  }
   if (repo) {
     const installer = `https://github.com/${repo}/releases/latest/download/install.sh`;
     return `curl -fsSL ${installer} | bash -s -- --hub ${shellQuote(hubUrl)} --code ${shellQuote(code)}`;

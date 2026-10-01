@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import { BINARY_REPO } from './binary.js';
 import { joinCommand, joinUrl } from './join.js';
 import type { JoinCode } from './joinCodes.js';
+import { servesNodeBuild } from './nodeBuild.js';
 import { NODE_TOKEN_FILE } from './paths.js';
 
 // Prints the command that adds another Mac as a node of the hub on this machine,
@@ -24,7 +25,8 @@ async function main(): Promise<void> {
   const { code, expiresAt } = (await res.json()) as JoinCode;
   const hubUrl = process.argv[2] ?? (await joinUrl({ host: HOST, port: PORT, origin: '' }));
   if (!hubUrl) throw new Error('other Macs cannot reach this hub yet; share it with tailscale serve, or pass the address to use');
-  console.log(joinCommand(hubUrl, code, BINARY_REPO));
+  // Run from the hub's own install, so this serves a build exactly when the hub does.
+  console.log(joinCommand(hubUrl, code, { servesBuild: servesNodeBuild(), repo: BINARY_REPO }));
   console.error(`The code works once, until ${new Date(expiresAt).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}.`);
 }
 

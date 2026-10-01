@@ -319,7 +319,8 @@ app.post('/api/join', async (req, res, next) => {
   try {
     const hubUrl = await joinUrl({ host: HOST, port: PORT, origin: `${req.protocol}://${req.get('host')}` });
     const { code, expiresAt } = hub.createJoinCode();
-    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command: joinCommand(hubUrl ?? '<hub-address>', code, BINARY_REPO) });
+    const command = joinCommand(hubUrl ?? '<hub-address>', code, { servesBuild: Boolean(nodeBuild), repo: BINARY_REPO });
+    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command });
   } catch (err) {
     next(err);
   }
