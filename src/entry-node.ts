@@ -10,6 +10,7 @@ import {
   GIVE_UP_AFTER_MS,
   HOLD_AFTER_MS,
   HubHasNoBuildError,
+  handOff,
   installHubBuild,
   nextUpdateStep,
   restartService,
@@ -111,8 +112,10 @@ let download: Download | null = null;
 /** Builds the hub runs but cannot serve, which are not asked for again. */
 const unservedBuilds = new Set<string>();
 let lastError: string | null = null;
-/** Saving state and signing off from the hub, which happens once however the node is stopped. */
+/** Saving state and signing off from the hub, shared by a stop and an update's restart; undone when the restart does not come. */
 let leaving: Promise<void> | null = null;
+/** A sync cycle is running or due, so signing back in starts no second loop. */
+let syncing = false;
 /** A signal asked the node to stop, so an update under way exits rather than restarting. */
 let stopAsked = false;
 
@@ -529,9 +532,12 @@ async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promi
     if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = null;
     console.log(`[update] nothing running; restarting into build ${update.version}`);
-    await leave('update');
-    if (stopAsked) return;
-    await restartService({ log: (line) => console.log(`[update] ${line}`) });
+    await handOff({
+      signOff: () => leave('update'),
+      stopAsked: () => stopAsked,
+      restart: () => restartService(),
+      carryOn: (reason) => carryOn(update.version, reason),
+    });
   } else if (step === 'hold') {
     update.holding = true;
     console.log(`[update] ${running} run(s) still going after ${HOLD_AFTER_MS / 3600000}h; holding new runs until they finish`);
@@ -541,8 +547,27 @@ async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promi
   }
 }
 
+/** Signs back in after a restart that did not come, giving up the build so it is not tried again straight away. */
+async function carryOn(version: string, reason: string): Promise<void> {
+  try {
+    await abandonUpdate(version, `could not restart into build ${version}: ${reason}`);
+  } finally {
+    leaving = null;
+    startSyncing();
+  }
+}
+
+function startSyncing(): void {
+  if (syncing) return;
+  syncing = true;
+  void cycle();
+}
+
 async function cycle(): Promise<void> {
-  if (leaving) return;
+  if (leaving) {
+    syncing = false;
+    return;
+  }
   try {
     await report();
     await fetchWork();
@@ -601,4 +626,4 @@ systemMonitor.start({ runningCrons: () => cronService.runningCrons() });
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 console.log(`promptd node "${NODE_NAME}" (${NODE_ID}) syncing with ${HUB_URL} every ${SYNC_MS}ms`);
-cycle();
+startSyncing();
