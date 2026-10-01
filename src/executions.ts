@@ -162,8 +162,15 @@ export async function deleteExecution(id: string): Promise<boolean> {
 export async function pageExecutions({
   before = null,
   limit = PAGE_SIZE,
-}: { before?: string | null; limit?: unknown } = {}): Promise<ExecutionPage> {
-  const all = await listExecutions();
+  order,
+}: {
+  before?: string | null;
+  limit?: unknown;
+  /** Another order for the whole list, applied before the page is cut from it. */
+  order?: (all: Execution[]) => Execution[];
+} = {}): Promise<ExecutionPage> {
+  const listed = await listExecutions();
+  const all = order ? order(listed) : listed;
   // Generous ceiling: the home page re-reads everything it has already shown in
   // one request whenever a run event redraws it, so the cap has to clear a list
   // the user has paged a long way down.
