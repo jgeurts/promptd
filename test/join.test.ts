@@ -63,21 +63,32 @@ describe('joinUrl', () => {
 });
 
 describe('joinCommand', () => {
-  it('uses the release installer for a hub that is a binary', () => {
-    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', 'promptilicious/promptd')).toBe(
+  const checkout = { servesBuild: false, repo: null };
+
+  it("uses the hub's own installer for a hub that serves its build", () => {
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321/', '1234-5678', { servesBuild: true, repo: 'promptilicious/promptd' })).toBe(
+      'curl -fsSL http://laptop.tail1234.ts.net:4321/install.sh | bash -s -- --code 1234-5678',
+    );
+  });
+
+  it('uses the release installer for a binary hub that cannot serve its build', () => {
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', { servesBuild: false, repo: 'promptilicious/promptd' })).toBe(
       'curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://laptop.tail1234.ts.net:4321 --code 1234-5678',
     );
   });
 
   it('uses the register script for a hub run from a checkout', () => {
-    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', null)).toBe(
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', '1234-5678', checkout)).toBe(
       'NODE_ONLY=1 HUB_URL=http://laptop.tail1234.ts.net:4321 JOIN_CODE=1234-5678 ./scripts/register-app-mac-os.sh',
     );
   });
 
   it('quotes a value the shell would split', () => {
-    expect(join.joinCommand("http://it's here", '1234-5678', null)).toBe(
+    expect(join.joinCommand("http://it's here", '1234-5678', checkout)).toBe(
       `NODE_ONLY=1 HUB_URL='http://it'\\''s here' JOIN_CODE=1234-5678 ./scripts/register-app-mac-os.sh`,
+    );
+    expect(join.joinCommand('<hub-address>', '1234-5678', { servesBuild: true, repo: null })).toBe(
+      `curl -fsSL '<hub-address>/install.sh' | bash -s -- --code 1234-5678`,
     );
   });
 });

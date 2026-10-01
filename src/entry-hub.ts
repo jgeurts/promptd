@@ -12,6 +12,7 @@ import { joinCommand, joinUrl } from './join.js';
 import { SYSTEM_METRICS } from './system.js';
 import { sendPublicFile, sendSharedModule, servePublic } from './publicFiles.js';
 import { BINARY_REPO } from './binary.js';
+import { ownBuild, serveInstaller } from './nodeBuild.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
@@ -79,8 +80,19 @@ const app = express();
 // put all sign-in attempts under one address and hide that the visitor used HTTPS.
 const trustProxy = process.env.PROMPTD_TRUST_PROXY?.trim();
 if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
+/** What this hub's nodes install and update from: its own executable, when it is a binary for Apple silicon. */
+const nodeBuild = await ownBuild();
 // Ahead of the page's body parser: a node's report carries log bytes and outgrows its limit.
-app.use('/api/node', hub.router());
+app.use('/api/node', hub.router(nodeBuild));
+// Ahead of the login too, as the release it stands in for is: the build it fetches needs a join code.
+app.get(
+  '/install.sh',
+  serveInstaller(nodeBuild, async (req) => {
+    const origin = `${req.protocol}://${req.get('host')}`;
+    // The address Add a Mac would give, else the one the Mac asking reached the hub by.
+    return (await joinUrl({ host: HOST, port: PORT, origin })) ?? origin;
+  }),
+);
 app.use(authRouter());
 app.use(requireLogin());
 app.get('/login', (_req, res) => sendPublicFile(res, 'login.html'));
@@ -233,7 +245,8 @@ app.post('/api/join', async (req, res, next) => {
   try {
     const hubUrl = await joinUrl({ host: HOST, port: PORT, origin: `${req.protocol}://${req.get('host')}` });
     const { code, expiresAt } = hub.createJoinCode();
-    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command: joinCommand(hubUrl ?? '<hub-address>', code, BINARY_REPO) });
+    const command = joinCommand(hubUrl ?? '<hub-address>', code, { servesBuild: Boolean(nodeBuild), repo: BINARY_REPO });
+    res.json({ hubUrl, port: PORT, code, expiresAt, fromCheckout: !BINARY_REPO, command });
   } catch (err) {
     next(err);
   }

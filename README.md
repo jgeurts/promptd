@@ -51,15 +51,15 @@ With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by
 
 2. Open Settings (the ⚙ button) → Nodes on the hub's page, and press **Add a Mac**. It shows a command with the hub's tailnet address and a join code.
 
-3. Run that command in a terminal on the other Mac:
+3. Run that command in a terminal on the other Mac. It installs promptd from the hub itself, not from GitHub:
 
    ```bash
-   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://<hub-mac>.<tailnet>.ts.net:4321 --code 1234-5678
+   curl -fsSL http://<hub-mac>.<tailnet>.ts.net:4321/install.sh | bash -s -- --code 1234-5678
    ```
 
    A join code works once, within a day, so press **Add a Mac** again for the next one. `promptd join-command` on the hub's Mac prints the same command.
 
-The new node shows under Settings → Nodes within a few seconds, and from then on it runs the same build as the hub. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
+The new node shows under Settings → Nodes within a few seconds, and from then on it runs the same build as the hub, fetching each new one from the hub. Only the hub's Mac talks to GitHub. promptd starts at login, so each Mac needs to stay logged in. While the hub's Mac is asleep or away, nodes keep running the jobs they already have, and catch the hub up when it is back.
 
 `tailscale serve` shares the page with your tailnet only; `tailscale funnel` is the one that would put it on the internet. With no password set, every device on your tailnet can open the page. If you share your tailnet with anyone, run `promptd set-password` on the hub's Mac; it takes effect within a few seconds, and nodes are unaffected.
 

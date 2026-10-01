@@ -19,19 +19,19 @@ Usage limits, model discovery and machine stats all belong to a node. The header
 
 ### Adding a node on another Mac
 
-Press **Add a Mac** under Settings → Nodes on the hub's page, or run `promptd join-command` on the hub's machine, and run the command it gives on the other Mac. For a hub installed from a release it is the installer:
+Press **Add a Mac** under Settings → Nodes on the hub's page, or run `promptd join-command` on the hub's machine, and run the command it gives on the other Mac. For a hub installed from a release it is the hub's own installer:
 
 ```bash
-curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub http://<hub-address>:4321 --code <code>
+curl -fsSL http://<hub-address>:4321/install.sh | bash -s -- --code <code>
 ```
 
-For a hub run from a checkout it is the register script, run in a checkout there:
+The new Mac gets everything from the hub, never from GitHub. The hub serves `install.sh` with its own address filled in and the register script inside it. The installer downloads promptd from the hub's `/api/node/build` with the join code, checks it against the sha256 the hub sends with it, and registers the node. Only a hub that is itself a binary for Apple silicon has a build to serve; a hub run from a checkout or in Docker answers 404, and its command is the register script, run in a checkout there:
 
 ```bash
 NODE_ONLY=1 HUB_URL=http://<hub-address>:4321 JOIN_CODE=<code> ./scripts/register-app-mac-os.sh
 ```
 
-The address is the one `tailscale serve` shares the hub on, else the one the browser reached it by, else the Mac's `.local` name when the hub listens beyond loopback. The join code works once, within a day: on its first connection the node trades it for the hub's token and keeps that in `hub-token` in its storage folder. Ten wrong codes in 15 minutes stop the hub taking any for the rest of them. A hub restart voids every code not yet used. `NODE_TOKEN=<token>`, copied from `~/.claude/promptd/node-token` on the hub's machine, still works in place of a code. The hub has to be reachable from the node, which on another network usually means binding it to `0.0.0.0` — read [Network access](#network-access) first. The token protects the node API; the web page has its own password — see [Signing in](#signing-in).
+The address is the one `tailscale serve` shares the hub on, else the one the browser reached it by, else the Mac's `.local` name when the hub listens beyond loopback. The join code works once, within a day. The download only checks it; on its first connection the node trades it for the hub's token and keeps that in `hub-token` in its storage folder. Ten wrong codes in 15 minutes, checked or traded, stop the hub taking any for the rest of them. Codes not yet used survive a hub restart. The hub's token, copied from `~/.claude/promptd/node-token` on the hub's machine, still works in place of a code: `--token <token>` for the installer, `NODE_TOKEN=<token>` for the register script. The hub has to be reachable from the node, which on another network usually means binding it to `0.0.0.0` — read [Network access](#network-access) first. The token protects the node API; the web page has its own password — see [Signing in](#signing-in).
 
 ## Deploying a hub
 
@@ -55,7 +55,7 @@ npm run set-password -- --clear      # removes it; a loopback hub is open again
 1. **Sessions.** Signing in sets an encrypted, `httpOnly` cookie that lasts 30 days. Changing the password signs every session out. **Sign out** is at the top of the Settings page.
 2. **Failed attempts.** Five wrong passwords from one address lock it out for 15 minutes.
 3. **Deployments.** `PROMPTD_ADMIN_PASSWORD_HASH`, set from a secret store, wins over the stored hash. `SESSION_SECRET` (32 characters or more) signs the cookie; without it the hub generates one and keeps it in the database.
-4. **What stays open.** The login page, and `/api/health`, which tells a signed-out caller only that a login is needed. Nodes use their own token on `/api/node/*` and never need the password.
+4. **What stays open.** The login page; `/api/health`, which tells a signed-out caller only that a login is needed; and `/install.sh`, the installer for a new node, which holds no secret, since the build it downloads needs a join code. Nodes use their own token on `/api/node/*` and never need the password.
 
 ## Start at login (macOS)
 
@@ -443,17 +443,17 @@ The checker refuses rather than guesses, and says why in the server log and in `
 
 `git pull --ff-only` means a merge is never attempted. All of these are re-checked inside the detached script too, since the working tree could have changed between the decision and the pull.
 
-### A binary updates from releases
+### How a binary updates
 
-promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. Every commit on `main` is published as a `build-<commit>` GitHub release, and a binary checks for the latest one every hour instead of fetching `origin/main`.
+promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. The hub updates from GitHub releases and its nodes update from the hub, so the hub is the only machine that talks to GitHub. Every commit on `main` is published as a `build-<commit>` GitHub release, and a binary hub checks for the latest one every hour instead of fetching `origin/main`.
 
 A hub restart interrupts no run: runs belong to the nodes, which keep going while the hub is down and catch it up afterwards. So a binary hub holds nothing. It downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and exits for launchd to start it again, a gap of a few seconds.
 
-Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it while its runs carry on, then restarts into it the moment nothing is running. A node still busy an hour later holds new runs until the running ones finish, and gives up after four hours. Outside launchd, a new build is left on disk for the next restart, and the log says so.
+Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it from the hub's `/api/node/build` with its node token while its runs carry on. It keeps the download only if it is the build the hub named and matches the sha256 the hub sent, then restarts into it the moment nothing is running. A node still busy an hour later holds new runs until the running ones finish, and gives up after four hours. Outside launchd, a new build is left on disk for the next restart, and the log says so.
 
-A node can follow only a hub whose build has a release: a binary hub, or a checkout on a commit from `main`. A Docker hub reports no build, so its binary nodes stay on the one they were installed with; run the installer on each again to update it. Only the newest 100 builds are kept.
+A node can follow only a hub that is itself a binary for Apple silicon, since what it downloads is the hub's own executable. A hub run from a checkout or in Docker has no build to serve, so its binary nodes stay on the one they were installed with; run the installer on each again to update it. Only the newest 100 builds are kept.
 
-To go back to an earlier build, turn self update off first, then run the installer with `PROMPTD_RELEASE=build-<commit>` and `FORCE=1` in front of `bash`. Download promptd with the installer rather than a browser: macOS quarantines what a browser downloads, and the binary is not notarized.
+To go back to an earlier build, turn self update off first, then run the installer on the hub's Mac with `PROMPTD_RELEASE=build-<commit>` and `FORCE=1` in front of `bash`; its nodes follow it. Download promptd with the installer rather than a browser: macOS quarantines what a browser downloads, and the binary is not notarized.
 
 ### The restart needs the launchd agent
 
@@ -859,6 +859,8 @@ As the field changes, a green line below it shows when the expression next fires
 | DELETE           | `/api/nodes/:id`                            | Forget a node (409 while it is online)                                                                                                                                                                                                                                                                                   |
 | POST             | `/api/node/report`, `/api/node/leave`       | Node API, bearer token required: a node's status, log output, run results and events; and its sign-off on shutdown                                                                                                                                                                                                       |
 | POST             | `/api/node/pair`                            | Node API, no token: trade a join code, `{"code": "1234-5678"}`, for the hub's token. 401 for a wrong, used or expired code                                                                                                                                                                                               |
+| GET              | `/install.sh`                               | No sign-in: the installer for a new node, with this hub's address filled in and the build's version and sha256 in `x-promptd-version` and `x-promptd-sha256`. 404 from a hub that is not a binary for Apple silicon                                                                                                      |
+| GET              | `/api/node/build`                           | Node API, a join code as `?code=` or the bearer token: this hub's own executable, with the same two headers. The code is checked, not used up. 401 otherwise; 404 from a hub that is not a binary for Apple silicon                                                                                                      |
 | POST             | `/api/node/join-codes`                      | Node API, bearer token required: a fresh join code, for `promptd join-command`                                                                                                                                                                                                                                           |
 | GET              | `/api/node/work`                            | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                                                                                                                                                              |
 | GET              | `/api/config`                               | Storage paths, the log and notification retention limits, effort levels, the usage-delay categories with the default node's percentages, and whether self update is on                                                                                                                                                   |

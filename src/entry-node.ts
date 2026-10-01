@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { BuildNotReleasedError, GIVE_UP_AFTER_MS, HOLD_AFTER_MS, installVersion, nextUpdateStep, underLaunchd, versionOnDisk } from './binaryUpdate.js';
+import { GIVE_UP_AFTER_MS, HOLD_AFTER_MS, HubHasNoBuildError, installHubBuild, nextUpdateStep, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -101,8 +101,8 @@ interface Download {
 }
 /** The hub's build being downloaded, while the node carries on. */
 let download: Download | null = null;
-/** Builds the hub runs that have no release, which are not asked for again. */
-const unreleasedBuilds = new Set<string>();
+/** Builds the hub runs but cannot serve, which are not asked for again. */
+const unservedBuilds = new Set<string>();
 let lastError: string | null = null;
 
 bus.on('event', (event) => {
@@ -432,6 +432,11 @@ async function fetchWork(): Promise<void> {
   await followHub(work.hubVersion);
 }
 
+async function downloadFromHub(version: string): Promise<void> {
+  const { token } = await readToken();
+  await installHubBuild({ hubUrl: HUB_URL, token, version });
+}
+
 async function abandonUpdate(version: string, why: string): Promise<void> {
   console.error(`[update] ${why}; trying again in an hour`);
   updateFailedAt.set(version, Date.now());
@@ -447,12 +452,13 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
 
 /**
  * A binary node runs its hub's build, so the two always agree on what they send
- * each other. The new build is downloaded while runs carry on, since the running
- * process keeps its own file, and the node restarts into it the moment nothing
- * is running. Only a node still busy after an hour holds new runs to get there.
+ * each other. The new build is downloaded from the hub while runs carry on, since
+ * the running process keeps its own file, and the node restarts into it the
+ * moment nothing is running. Only a node still busy after an hour holds new runs
+ * to get there.
  */
 async function followHub(version: string | null | undefined): Promise<void> {
-  if (!BINARY_VERSION || !version || version === BINARY_VERSION || unreleasedBuilds.has(version)) return;
+  if (!BINARY_VERSION || !version || version === BINARY_VERSION || unservedBuilds.has(version)) return;
   // A restart under way finishes first, holding what it holds; the next build is followed after it.
   if (drainStepRunning) return;
   const failedAt = updateFailedAt.get(version);
@@ -465,7 +471,7 @@ async function followHub(version: string | null | undefined): Promise<void> {
       const started: Download = { version, settled: false, error: null };
       download = started;
       versionOnDisk()
-        .then((onDisk) => (onDisk === version ? undefined : installVersion(version)))
+        .then((onDisk) => (onDisk === version ? undefined : downloadFromHub(version)))
         .catch((err: Error) => {
           started.error = err;
         })
@@ -477,9 +483,9 @@ async function followHub(version: string | null | undefined): Promise<void> {
     if (!download.settled) return;
     const { error } = download;
     download = null;
-    if (error instanceof BuildNotReleasedError) {
-      unreleasedBuilds.add(version);
-      console.error(`[update] the hub runs build ${version}, which has no release to download (${error.message}); staying on ${BINARY_VERSION}`);
+    if (error instanceof HubHasNoBuildError) {
+      unservedBuilds.add(version);
+      console.error(`[update] the hub runs ${version}, but ${error.message}; staying on ${BINARY_VERSION}`);
       return;
     }
     if (error) return abandonUpdate(version, `could not install the hub's build ${version}: ${error.message}`);

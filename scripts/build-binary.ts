@@ -29,6 +29,13 @@ for (const name of ['naming', 'jobFormRules']) {
   publicFiles[`shared/${name}.js`] = transpiler.transformSync(fs.readFileSync(path.join(ROOT, 'src', `${name}.ts`), 'utf8'));
 }
 
+// A hub serves its nodes the installer, so the binary carries it and the register script it runs.
+const installerScripts = {
+  install: fs.readFileSync(path.join(ROOT, 'scripts', 'install.sh'), 'utf8'),
+  register: fs.readFileSync(path.join(ROOT, 'scripts', 'register-app-mac-os.sh'), 'utf8'),
+};
+const embedded: Record<string, unknown> = { 'promptd:public': publicFiles, 'promptd:scripts': installerScripts };
+
 const outfile = path.join(ROOT, 'dist', 'bin', `promptd-${PLATFORM}`);
 const result = await Bun.build({
   entrypoints: [path.join(ROOT, 'src', 'entry-cli.ts')],
@@ -43,9 +50,9 @@ const result = await Bun.build({
         build.onResolve({ filter: /^better-sqlite3$/ }, () => ({
           path: path.join(ROOT, 'node_modules', 'better-sqlite3', 'lib', `${PLATFORM}.js`),
         }));
-        build.onResolve({ filter: /^promptd:public$/ }, () => ({ path: 'promptd:public', namespace: 'promptd-public' }));
-        build.onLoad({ filter: /.*/, namespace: 'promptd-public' }, () => ({
-          contents: `export default ${JSON.stringify(publicFiles)};`,
+        build.onResolve({ filter: /^promptd:(public|scripts)$/ }, (args) => ({ path: args.path, namespace: 'promptd-embedded' }));
+        build.onLoad({ filter: /.*/, namespace: 'promptd-embedded' }, (args) => ({
+          contents: `export default ${JSON.stringify(embedded[args.path])};`,
           loader: 'js',
         }));
       },

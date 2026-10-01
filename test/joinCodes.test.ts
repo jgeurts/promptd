@@ -53,6 +53,25 @@ describe('JoinCodes', () => {
     expect(codes.redeem(fresh.code, 16 * MINUTE)).toBe(true);
   });
 
+  it('checks a code without using it up', () => {
+    const codes = new JoinCodes();
+    const { code } = codes.create(0);
+    expect(codes.check(code, MINUTE)).toBe(true);
+    expect(codes.check(code, MINUTE)).toBe(true);
+    expect(codes.redeem(code, MINUTE)).toBe(true);
+    expect(codes.check(code, MINUTE)).toBe(false);
+  });
+
+  it('counts a wrong code checked against the same allowance as one redeemed', () => {
+    const codes = new JoinCodes();
+    const { code } = codes.create(0);
+    const wrong = code === '0000-0000' ? '0000-0001' : '0000-0000';
+    for (let i = 0; i < 5; i += 1) expect(codes.check(wrong, MINUTE)).toBe(false);
+    for (let i = 0; i < 5; i += 1) expect(codes.redeem(wrong, MINUTE)).toBe(false);
+    expect(codes.check(code, MINUTE)).toBe(false);
+    expect(codes.redeem(code, MINUTE)).toBe(false);
+  });
+
   it('keeps unused codes across a restart when given a file', () => {
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-codes-')), 'join-codes.json');
     const { code } = new JoinCodes(file).create(Date.now());
