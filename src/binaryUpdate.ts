@@ -112,13 +112,55 @@ export async function installVersion(version: string): Promise<void> {
   const actual = createHash('sha256').update(binary).digest('hex');
   if (!expected) throw new Error(`build ${version} lists no checksum for ${name}`);
   if (expected !== actual) throw new Error(`build ${version}'s ${name} does not match its checksum`);
+  await replaceExecutable(binary);
+}
+
+/** A rename, so the process running `target` keeps the file it started from until it restarts. */
+async function replaceExecutable(binary: Buffer, target = process.execPath): Promise<void> {
   // A name of its own, so no other install can truncate it before the rename.
-  const next = `${process.execPath}.${randomBytes(6).toString('hex')}.new`;
+  const next = `${target}.${randomBytes(6).toString('hex')}.new`;
   try {
     await fsp.writeFile(next, binary, { mode: 0o755, flag: 'wx' });
-    await fsp.rename(next, process.execPath);
+    await fsp.rename(next, target);
   } catch (err) {
     await fsp.rm(next, { force: true });
     throw err;
   }
+}
+
+/** The hub has no build to hand out: it is a checkout, or runs on Linux. */
+export class HubHasNoBuildError extends Error {}
+
+export interface HubBuildRequest {
+  hubUrl: string;
+  /** The node token, which the hub serves its build to. */
+  token: string;
+  /** The build the hub said it runs, which is the one to install. */
+  version: string;
+  /** The file to replace; the running executable unless a test says otherwise. */
+  target?: string;
+}
+
+/**
+ * Downloads the hub's build and puts it in place of `target`, once it is the
+ * version asked for and matches the sha256 the hub sent with it. Nodes never
+ * ask GitHub: the hub is the one machine that does.
+ */
+export async function installHubBuild({ hubUrl, token, version, target }: HubBuildRequest): Promise<void> {
+  const res = await fetch(`${hubUrl}/api/node/build`, {
+    headers: { authorization: `Bearer ${token}`, 'user-agent': 'promptd' },
+    signal: AbortSignal.timeout(300_000),
+  });
+  if (res.status === 404) throw new HubHasNoBuildError('the hub cannot serve a node build');
+  if (!res.ok) throw new Error(`the hub answered ${res.status} for its build`);
+  // The hub may have moved on to another build since it said which one it runs.
+  const sent = res.headers.get(BUILD_VERSION_HEADER);
+  if (sent !== version) throw new Error(`the hub sent build ${sent ?? 'with no name'} rather than ${version}`);
+  const expected = res.headers.get(BUILD_SHA256_HEADER)?.toLowerCase();
+  if (!expected) throw new Error(`the hub sent build ${version} without its checksum`);
+  const binary = Buffer.from(await res.arrayBuffer());
+  if (createHash('sha256').update(binary).digest('hex') !== expected) {
+    throw new Error(`build ${version} from the hub does not match the checksum it sent`);
+  }
+  await replaceExecutable(binary, target);
 }

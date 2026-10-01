@@ -9,6 +9,7 @@ import path from 'node:path';
 import express from 'express';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import type * as BinaryUpdateModule from '../src/binaryUpdate.js';
 import type * as DbModule from '../src/db.js';
 import type * as HubModule from '../src/hub.js';
 import type * as NodeBuildModule from '../src/nodeBuild.js';
@@ -25,6 +26,7 @@ const scripts = {
 const binary = randomBytes(300_000);
 const binarySha = createHash('sha256').update(binary).digest('hex');
 
+let binaryUpdate: typeof BinaryUpdateModule;
 let dbModule: typeof DbModule;
 let hub: (typeof HubModule)['hub'];
 let nodeBuild: typeof NodeBuildModule;
@@ -41,6 +43,7 @@ beforeAll(async () => {
   await hub.start(await loadSettings());
   token = fs.readFileSync(path.join(home, 'node-token'), 'utf8').trim();
   nodeBuild = await import('../src/nodeBuild.js');
+  binaryUpdate = await import('../src/binaryUpdate.js');
 
   const file = path.join(home, 'promptd-build');
   fs.writeFileSync(file, binary);
@@ -51,6 +54,10 @@ beforeAll(async () => {
   // A hub with nothing to serve, as a checkout or a hub on Linux is.
   app.get('/none/install.sh', nodeBuild.serveInstaller(null, async () => 'http://hub.example:4321'));
   app.use('/none/api/node', hub.router(null));
+  // A build that does not match the checksum sent with it.
+  app.get('/corrupt/api/node/build', (_req, res) => {
+    res.set({ 'x-promptd-version': 'abc1234', 'x-promptd-sha256': '0'.repeat(64) }).send(binary);
+  });
   await new Promise<void>((resolve) => {
     server = app.listen(0, '127.0.0.1', () => resolve());
   });
@@ -141,6 +148,51 @@ describe('installerScript', () => {
 
   it('refuses an installer with nothing to fill in', () => {
     expect(() => nodeBuild.installerScript({ install: '#!/bin/bash\n', register: '' }, 'http://hub.example:4321')).toThrow('FROM_HUB');
+  });
+});
+
+describe('installHubBuild', () => {
+  const old = Buffer.from('the build this node runs');
+
+  function installed(): string {
+    const dir = fs.mkdtempSync(path.join(home, 'node-'));
+    const target = path.join(dir, 'promptd');
+    fs.writeFileSync(target, old, { mode: 0o755 });
+    return target;
+  }
+
+  it("downloads the hub's build with the node token and puts it in place", async () => {
+    const target = installed();
+    await binaryUpdate.installHubBuild({ hubUrl: base, token, version: 'abc1234', target });
+    expect(fs.readFileSync(target).equals(binary)).toBe(true);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o755);
+    expect(fs.readdirSync(path.dirname(target))).toEqual(['promptd']);
+  });
+
+  it('leaves the file alone when the download does not match the checksum the hub sent', async () => {
+    const target = installed();
+    await expect(binaryUpdate.installHubBuild({ hubUrl: `${base}/corrupt`, token, version: 'abc1234', target })).rejects.toThrow(
+      'does not match the checksum',
+    );
+    expect(fs.readFileSync(target).equals(old)).toBe(true);
+    expect(fs.readdirSync(path.dirname(target))).toEqual(['promptd']);
+  });
+
+  it('refuses a build other than the one the hub said it runs', async () => {
+    const target = installed();
+    await expect(binaryUpdate.installHubBuild({ hubUrl: base, token, version: 'def5678', target })).rejects.toThrow(
+      'sent build abc1234 rather than def5678',
+    );
+    expect(fs.readFileSync(target).equals(old)).toBe(true);
+  });
+
+  it('says when the hub has no build to serve, and when it refuses the token', async () => {
+    const target = installed();
+    await expect(binaryUpdate.installHubBuild({ hubUrl: `${base}/none`, token, version: 'abc1234', target })).rejects.toBeInstanceOf(
+      binaryUpdate.HubHasNoBuildError,
+    );
+    await expect(binaryUpdate.installHubBuild({ hubUrl: base, token: 'not-the-token', version: 'abc1234', target })).rejects.toThrow('401');
+    expect(fs.readFileSync(target).equals(old)).toBe(true);
   });
 });
 
