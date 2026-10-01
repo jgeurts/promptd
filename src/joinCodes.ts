@@ -51,12 +51,28 @@ export class JoinCodes {
 
   /** Uses the code up. False when it is wrong, spent or expired, or while too many wrong ones have arrived. */
   public redeem(code: string, now = Date.now()): boolean {
+    return this.accept(code, now, true);
+  }
+
+  /**
+   * Whether `redeem` would take the code, leaving it unused: the installer
+   * downloads promptd with the code that the node then pairs with. A wrong code
+   * counts against the same allowance, so checking is no way to find one.
+   */
+  public check(code: string, now = Date.now()): boolean {
+    return this.accept(code, now, false);
+  }
+
+  private accept(code: string, now: number, use: boolean): boolean {
     this.prune(now);
     if (this.failures && now - this.failures.firstAt >= FAILURE_WINDOW_MS) this.failures = null;
     if (this.failures && this.failures.count >= MAX_FAILURES) return false;
     const normalized = normalizeCode(code);
-    if (normalized && this.codes.delete(normalized)) {
-      this.save();
+    if (normalized && this.codes.has(normalized)) {
+      if (use) {
+        this.codes.delete(normalized);
+        this.save();
+      }
       return true;
     }
     this.failures = this.failures ? { ...this.failures, count: this.failures.count + 1 } : { count: 1, firstAt: now };
