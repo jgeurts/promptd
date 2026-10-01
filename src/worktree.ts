@@ -359,11 +359,22 @@ async function discardHalfMade(root: string, tree: string, newBranch: string | n
 async function catchUp(tree: string, branch: string, base: Base, signal: AbortSignal | undefined, what: string): Promise<string> {
   const head = await git(tree, ['rev-parse', 'HEAD']);
   const onBranch = (await git(tree, ['symbolic-ref', '--short', '--quiet', 'HEAD']).catch(() => '')) === branch;
-  const clean = onBranch && !(await git(tree, ['status', '--porcelain']));
+  // Untracked files counted whatever status.showUntrackedFiles says.
+  const clean = onBranch && !(await git(tree, ['status', '--porcelain', '--untracked-files=normal']));
   const upstream = clean && (await git(tree, ['merge-base', '--is-ancestor', head, base.commit]).then(() => true, () => false));
   if (base.fromRemote && upstream && head !== base.commit) {
-    await git(tree, ['reset', '--quiet', '--hard', base.commit], { signal });
-    return `${what} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`;
+    // A fast-forward that stops rather than replace a file git ignores, such
+    // as an edited .env the base has since started tracking; reset --hard
+    // would overwrite it without a word.
+    const refused = await git(tree, ['merge', '--quiet', '--ff-only', '--no-overwrite-ignore', base.commit], { signal }).then(
+      () => null,
+      (err: Error) => {
+        if (isStuck(err) || signal?.aborted) throw err;
+        return err.message.replace(/\s+/g, ' ');
+      },
+    );
+    if (refused === null) return `${what} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`;
+    return `${what} at ${short(head)}, as it was left: moving it to ${base.label} would replace files it holds (${refused})`;
   }
   return `${what} at ${short(head)}${onBranch ? '' : ', off its branch'}, as it was left`;
 }

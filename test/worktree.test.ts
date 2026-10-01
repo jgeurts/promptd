@@ -179,6 +179,22 @@ describe('prepareWorktree', () => {
     expect(git((await prepareWorktree(app, 'job-5')).path, 'rev-parse', 'HEAD')).toBe(own);
   });
 
+  it('keeps a reused tree where it is rather than replace a file it holds that the base has started tracking', async () => {
+    const { app, pusher, newest } = behindOrigin();
+    fs.writeFileSync(path.join(app, '.git', 'info', 'exclude'), '.env\n');
+    const first = await prepareWorktree(app, 'job-16');
+    fs.writeFileSync(path.join(first.path, '.env'), 'EDITED=1\n');
+    fs.writeFileSync(path.join(pusher, '.env'), 'TRACKED=1\n');
+    git(pusher, 'add', '.env');
+    commit(pusher, 'track .env');
+    git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+
+    const again = await prepareWorktree(app, 'job-16');
+    expect(git(again.path, 'rev-parse', 'HEAD')).toBe(newest);
+    expect(fs.readFileSync(path.join(again.path, '.env'), 'utf8')).toBe('EDITED=1\n');
+    expect(again.notes.join('\n')).toContain('would replace files it holds');
+  });
+
   it('is cleaned up by removeWorktree like one claude made', async () => {
     const tree = await prepareWorktree(mainRepo, 'job-6');
     expect(await removeWorktree(mainRepo, 'job-6')).toHaveProperty('cleaned');
