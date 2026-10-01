@@ -300,14 +300,31 @@ export async function prepareWorktree(dir: string, name: string, { signal }: { s
   // A branch left from an earlier tree may hold commits nothing else has, so
   // it is checked out again as it is rather than reset to the base.
   const kept = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).catch(() => '');
+  const add = kept ? ['worktree', 'add', '--quiet', tree, branch] : ['worktree', 'add', '--quiet', '--no-track', '-b', branch, tree, base.commit];
+  try {
+    await git(root, add, { timeout: 10 * 60_000, signal });
+  } catch (err) {
+    await discardHalfMade(root, tree, kept ? null : branch);
+    throw err;
+  }
   if (kept) {
-    await git(root, ['worktree', 'add', '--quiet', tree, branch], { timeout: 10 * 60_000, signal });
     notes.push(await catchUp(tree, branch, base, signal, `made ${tree} again from the existing ${branch}`));
     return { path: tree, branch, root, created: true, notes };
   }
-  await git(root, ['worktree', 'add', '--quiet', '--no-track', '-b', branch, tree, base.commit], { timeout: 10 * 60_000, signal });
   notes.push(`created ${tree} on ${branch} from ${base.label} (${short(base.commit)})`);
   return { path: tree, branch, root, created: true, notes };
+}
+
+/**
+ * A checkout cut short, by a Stop or a failure, would be found by the next
+ * run as a worktree with most of its files missing. So it is removed, with
+ * the branch made for it, while a branch that was already there is kept.
+ */
+async function discardHalfMade(root: string, tree: string, newBranch: string | null): Promise<void> {
+  await git(root, ['worktree', 'remove', '--force', tree], 10 * 60_000).catch(() => {});
+  await fsp.rm(tree, { recursive: true, force: true }).catch(() => {});
+  await git(root, ['worktree', 'prune']).catch(() => {});
+  if (newBranch) await git(root, ['branch', '-D', newBranch]).catch(() => {});
 }
 
 /**

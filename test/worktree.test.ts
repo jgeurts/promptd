@@ -211,6 +211,15 @@ describe('prepareWorktree', () => {
     expect(again.notes.join('\n')).toContain('again from the existing worktree-job-12');
   });
 
+  it('removes a tree whose checkout did not finish, and the branch made for it, so the next run does not reuse it', async () => {
+    const hook = path.join(mainRepo, '.git', 'hooks', 'post-checkout');
+    fs.writeFileSync(hook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await expect(prepareWorktree(mainRepo, 'job-14')).rejects.toThrow();
+    expect(fs.existsSync(worktreePath(mainRepo, 'job-14'))).toBe(false);
+    expect(branchExists(mainRepo, 'worktree-job-14')).toBe(false);
+    expect(git(mainRepo, 'worktree', 'list')).not.toContain('job-14');
+  });
+
   it('stops when asked, before making anything', async () => {
     const { app } = behindOrigin();
     const controller = new AbortController();
