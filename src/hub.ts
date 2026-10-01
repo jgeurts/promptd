@@ -6,10 +6,12 @@ import express from 'express';
 import { bus, emit } from './events.js';
 import { db } from './db.js';
 import { NODE_TOKEN_FILE } from './paths.js';
-import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
+import { applyInferredTitle, listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
+import { readJobDefaults, resolveJob } from './jobDefaults.js';
+import { TITLE_PROMPT_LIMIT, cleanTitle } from './naming.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
@@ -24,6 +26,9 @@ import type {
   ConcurrencyInfo,
   Cron,
   Execution,
+  JobDefaults,
+  JobDefaultsOverride,
+  JobKind,
   JobPatch,
   JobView,
   LogChunk,
@@ -36,6 +41,8 @@ import type {
   NodeStatus,
   PauseInfo,
   PauseState,
+  RunnableCron,
+  RunnableExecution,
   Settings,
   SystemSample,
   UsageReading,
@@ -46,6 +53,8 @@ const COMMAND_TTL_MS = 60 * 1000;
 const JOBS_CACHE_MS = 10 * 1000;
 const MODEL_REFRESH_WAIT_MS = 90 * 1000;
 const BROWSE_WAIT_MS = 8 * 1000;
+// Claude's own minute, and a couple of syncs either side of it.
+const TITLE_WAIT_MS = 75 * 1000;
 
 const BOOKKEEPING_FIELDS = new Set([
   'lastRunAt',
@@ -111,6 +120,8 @@ export interface NodeListing {
   latestSample: SystemSample | null;
   /** This node's metrics over their alert line. */
   exceptions: MachineException[];
+  /** The job defaults this node sets itself; the rest follow the cluster's. */
+  jobDefaultOverrides: JobDefaultsOverride;
 }
 
 export interface NodeDetail extends NodeListing {
@@ -309,7 +320,12 @@ class Hub {
 
   public nodeConfig(id: string): EffectiveNodeConfig {
     const node = this.nodes.get(id);
-    return effectiveNodeConfig(node?.config ?? {}, node?.processors ?? DEFAULT_MAX_CONCURRENT_JOBS);
+    return effectiveNodeConfig(node?.config ?? {}, node?.processors ?? DEFAULT_MAX_CONCURRENT_JOBS, readJobDefaults(this.settings.jobDefaults));
+  }
+
+  /** What a job leaves to the defaults gets from the node it runs on. */
+  public jobDefaultsFor(job: Cron | Execution): JobDefaults {
+    return this.nodeConfig(this.nodeIdFor(job)).jobDefaults;
   }
 
   /** The zone a node's clock is set to, which a cron saved without one fires in. */
@@ -391,6 +407,7 @@ class Hub {
       usage: online ? node.status.usage ?? NO_USAGE : { ...NO_USAGE, reason: 'this node is offline' },
       latestSample: online ? node.samples.at(-1) ?? node.status.system?.latest ?? null : null,
       exceptions: machineExceptions([this.clusterNode(node)]),
+      jobDefaultOverrides: node.config.jobDefaults ?? {},
     };
   }
 
@@ -458,6 +475,25 @@ class Hub {
     const answer = await this.ask(nodeId, 'browse', { path: typed }, BROWSE_WAIT_MS);
     if (!answer.ok) throw new HubError(answer.error ?? 'the node could not list folders', 502);
     return answer.result as unknown as BrowseResult;
+  }
+
+  /**
+   * Asks the job's node for a title from claude, and puts it in place of the
+   * name taken from the prompt, if that is still the job's name when it comes.
+   * Waits on nothing and never fails the caller: when the node is offline, the
+   * call fails, or the answer is not a title, the first words stay.
+   */
+  public requestTitle(kind: JobKind, job: Cron | Execution): void {
+    const askedName = job.name;
+    this.ask(this.nodeIdFor(job), 'title', { prompt: job.prompt.slice(0, TITLE_PROMPT_LIMIT) }, TITLE_WAIT_MS)
+      .then(async (answer) => {
+        const title = answer.ok ? cleanTitle(answer.result?.title) : null;
+        if (!title) return;
+        if (await applyInferredTitle(kind, job.id, { askedName, prompt: job.prompt, title })) this.jobsChanged();
+      })
+      .catch((err: unknown) => {
+        if (!(err instanceof HubError)) console.error(`[hub] could not title "${askedName}": ${errorMessage(err)}`);
+      });
   }
 
   public jobsChanged(): void {
@@ -657,10 +693,17 @@ class Hub {
     if (wrote) this.jobsCache = null;
   }
 
+  /**
+   * A node's jobs and settings. Each job goes out with every setting it leaves
+   * to the defaults already filled in from this node's, so a node runs exactly
+   * what it is sent, whatever version it is: one from before job defaults
+   * existed would read a null as off. The stored nulls stay in the database
+   * and the API; a changed default reaches the node as changed jobs.
+   */
   private async work(nodeId: string, instance: string): Promise<{
     node: { id: string; isDefault: boolean };
-    crons: Cron[];
-    executions: Execution[];
+    crons: RunnableCron[];
+    executions: RunnableExecution[];
     settings: NodeSettings;
     pause: PauseState | null;
     commands: NodeCommand[];
@@ -671,14 +714,15 @@ class Hub {
     }
     const { crons, executions } = await this.allJobs();
     const mine = (job: Cron | Execution): boolean => this.nodeIdFor(job) === node.id;
+    const config = this.nodeConfig(node.id);
     const commands = node.commands.slice();
     return {
       node: { id: node.id, isDefault: node.id === this.defaultNodeId() },
-      crons: crons.filter(mine),
-      executions: executions.filter(mine),
+      crons: crons.filter(mine).map((cron) => resolveJob(cron, config.jobDefaults)),
+      executions: executions.filter(mine).map((execution) => resolveJob(execution, config.jobDefaults)),
       settings: {
         maxConcurrentJobs: node.config.maxConcurrentJobs ?? null,
-        usageDelayThresholds: this.nodeConfig(node.id).usageDelayThresholds,
+        usageDelayThresholds: config.usageDelayThresholds,
         defaultWorktreeInclude: this.settings.defaultWorktreeInclude ?? '',
         retrospectivePrompt: this.settings.retrospectivePrompt ?? '',
       },

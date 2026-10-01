@@ -1,3 +1,6 @@
+// What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
+import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
+
 const view = document.getElementById('view');
 const connEl = document.getElementById('conn');
 const toastsEl = document.getElementById('toasts');
@@ -999,7 +1002,8 @@ function cronFieldLegend(fields) {
  * `zone` is the time zone the expression is in: the one the cron was written in
  * while its expression is left alone, and the browser's once it is changed.
  */
-function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '' } = {}) {
+function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '', label = 'Cron' } = {}) {
+  input.id ||= uid('cron');
   const preview = el('div', { class: 'hint' });
   const zoneNote = el('span', {});
   const paintZone = () => {
@@ -1066,7 +1070,7 @@ function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '' } = 
   update();
 
   const field = el('div', { class: 'field' }, [
-    el('label', { text: 'Cron' }),
+    el('label', { for: input.id, text: label }),
     input,
     el('div', { class: 'preset-row' }, [
       preset('30s', '*/30 * * * * *', 'Every 30 seconds'),
@@ -1098,6 +1102,8 @@ function cronPicker(input, { zone = () => BROWSER_TIMEZONE, node = () => '' } = 
 async function jobFormSettings() {
   const settings = await api('/api/settings').catch(() => ({}));
   return {
+    // The cluster's, which a job follows until its node's own arrive with the node list.
+    jobDefaults: settings.jobDefaults ?? { usageDelay: {} },
     prompt: typeof settings.defaultPrompt === 'string' ? settings.defaultPrompt : '',
     commands:
       typeof settings.commonCommands === 'string'
@@ -1143,8 +1149,11 @@ function commandButtons(commands) {
  * Wraps the Working Directory input in a directory picker: suggestions from the
  * server as you type, keyboard selection, and a live note of where the path lands.
  * A null label leaves the field unlabelled, for a place with a heading of its own.
+ * `onResult` hears each answer, which says whether the folder is in a git
+ * repository; `lookup` asks again without opening the menu, for a path set from script.
  */
-function directoryPicker(input, { label = 'Working Directory', node = () => '' } = {}) {
+function directoryPicker(input, { label = 'Working Directory', node = () => '', onResult = () => {} } = {}) {
+  input.id ||= uid('directory');
   const menu = el('div', { class: 'combo-menu', hidden: 'hidden' });
   const hint = el('div', { class: 'hint', text: DIR_HINT });
   let items = [];
@@ -1175,7 +1184,8 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
         ),
       ),
     );
-    menu.hidden = items.length === 0;
+    // A lookup made from script, with the field not focused, updates the note and nothing else.
+    menu.hidden = items.length === 0 || document.activeElement !== input;
     if (active >= 0) menu.children[active]?.scrollIntoView({ block: 'nearest' });
   };
 
@@ -1199,9 +1209,13 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
           hint.textContent = DIR_HINT;
           hint.className = 'hint';
         } else {
-          hint.textContent = result.exists ? `→ ${result.resolved}` : `${result.resolved} does not exist`;
+          // A node older than the git check answers without the flag, and then nothing is said about it.
+          const repository =
+            result.inGitRepository === undefined ? '' : result.inGitRepository ? ' · in a git repository' : ' · not in a git repository';
+          hint.textContent = result.exists ? `→ ${result.resolved}${repository}` : `${result.resolved} does not exist`;
           hint.className = result.exists ? 'hint ok' : 'hint warn';
         }
+        onResult(result);
       })
       .catch((err) => {
         if (mine !== seq) return;
@@ -1238,11 +1252,97 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
     }
   });
 
-  return el('div', { class: 'field' }, [
-    label ? el('label', { text: label }) : null,
-    el('div', { class: 'combo' }, [input, menu]),
-    hint,
-  ]);
+  return {
+    lookup,
+    field: el('div', { class: 'field' }, [
+      label ? el('label', { for: input.id, text: label }) : null,
+      el('div', { class: 'combo' }, [input, menu]),
+      hint,
+    ]),
+  };
+}
+
+/**
+ * How a setting that can follow a default says which it is doing. A job
+ * follows its node's defaults; a node's own defaults follow the cluster's. Null
+ * is the Settings page itself, where there is nothing further up to follow.
+ */
+const JOB_FOLLOW = { marker: 'default', reset: 'Use default' };
+const NODE_FOLLOW = { marker: 'cluster default', reset: 'Use the cluster default' };
+
+let settingIds = 0;
+
+/** A fresh id, so a label can name the input it belongs to. */
+function uid(prefix) {
+  settingIds += 1;
+  return `${prefix}-${settingIds}`;
+}
+
+/**
+ * One setting that can follow a default, on a checkbox or a select. The input
+ * always shows the value in force. While the setting follows the default it is
+ * marked as the default; once changed it offers to go back, which is what
+ * saves null. `read` answers the setting's own value, or null while it follows.
+ */
+function followSetting(input, { own = null, inherited, follow = JOB_FOLLOW, what, onChange = () => {} }) {
+  const isBox = input.type === 'checkbox';
+  let value = follow ? own : (own ?? inherited);
+  let fallback = inherited;
+  const marker = el('span', { class: 'setting-default', text: follow?.marker ?? '' });
+  const reset = el('button', {
+    type: 'button',
+    class: 'setting-reset',
+    text: follow?.reset ?? '',
+    'aria-label': `${follow?.reset ?? ''}: ${what}`,
+  });
+  const tag = follow ? el('span', { class: 'setting-tag' }, [marker, reset]) : null;
+
+  const show = () => {
+    const current = value ?? fallback;
+    if (isBox) input.checked = Boolean(current);
+    else input.value = current ?? '';
+    marker.hidden = value !== null;
+    reset.hidden = value === null;
+  };
+
+  input.addEventListener('change', () => {
+    value = isBox ? input.checked : input.value;
+    show();
+    onChange(value);
+  });
+  reset.addEventListener('click', () => {
+    value = null;
+    show();
+    onChange(null);
+    input.focus();
+  });
+  show();
+
+  return {
+    tag,
+    read: () => value,
+    effective: () => value ?? fallback,
+    isOwn: () => value !== null,
+    /** Sets the setting's own value from the page, as the git check does. */
+    set: (next) => {
+      value = next;
+      show();
+    },
+    /** A new default to follow, when the job moves to another node. */
+    follow: (next) => {
+      fallback = next;
+      show();
+    },
+    refresh: show,
+  };
+}
+
+/** A checkbox and its words, marked when it follows a default. */
+function followCheck(text, options) {
+  const box = el('input', { type: 'checkbox' });
+  const setting = followSetting(box, { what: text, ...options });
+  const row = el('span', { class: 'setting-row' }, [el('label', { class: 'check' }, [box, text]), setting.tag]);
+  return { ...setting, box, row };
 }
 
 /**
@@ -1250,23 +1350,23 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '' }
  * select and the Refresh button are disabled while discovery is running, since
  * it spawns a probe per candidate and takes a few seconds.
  */
-function modelPicker(selected) {
-  const select = el('select', { class: 'select mono' });
+function modelPicker({ own = null, inherited = '', follow = JOB_FOLLOW, onChange, onPaint = () => {} } = {}) {
+  const select = el('select', { class: 'select mono', id: uid('model') });
   const refresh = el('button', { type: 'button', class: 'btn small', text: 'Refresh' });
   const note = el('div', { class: 'hint' });
-  let current = selected ?? '';
+  const setting = followSetting(select, { own, inherited, follow, what: 'Model', onChange });
+  let state = { models: [], loading: true, error: null, discoveredAt: null };
 
-  const paint = (state) => {
-    current = select.value || current;
-    const options = [{ value: '', label: 'Default (whatever the CLI is set to)' }, ...state.models];
+  const paint = (next = state) => {
+    state = next;
+    const current = setting.effective() ?? '';
+    const options = [{ value: '', label: 'CLI default (whatever the CLI is set to)' }, ...state.models];
     // A model saved earlier that this CLI no longer lists must not be silently dropped.
     if (current && !options.some((option) => option.value === current)) {
       options.push({ value: current, label: `${current} (not in this CLI's catalog)` });
     }
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    select.replaceChildren(...options.map((option) => el('option', { value: option.value }, option.label)));
+    setting.refresh();
 
     select.disabled = state.loading;
     refresh.disabled = state.loading;
@@ -1282,14 +1382,15 @@ function modelPicker(selected) {
       note.textContent = `${state.models.length} models, checked ${fmtRelative(state.discoveredAt)}. Passed to claude as --model.`;
       note.className = 'hint';
     }
+    onPaint();
   };
 
   const load = () =>
     api('/api/models')
-      .then((state) => {
-        paint(state);
+      .then((next) => {
+        paint(next);
         // Discovery started at boot may still be running; check back until it lands.
-        if (state.loading) {
+        if (next.loading) {
           clearTimeout(modelPollTimer);
           modelPollTimer = setTimeout(load, 1000);
         }
@@ -1309,14 +1410,26 @@ function modelPicker(selected) {
     }
   });
 
-  paint({ models: [], loading: true, error: null, discoveredAt: null });
+  paint();
   load();
 
   return {
-    read: () => select.value,
+    read: setting.read,
+    isOwn: setting.isOwn,
+    follow: (next) => {
+      setting.follow(next);
+      paint();
+    },
+    /** The model in force, in the dropdown's words: "Sonnet" rather than "Sonnet (latest)". */
+    describe: () => {
+      const value = setting.effective() ?? '';
+      if (!value) return 'CLI default model';
+      const option = state.models.find((model) => model.value === value);
+      return (option?.label ?? value).replace(/ \(latest\)$/, '');
+    },
     field: el('div', { class: 'field' }, [
-      el('label', { text: 'Model' }),
-      el('div', { class: 'select-row' }, [select, refresh]),
+      el('label', { for: select.id, text: 'Model' }),
+      el('div', { class: 'select-row' }, [select, refresh, setting.tag]),
       note,
     ]),
   };
@@ -1326,51 +1439,69 @@ function modelPicker(selected) {
  * Effort dropdown. The levels come from the server, so the list here and the
  * value the run is allowed to pass stay one list. Empty leaves --effort off.
  */
-function effortPicker(selected) {
-  const select = el('select', { class: 'select mono' });
+function effortPicker({ own = null, inherited = '', follow = JOB_FOLLOW, onChange } = {}) {
+  const select = el('select', { class: 'select mono', id: uid('effort') });
   const note = el('div', {
     class: 'hint',
     text: 'Passed to claude as --effort. Higher levels think longer, so runs cost more and take longer.',
   });
-  const current = selected ?? '';
+  const setting = followSetting(select, { own, inherited, follow, what: 'Effort', onChange });
+  let levels = [];
 
-  const paint = (levels) => {
+  const paint = () => {
+    const current = setting.effective() ?? '';
     const options = [
-      { value: '', label: 'Default (whatever the CLI is set to)' },
+      { value: '', label: 'CLI default (whatever the CLI is set to)' },
       ...levels.map((level) => ({ value: level.id, label: level.label })),
     ];
     // An effort saved earlier that this server no longer offers must not be silently dropped.
     if (current && !options.some((option) => option.value === current)) {
       options.push({ value: current, label: `${current} (no longer offered)` });
     }
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    select.replaceChildren(...options.map((option) => el('option', { value: option.value }, option.label)));
+    setting.refresh();
   };
 
-  paint([]);
+  paint();
   api('/api/config')
-    .then((config) => paint(config.effortLevels ?? []))
+    .then((config) => {
+      levels = config.effortLevels ?? [];
+      paint();
+    })
     .catch((err) => {
       note.textContent = `Could not load the effort levels: ${err.message}`;
       note.className = 'hint warn';
     });
 
   return {
-    read: () => select.value,
-    field: el('div', { class: 'field' }, [el('label', { text: 'Effort' }), select, note]),
+    read: setting.read,
+    isOwn: setting.isOwn,
+    follow: (next) => {
+      setting.follow(next);
+      paint();
+    },
+    describe: () => {
+      const value = setting.effective() ?? '';
+      if (!value) return 'CLI default effort';
+      return `${levels.find((level) => level.id === value)?.label ?? value} effort`;
+    },
+    field: el('div', { class: 'field' }, [
+      el('label', { for: select.id, text: 'Effort' }),
+      el('div', { class: 'select-row' }, [select, setting.tag]),
+      note,
+    ]),
   };
 }
 
 /**
  * Delay for usage: the limits a trigger should wait out rather than run through.
  * The categories come from the server, so the checkboxes here and the limits a
- * held trigger is actually checked against stay one list.
+ * held trigger is actually checked against stay one list. Each box follows its
+ * default on its own.
  */
-function usageDelayPicker(selected) {
+function usageDelayPicker({ own = {}, inherited = {}, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
   const boxes = new Map();
-  const grid = el('div', { class: 'delay-grid' });
+  const grid = el('fieldset', { class: 'delay-grid' });
   const note = el('div', {
     class: 'hint',
     text:
@@ -1386,20 +1517,43 @@ function usageDelayPicker(selected) {
   ]);
   let categories = [];
   let thresholds = null;
+  let fallback = { ...inherited };
+  // Boxes held ticked by another choice on the form, with the reason shown on them.
+  const locks = new Map();
+
+  // The reason stands where the default marker would, since the box follows neither while held.
+  const applyLock = (id) => {
+    const setting = boxes.get(id);
+    if (!setting) return;
+    const reason = locks.get(id);
+    setting.box.disabled = Boolean(reason);
+    if (reason) setting.box.checked = true;
+    else setting.refresh();
+    setting.lockNote ??= setting.row.appendChild(el('span', { class: 'setting-default' }));
+    setting.lockNote.textContent = reason ?? '';
+    setting.lockNote.hidden = !reason;
+    if (setting.tag) setting.tag.hidden = Boolean(reason);
+  };
 
   const paint = () => {
-    const ticked = boxes.size ? Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])) : selected;
+    // Redrawn when the categories or percentages arrive, keeping what is ticked so far.
+    const kept = boxes.size ? Object.fromEntries([...boxes].map(([id, setting]) => [id, setting.read()])) : own;
     boxes.clear();
     grid.replaceChildren(
+      el('legend', { class: 'sr-only', text: 'Delay for usage' }),
       ...categories.map((category) => {
-        const box = el('input', { type: 'checkbox' });
-        box.checked = Boolean(ticked?.[category.id]);
-        boxes.set(category.id, box);
         const threshold = thresholds?.[category.id] ?? category.threshold;
-        return el('label', { class: 'check', title: category.hint }, [
-          box,
-          el('span', {}, [`${category.label} `, el('span', { class: 'muted', text: `(${threshold}%)` })]),
-        ]);
+        const setting = followCheck(category.label, {
+          own: kept?.[category.id] ?? null,
+          inherited: Boolean(fallback[category.id]),
+          follow,
+          onChange: (value) => onChange(category.id, value),
+        });
+        setting.box.closest('label').append(' ', el('span', { class: 'muted', text: `(${threshold}%)` }));
+        setting.box.closest('label').title = category.hint;
+        boxes.set(category.id, setting);
+        applyLock(category.id);
+        return setting.row;
       }),
     );
   };
@@ -1420,8 +1574,24 @@ function usageDelayPicker(selected) {
       thresholds = next ?? null;
       paint();
     },
-    read: () => Object.fromEntries([...boxes].map(([id, box]) => [id, box.checked])),
-    field: el('div', { class: 'field' }, [el('label', { text: 'Delay for usage' }), grid, note, thresholdsNote]),
+    follow: (next) => {
+      fallback = { ...next };
+      for (const [id, setting] of boxes) {
+        setting.follow(Boolean(fallback[id]));
+        applyLock(id);
+      }
+    },
+    /** Holds one box ticked for `reason`, or lets it go again given null. */
+    lock: (id, reason) => {
+      if (reason) locks.set(id, reason);
+      else locks.delete(id);
+      applyLock(id);
+    },
+    read: () => Object.fromEntries([...boxes].map(([id, setting]) => [id, setting.read()])),
+    /** The boxes set apart from the default, as [label, ticked] pairs. */
+    own: () => categories.filter((category) => boxes.get(category.id)?.isOwn()).map((category) => [category.label, boxes.get(category.id).read()]),
+    setting: (id) => boxes.get(id) ?? null,
+    field: el('div', { class: 'field' }, [el('label', { text: 'Delay for usage' }), grid, brief ? null : note, brief ? null : thresholdsNote]),
   };
 }
 
@@ -1432,65 +1602,122 @@ function usageDelayPicker(selected) {
  * A one-time execution runs once, so its worktree would only ever be left
  * behind: the clean up box is ticked and locked, and the server forces it too.
  */
-function worktreePicker(job, { id = null, oneTime = false } = {}) {
-  const useWorktree = el('input', { type: 'checkbox' });
-  useWorktree.checked = Boolean(job?.useWorktree);
-  const cleanup = el('input', { type: 'checkbox' });
-  cleanup.checked = oneTime || Boolean(job?.cleanupWorktree);
-  cleanup.disabled = oneTime;
+function worktreePicker({ id = null, oneTime = false, own = {}, inherited = {}, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
+  const useWorktree = followCheck('Use worktree', {
+    own: own.useWorktree ?? null,
+    inherited: Boolean(inherited.useWorktree),
+    follow,
+    onChange: (value) => onChange('useWorktree', value),
+  });
+  const cleanup = followCheck('Clean up worktree after execution', {
+    own: oneTime ? true : (own.cleanupWorktree ?? null),
+    inherited: Boolean(inherited.cleanupWorktree),
+    follow: oneTime ? null : follow,
+    onChange: (value) => onChange('cleanupWorktree', value),
+  });
+  if (oneTime) {
+    cleanup.box.disabled = true;
+    cleanup.box.closest('label').title = 'One-time executions always clean up';
+  }
+  const note = el('div', { class: 'hint warn', hidden: 'hidden' });
 
   const code = (text) => el('span', { class: 'mono', text });
 
   return {
-    read: () => ({ useWorktree: useWorktree.checked, cleanupWorktree: cleanup.checked }),
+    useWorktree,
+    cleanup,
+    /** Says why Use worktree is off, or clears that when given nothing. */
+    explain: (text) => {
+      note.textContent = text ?? '';
+      note.hidden = !text;
+    },
+    read: () => ({ useWorktree: useWorktree.read(), cleanupWorktree: oneTime ? true : cleanup.read() }),
+    follow: (next) => {
+      useWorktree.follow(Boolean(next?.useWorktree));
+      if (!oneTime) cleanup.follow(Boolean(next?.cleanupWorktree));
+    },
     field: el('div', { class: 'field' }, [
       el('label', { text: 'Worktree' }),
-      el('label', { class: 'check' }, [useWorktree, 'Use worktree']),
-      el('label', { class: 'check', title: oneTime ? 'One-time executions always clean up' : null }, [
-        cleanup,
-        'Clean up worktree after execution',
-      ]),
-      el('div', { class: 'hint' }, [
-        'With Use worktree on, each run starts Claude in a git worktree named after this job\'s ID',
-        id ? [' (', code(id), ')'] : ', given when it is first saved',
-        '. The name stays the same between executions, so without clean up every execution reuses one worktree. ',
-        'Using a worktree adds a little spin-up time to each execution, and cleaning up adds tear-down time. ',
-        'One-time executions always clean up.',
-      ].flat()),
+      useWorktree.row,
+      cleanup.row,
+      note,
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            'With Use worktree on, each run starts Claude in a git worktree named after this job\'s ID',
+            id ? [' (', code(id), ')'] : ', given when it is first saved',
+            '. The name stays the same between executions, so without clean up every execution reuses one worktree. ',
+            'Using a worktree adds a little spin-up time to each execution, and cleaning up adds tear-down time. ',
+            'One-time executions always clean up.',
+          ].flat()),
       el('div', { class: 'hint warn', text: 'Clean up force-removes the worktree after each execution. Uncommitted files in it are not kept.' }),
-      el('div', { class: 'hint' }, [
-        'The default ',
-        code('.worktreeinclude'),
-        ', which lists the files copied into new worktrees, is set on the ',
-        // A new tab, so following it does not throw away what is typed in the form.
-        el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
-        '.',
-      ]),
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            'The default ',
+            code('.worktreeinclude'),
+            ', which lists the files copied into new worktrees, is set on the ',
+            // A new tab, so following it does not throw away what is typed in the form.
+            el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
+            '.',
+          ]),
+    ]),
+  };
+}
+
+/** The Retrospective box both job forms share. */
+function retrospectivePicker({ own = null, inherited = false, follow = JOB_FOLLOW, onChange = () => {}, brief = false } = {}) {
+  const box = followCheck('Run a retrospective at the end of each execution', { own, inherited, follow, onChange });
+  return {
+    ...box,
+    read: () => ({ retrospective: box.read() }),
+    field: el('div', { class: 'field' }, [
+      el('label', { text: 'Retrospective' }),
+      box.row,
+      brief
+        ? null
+        : el('div', { class: 'hint' }, [
+            "Adds the retrospective prompt to the end of this job's prompt, so Claude reviews the run once the task is done. ",
+            "A retrospective with something in it is written at the end of the run's log, marked in the run list, and sent as a notification. ",
+            'One with nothing to report leaves no trace. The prompt is set on the ',
+            el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
+            '.',
+          ]),
     ]),
   };
 }
 
 /**
- * The Retrospective box both job forms share. Off unless the job already has
- * it on, so a new job starts without one.
+ * The six job defaults as a block of their own: the Settings page's New job
+ * defaults, and each node's own version of them. `own` is what is set here and
+ * `inherited` what shows through where nothing is; `save` gets one change at a
+ * time, shaped as the API takes it.
  */
-function retrospectivePicker(job) {
-  const box = el('input', { type: 'checkbox' });
-  box.checked = Boolean(job?.retrospective);
-  return {
-    read: () => ({ retrospective: box.checked }),
-    field: el('div', { class: 'field' }, [
-      el('label', { text: 'Retrospective' }),
-      el('label', { class: 'check' }, [box, 'Run a retrospective at the end of each execution']),
-      el('div', { class: 'hint' }, [
-        "Adds the retrospective prompt to the end of this job's prompt, so Claude reviews the run once the task is done. ",
-        "A retrospective with something in it is written at the end of the run's log, marked in the run list, and sent as a notification. ",
-        'One with nothing to report leaves no trace. The prompt is set on the ',
-        el('a', { href: '#/settings', target: '_blank', rel: 'noopener', text: 'Settings page' }),
-        '.',
-      ]),
-    ]),
-  };
+function jobDefaultsParts({ own = {}, inherited = {}, follow = null, save }) {
+  const worktree = worktreePicker({
+    own,
+    inherited,
+    follow,
+    brief: true,
+    onChange: (key, value) => save({ [key]: value }),
+  });
+  const model = modelPicker({ own: own.model ?? null, inherited: inherited.model ?? '', follow, onChange: (value) => save({ model: value }) });
+  const effort = effortPicker({ own: own.effort ?? null, inherited: inherited.effort ?? '', follow, onChange: (value) => save({ effort: value }) });
+  const usageDelay = usageDelayPicker({
+    own: own.usageDelay ?? {},
+    inherited: inherited.usageDelay ?? {},
+    follow,
+    brief: true,
+    onChange: (id, value) => save({ usageDelay: { [id]: value } }),
+  });
+  const retrospective = retrospectivePicker({
+    own: own.retrospective ?? null,
+    inherited: Boolean(inherited.retrospective),
+    follow,
+    brief: true,
+    onChange: (value) => save({ retrospective: value }),
+  });
+  return { usageDelay, parts: [worktree.field, model.field, effort.field, usageDelay.field, retrospective.field] };
 }
 
 /**
@@ -1570,7 +1797,7 @@ function scheduledAtPicker(input) {
   update();
 
   return el('div', { class: 'field' }, [
-    el('label', { text: 'Runs at' }),
+    el('label', { for: input.id || null, text: 'Runs at' }),
     input,
     el('div', { class: 'preset-row' }, [
       // The buttons are all relative to now, and the row reads as a sentence
@@ -1586,6 +1813,57 @@ function scheduledAtPicker(input) {
     el('div', { class: 'hint', text: 'Your local time. It runs once, then stays in the list as history.' }),
     preview,
   ]);
+}
+
+/**
+ * The six settings a job can leave to its node's defaults, each showing what it
+ * will use. What the job has not set follows the node it runs on, so picking
+ * another node moves them with it; `followNode` takes that node's listing.
+ * `onChange` hears any change, so the More options line can keep up.
+ */
+function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, onChange = () => {} } = {}) {
+  const own = job ?? {};
+  const inherited = clusterDefaults;
+  const worktree = worktreePicker({ id, oneTime, own, inherited, onChange });
+  const model = modelPicker({ own: own.model ?? null, inherited: inherited.model ?? '', onChange, onPaint: onChange });
+  const effort = effortPicker({ own: own.effort ?? null, inherited: inherited.effort ?? '', onChange });
+  const usageDelay = usageDelayPicker({ own: own.usageDelay ?? {}, inherited: inherited.usageDelay ?? {}, onChange });
+  const retrospective = retrospectivePicker({ own: own.retrospective ?? null, inherited: Boolean(inherited.retrospective), onChange });
+  const onOff = (value) => (value ? 'on' : 'off');
+  return {
+    worktree,
+    model,
+    effort,
+    usageDelay,
+    retrospective,
+    followNode: (listing) => {
+      const next = listing?.config?.jobDefaults ?? clusterDefaults;
+      worktree.follow(next);
+      model.follow(next.model ?? '');
+      effort.follow(next.effort ?? '');
+      usageDelay.follow(next.usageDelay ?? {});
+      retrospective.follow(Boolean(next.retrospective));
+      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+      onChange();
+    },
+    /** What this job sets for itself, in a few words each: "Worktree off", "Sonnet", "waits for Weekly". */
+    overrides: () =>
+      [
+        worktree.useWorktree.isOwn() ? `Worktree ${onOff(worktree.useWorktree.read())}` : null,
+        !oneTime && worktree.cleanup.isOwn() ? (worktree.cleanup.read() ? 'Cleans up worktree' : 'Keeps worktree') : null,
+        model.isOwn() ? model.describe() : null,
+        effort.isOwn() ? effort.describe() : null,
+        ...usageDelay.own().map(([label, ticked]) => (ticked ? `waits for ${label}` : `no ${label} wait`)),
+        retrospective.isOwn() ? `Retrospective ${onOff(retrospective.read().retrospective)}` : null,
+      ].filter(Boolean),
+    read: () => ({
+      ...worktree.read(),
+      model: model.read(),
+      effort: effort.read(),
+      usageDelay: usageDelay.read(),
+      ...retrospective.read(),
+    }),
+  };
 }
 
 /**
@@ -1670,315 +1948,310 @@ function nodePicker(selected, { onChange = () => {} } = {}) {
 }
 
 /**
- * One form serves three jobs. Duplicating loads the source cron exactly as
- * editing does, so every field arrives filled in; only the name carries a
- * suffix, and Save creates a new cron instead of writing back to the source.
+ * The rule a blank Name is filled by, from the hub's own build of it. Loaded
+ * once; a page that cannot load it just shows a plainer placeholder.
  */
-async function renderForm(id, duplicateOf) {
-  const sourceId = id ?? duplicateOf;
-  const cron = sourceId ? await api(`/api/crons/${sourceId}`) : null;
-  const defaults = await jobFormSettings();
-  const errorBox = el('div', { class: 'error', hidden: 'hidden' });
-
-  const inputs = {
-    name: el('input', {
-      type: 'text',
-      value: duplicateOf ? `${cron.name} - Duplicate` : (cron?.name ?? ''),
-      placeholder: 'Nightly changelog',
-      maxlength: '120',
-    }),
-    description: el('input', {
-      type: 'text',
-      value: cron?.description ?? '',
-      placeholder: 'What this run is for',
-    }),
-    cron: el('input', { type: 'text', class: 'mono', value: cron?.cron ?? '', placeholder: '0 9 * * *' }),
-    workingDirectory: el('input', {
-      type: 'text',
-      class: 'mono',
-      // New crons start at the node's default; editing or duplicating shows the source's.
-      value: cron ? (cron.workingDirectory ?? '') : '~/',
-      placeholder: '~/code/project',
-      autocomplete: 'off',
-      spellcheck: 'false',
-    }),
-    prompt: el('textarea', { placeholder: 'The prompt passed to claude -p' }),
-    isActive: el('input', { type: 'checkbox' }),
-  };
-  inputs.prompt.value = cron ? (cron.prompt ?? '') : defaults.prompt;
-  inputs.isActive.checked = cron ? Boolean(cron.isActive) : true;
-
-  const project = projectPicker(cron?.projectId);
-  const worktree = worktreePicker(cron, { id });
-  const retrospective = retrospectivePicker(cron);
-  const model = modelPicker(cron?.model ?? '');
-  const effort = effortPicker(cron?.effort ?? '');
-  const usageDelay = usageDelayPicker(cron?.usageDelay ?? null);
-  const node = nodePicker(cron?.nodeId ?? '', {
-    onChange: (listing) => {
-      followNodeDirectory(inputs.workingDirectory, listing, Boolean(cron));
-      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
-      schedule.refresh();
-    },
-  });
-  // Left as saved, an expression keeps the zone it was written in; any change to it is written in this browser's.
-  const cronZone = () => (cron?.timezone && inputs.cron.value.trim() === cron.cron.trim() ? cron.timezone : BROWSER_TIMEZONE);
-  const schedule = cronPicker(inputs.cron, { zone: cronZone, node: () => node.read() });
-
-  const showError = (message) => {
-    errorBox.textContent = message;
-    errorBox.hidden = false;
-    errorBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  };
-
-  const save = async (event) => {
-    event.preventDefault();
-    errorBox.hidden = true;
-    const payload = {
-      name: inputs.name.value,
-      description: inputs.description.value,
-      cron: inputs.cron.value,
-      timezone: cronZone(),
-      projectId: project.read(),
-      nodeId: node.read(),
-      workingDirectory: inputs.workingDirectory.value,
-      ...worktree.read(),
-      model: model.read(),
-      effort: effort.read(),
-      usageDelay: usageDelay.read(),
-      prompt: inputs.prompt.value,
-      ...retrospective.read(),
-      isActive: inputs.isActive.checked,
-    };
-    try {
-      if (id) await api(`/api/crons/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
-      else await api('/api/crons', { method: 'POST', body: JSON.stringify(payload) });
-      toast(id ? 'Saved' : 'Cron created');
-      location.hash = '#/';
-    } catch (err) {
-      showError(err.message);
-    }
-  };
-
-  const remove = async () => {
-    if (!confirm(`Delete "${cron.name}"? Its log history is kept on disk.`)) return;
-    try {
-      await api(`/api/crons/${id}`, { method: 'DELETE' });
-      toast('Cron deleted');
-      location.hash = '#/';
-    } catch (err) {
-      showError(err.message);
-    }
-  };
-
-  const field = (label, input, hint) =>
-    el('div', { class: 'field' }, [
-      el('label', { text: label }),
-      input,
-      hint ? el('div', { class: 'hint', text: hint }) : null,
-    ]);
-
-  view.replaceChildren(
-    el('div', { class: 'breadcrumb' }, [el('a', { href: '#/', text: '← All crons' })]),
-    el('div', { class: 'page-head' }, [
-      el('div', {}, [
-        el('h1', { text: id ? 'Edit cron' : duplicateOf ? 'Duplicate cron' : 'New cron' }),
-        el('p', { class: 'sub', text: 'Runs claude -p with the prompt below on the schedule you set.' }),
-      ]),
-    ]),
-    el('form', { class: 'card', onsubmit: save }, [
-      errorBox,
-      field('Name', inputs.name),
-      field('Description', inputs.description),
-      project.field,
-      schedule.field,
-      node.field,
-      directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
-      worktree.field,
-      model.field,
-      effort.field,
-      usageDelay.field,
-      field('Prompt', inputs.prompt),
-      commandButtons(defaults.commands),
-      retrospective.field,
-      el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
-      el('div', { class: 'form-actions' }, [
-        el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
-        el('a', { class: 'btn', href: '#/', text: 'Cancel' }),
-        id ? el('a', { class: 'btn', href: `#/new/${id}`, text: 'Duplicate' }) : null,
-        el('div', { class: 'spacer' }),
-        id ? el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: remove }) : null,
-      ]),
-    ]),
-  );
-}
+const NAMING = import('/shared/naming.js').catch(() => null);
 
 /**
- * The one-time execution form: the cron form with a date where the schedule
- * was, and everything else identical — working directory, model, effort, the
- * usage delay, the prompt.
+ * Both job forms. They differ in when the job runs, and in Is Active, which
+ * only a cron has: a new one-time execution is saved active, and an edit keeps
+ * what it had. Everything else reads
+ * the same, in the order a person fills it: the prompt, which has the focus;
+ * when; where; an optional name; and the rest folded under More options, with
+ * a line saying what in there differs from the defaults.
+ *
+ * One form serves three jobs. Duplicating loads the source exactly as editing
+ * does, so every field arrives filled in; only the name carries a suffix, and
+ * Save creates a new job instead of writing back to the source.
  */
-async function renderExecutionForm(id, duplicateOf) {
+async function renderJobForm(kind, id, duplicateOf) {
+  const oneTime = kind === 'execution';
+  const words = oneTime
+    ? { noun: 'one-time execution', api: '/api/executions', home: '#/one-time', back: '← All one-time executions', duplicate: '#/one-time/new/', created: 'One-time execution created' }
+    : { noun: 'cron', api: '/api/crons', home: '#/', back: '← All crons', duplicate: '#/new/', created: 'Cron created' };
   const sourceId = id ?? duplicateOf;
-  const execution = sourceId ? await api(`/api/executions/${sourceId}`) : null;
-  const defaults = await jobFormSettings();
-  const errorBox = el('div', { class: 'error', hidden: 'hidden' });
-
-  /**
-   * An ISO time in the shape the datetime-local field wants: local, no zone.
-   *
-   * With nothing to read — a new execution, or a duplicate of one already run
-   * — it offers tomorrow at 8am. Most one-time runs are "do this overnight",
-   * and a default in the morning is one nobody has to clear first.
-   */
-  const asFieldValue = (iso) => {
-    let date;
-    if (iso) date = new Date(iso);
-    else {
-      date = new Date();
-      date.setDate(date.getDate() + 1);
-      date.setHours(8, 0, 0, 0);
-    }
-    if (Number.isNaN(date.getTime())) return '';
-    const pad = (value) => String(value).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  };
+  const [job, defaults, naming] = await Promise.all([
+    sourceId ? api(`${words.api}/${sourceId}`) : null,
+    jobFormSettings(),
+    NAMING,
+  ]);
+  const errorBox = el('div', { class: 'error', role: 'alert', tabindex: '-1', hidden: 'hidden' });
 
   const inputs = {
+    prompt: el('textarea', { class: 'prompt-input', id: uid('prompt'), placeholder: 'What claude should do. Passed to claude -p.' }),
     name: el('input', {
       type: 'text',
-      value: duplicateOf ? `${execution.name} - Duplicate` : (execution?.name ?? ''),
-      placeholder: 'Backfill the September invoices',
+      id: uid('name'),
+      value: duplicateOf ? `${job.name} - Duplicate` : (job?.name ?? ''),
       maxlength: '120',
+      autocomplete: 'off',
     }),
-    description: el('input', {
-      type: 'text',
-      value: execution?.description ?? '',
-      placeholder: 'What this run is for',
-    }),
-    scheduledAt: el('input', {
-      type: 'datetime-local',
-      class: 'mono',
-      // A duplicate of something already run gets a fresh default rather than
-      // the source's date, which is in the past and would fire on save.
-      value: asFieldValue(duplicateOf ? null : execution?.scheduledAt),
-    }),
+    description: el('input', { type: 'text', id: uid('description'), value: job?.description ?? '', placeholder: 'What this run is for' }),
+    cron: el('input', { type: 'text', class: 'mono', value: job?.cron ?? '', placeholder: '0 9 * * *' }),
     workingDirectory: el('input', {
       type: 'text',
       class: 'mono',
-      value: execution ? (execution.workingDirectory ?? '') : '~/',
+      // New jobs start at the node's default; editing or duplicating shows the source's.
+      value: job ? (job.workingDirectory ?? '') : '~/',
       placeholder: '~/code/project',
       autocomplete: 'off',
       spellcheck: 'false',
     }),
-    prompt: el('textarea', { placeholder: 'The prompt passed to claude -p' }),
-    isActive: el('input', { type: 'checkbox' }),
+    isActive: el('input', { type: 'checkbox', id: uid('active') }),
   };
-  inputs.prompt.value = execution ? (execution.prompt ?? '') : defaults.prompt;
-  inputs.isActive.checked = execution ? Boolean(execution.isActive) : true;
+  inputs.prompt.value = job ? (job.prompt ?? '') : defaults.prompt;
+  inputs.isActive.checked = job ? Boolean(job.isActive) : true;
 
-  const project = projectPicker(execution?.projectId);
-  const worktree = worktreePicker(execution, { id, oneTime: true });
-  const node = nodePicker(execution?.nodeId ?? '', {
-    onChange: (listing) => {
-      followNodeDirectory(inputs.workingDirectory, listing, Boolean(execution));
-      usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
+  // ---- name: blank takes the name the save will give it ----
+  const paintNamePlaceholder = () => {
+    const prompt = inputs.prompt.value;
+    inputs.name.placeholder = prompt.trim() && naming ? naming.nameFromPrompt(prompt) : 'Named from the prompt when left blank';
+  };
+  inputs.prompt.addEventListener('input', paintNamePlaceholder);
+  paintNamePlaceholder();
+
+  // ---- more options ----
+  const summary = el('span', { class: 'more-summary' });
+  // Assigned just below; the pickers report changes while they are still being built.
+  let settings = null;
+  const paintSummary = () => {
+    const overrides = settings?.overrides() ?? [];
+    summary.textContent = overrides.length ? overrides.join(' · ') : 'Cluster defaults';
+  };
+  settings = jobSettingPickers(job, defaults.jobDefaults, { id, oneTime, onChange: () => paintSummary() });
+  const project = projectPicker(job?.projectId);
+
+  // ---- where: the node, and a folder on it; a worktree needs a git repository ----
+  const gitNote = el('div', { class: 'hint warn', hidden: 'hidden', text: 'Not in a git repository, so no worktree' });
+  // Set when the form turned Use worktree off itself, so a folder in a repository can turn it back.
+  let worktreeTurnedOff = false;
+  settings.worktree.useWorktree.box.addEventListener('change', () => {
+    worktreeTurnedOff = false;
+  });
+  const directory = directoryPicker(inputs.workingDirectory, {
+    node: () => node.read(),
+    onResult: (result) => {
+      if (!result.exists || result.inGitRepository === undefined) return;
+      const useWorktree = settings.worktree.useWorktree;
+      if (!result.inGitRepository) {
+        if (useWorktree.effective()) {
+          useWorktree.set(false);
+          worktreeTurnedOff = true;
+        }
+      } else if (worktreeTurnedOff) {
+        useWorktree.set(null);
+        worktreeTurnedOff = false;
+      }
+      gitNote.hidden = result.inGitRepository;
+      settings.worktree.explain(result.inGitRepository ? null : 'Not in a git repository, so no worktree');
+      paintSummary();
     },
   });
-  const retrospective = retrospectivePicker(execution);
-  const model = modelPicker(execution?.model ?? '');
-  const effort = effortPicker(execution?.effort ?? '');
-  const usageDelay = usageDelayPicker(execution?.usageDelay ?? null);
+  const node = nodePicker(job?.nodeId ?? '', {
+    onChange: (listing) => {
+      followNodeDirectory(inputs.workingDirectory, listing, Boolean(job));
+      settings.followNode(listing);
+      directory.lookup();
+      schedule?.refresh();
+    },
+  });
+
+  // ---- when ----
+  let schedule = null;
+  let whenField;
+  let asSoonAsPossible = () => false;
+  let scheduledAt = () => '';
+  if (oneTime) {
+    const choice = (value, text) => {
+      const radio = el('input', { type: 'radio', name: 'when', value });
+      return { radio, label: el('label', { class: 'check' }, [radio, text]) };
+    };
+    const asap = choice('asap', 'As soon as possible');
+    const atTime = choice('time', 'At a time');
+    const asapHint = el('div', { class: 'hint when-hint', text: 'Runs now, or as soon as the session limit has room.' });
+    inputs.scheduledAt = el('input', {
+      type: 'datetime-local',
+      class: 'mono',
+      id: uid('runs-at'),
+      // A duplicate of something already run gets a fresh default rather than
+      // the source's date, which is in the past and would fire on save.
+      value: scheduledFieldValue(duplicateOf ? null : job?.scheduledAt),
+    });
+    // What the field said on opening, so a save can tell whether it was changed.
+    const shownAtOpen = inputs.scheduledAt.value;
+    const timeField = scheduledAtPicker(inputs.scheduledAt);
+    timeField.classList.add('when-time');
+    // A new one, or a duplicate, goes as soon as it can; an edit keeps the time it has.
+    (id ? atTime : asap).radio.checked = true;
+    const paintWhen = () => {
+      timeField.hidden = !atTime.radio.checked;
+      asapHint.hidden = !asap.radio.checked;
+      settings.usageDelay.lock('session', asap.radio.checked ? 'on for As soon as possible' : null);
+      paintSummary();
+    };
+    // The time field comes next in the tab order, so choosing At a time leaves the focus where it is.
+    asap.radio.addEventListener('change', paintWhen);
+    atTime.radio.addEventListener('change', paintWhen);
+    paintWhen();
+    asSoonAsPossible = () => asap.radio.checked;
+    scheduledAt = () => scheduledAtForSave(duplicateOf ? null : job?.scheduledAt, shownAtOpen, inputs.scheduledAt.value);
+    whenField = el('fieldset', { class: 'field when' }, [el('legend', { text: 'When' }), asap.label, asapHint, atTime.label, timeField]);
+  } else {
+    // Left as saved, an expression keeps the zone it was written in; any change to it is written in this browser's.
+    const cronZone = () => (job?.timezone && inputs.cron.value.trim() === job.cron.trim() ? job.timezone : BROWSER_TIMEZONE);
+    schedule = cronPicker(inputs.cron, { zone: cronZone, node: () => node.read(), label: 'When' });
+    schedule.zone = cronZone;
+    whenField = schedule.field;
+  }
 
   const showError = (message) => {
     errorBox.textContent = message;
     errorBox.hidden = false;
     errorBox.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    errorBox.focus({ preventScroll: true });
   };
 
   const save = async (event) => {
     event.preventDefault();
     errorBox.hidden = true;
-    const typed = inputs.scheduledAt.value.trim();
     const payload = {
+      prompt: inputs.prompt.value,
       name: inputs.name.value,
       description: inputs.description.value,
-      // Sent as a full instant rather than the field's bare local string, so
-      // the server is not left guessing which clock it was typed on.
-      scheduledAt: typed ? new Date(typed).toISOString() : '',
       projectId: project.read(),
       nodeId: node.read(),
       workingDirectory: inputs.workingDirectory.value,
-      ...worktree.read(),
-      model: model.read(),
-      effort: effort.read(),
-      usageDelay: usageDelay.read(),
-      prompt: inputs.prompt.value,
-      ...retrospective.read(),
-      isActive: inputs.isActive.checked,
+      ...settings.read(),
     };
-    if (typed && Number.isNaN(new Date(typed).getTime())) return showError('Date and time is not a valid date.');
+    if (oneTime) {
+      const typed = inputs.scheduledAt.value.trim();
+      if (!asSoonAsPossible() && typed && Number.isNaN(new Date(typed).getTime())) return showError('Date and time is not a valid date.');
+      Object.assign(payload, {
+        // As soon as possible is dated by the hub's clock; a time is sent as a
+        // full instant rather than the field's bare local string, so the
+        // server is not left guessing which clock it was typed on.
+        ...(asSoonAsPossible() ? { asSoonAsPossible: true } : { scheduledAt: scheduledAt() }),
+        isActive: isActiveForSave(id ? job : null),
+      });
+    } else {
+      Object.assign(payload, { cron: inputs.cron.value, timezone: schedule.zone(), isActive: inputs.isActive.checked });
+    }
     try {
-      if (id) await api(`/api/executions/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
-      else await api('/api/executions', { method: 'POST', body: JSON.stringify(payload) });
-      toast(id ? 'Saved' : 'One-time execution created');
-      location.hash = '#/one-time';
+      if (id) await api(`${words.api}/${id}`, { method: 'PUT', body: JSON.stringify(payload) });
+      else await api(words.api, { method: 'POST', body: JSON.stringify(payload) });
+      toast(id ? 'Saved' : words.created);
+      location.hash = words.home;
     } catch (err) {
       showError(err.message);
     }
   };
 
   const remove = async () => {
-    if (!confirm(`Delete "${execution.name}"? Its log history is kept on disk.`)) return;
+    if (!confirm(`Delete "${job.name}"? Its log history is kept on disk.`)) return;
     try {
-      await api(`/api/executions/${id}`, { method: 'DELETE' });
-      toast('One-time execution deleted');
-      location.hash = '#/one-time';
+      await api(`${words.api}/${id}`, { method: 'DELETE' });
+      toast(`${oneTime ? 'One-time execution' : 'Cron'} deleted`);
+      location.hash = words.home;
     } catch (err) {
       showError(err.message);
     }
   };
 
   const field = (label, input, hint) =>
-    el('div', { class: 'field' }, [
-      el('label', { text: label }),
-      input,
-      hint ? el('div', { class: 'hint', text: hint }) : null,
-    ]);
+    el('div', { class: 'field' }, [el('label', { for: input.id, text: label }), input, hint ? el('div', { class: 'hint', text: hint }) : null]);
+
+  const more = el('details', { class: 'more-options' }, [
+    el('summary', {}, [el('span', { class: 'more-title', text: 'More options' }), summary]),
+    el('div', { class: 'more-body' }, [
+      settings.worktree.field,
+      settings.model.field,
+      settings.effort.field,
+      settings.usageDelay.field,
+      project.field,
+      settings.retrospective.field,
+      field('Description', inputs.description),
+      oneTime
+        ? null
+        : el('div', { class: 'field' }, [
+            el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
+            el('div', { class: 'hint', text: 'Off keeps the cron but stops it firing.' }),
+          ]),
+    ]),
+  ]);
+  // An edit or a duplicate opens it when anything in it is not what a new job would have.
+  // A one-time execution always cleans up, so its stored clean up is not one of those.
+  const setsOwn = (key) => !(oneTime && key === 'cleanupWorktree') && job[key] !== null && job[key] !== undefined;
+  more.open = Boolean(
+    job &&
+      (JOB_SETTINGS.some(setsOwn) ||
+        Object.values(job.usageDelay ?? {}).some((value) => value !== null) ||
+        job.projectId ||
+        job.description ||
+        (!oneTime && !job.isActive)),
+  );
+  paintSummary();
 
   view.replaceChildren(
-    el('div', { class: 'breadcrumb' }, [el('a', { href: '#/one-time', text: '← All one-time executions' })]),
+    el('div', { class: 'breadcrumb' }, [el('a', { href: words.home, text: words.back })]),
     el('div', { class: 'page-head' }, [
       el('div', {}, [
-        el('h1', { text: id ? 'Edit one-time execution' : duplicateOf ? 'Duplicate one-time execution' : 'New one-time execution' }),
-        el('p', { class: 'sub', text: 'Runs claude -p with the prompt below, once, at the time you set.' }),
+        el('h1', { text: id ? `Edit ${words.noun}` : duplicateOf ? `Duplicate ${words.noun}` : `New ${words.noun}` }),
+        el('p', {
+          class: 'sub',
+          text: oneTime ? 'Runs claude -p with the prompt below, once.' : 'Runs claude -p with the prompt below on the schedule you set.',
+        }),
       ]),
     ]),
-    el('form', { class: 'card', onsubmit: save }, [
+    el('form', { class: 'card job-form', onsubmit: save }, [
       errorBox,
-      field('Name', inputs.name),
-      field('Description', inputs.description),
-      project.field,
-      scheduledAtPicker(inputs.scheduledAt),
-      node.field,
-      directoryPicker(inputs.workingDirectory, { node: () => node.read() }),
-      worktree.field,
-      model.field,
-      effort.field,
-      usageDelay.field,
-      field('Prompt', inputs.prompt),
-      commandButtons(defaults.commands),
-      retrospective.field,
-      el('label', { class: 'check' }, [inputs.isActive, 'Is Active']),
+      el('div', { class: 'field' }, [el('label', { for: inputs.prompt.id, text: 'Prompt' }), inputs.prompt, commandButtons(defaults.commands)]),
+      whenField,
+      el('div', { class: 'where-row', role: 'group', 'aria-label': 'Where' }, [node.field, directory.field]),
+      gitNote,
+      field('Name (optional)', inputs.name, 'Left blank, it is named from the prompt, then given a short title by Claude.'),
+      more,
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
-        el('a', { class: 'btn', href: '#/one-time', text: 'Cancel' }),
-        id ? el('a', { class: 'btn', href: `#/one-time/new/${id}`, text: 'Duplicate' }) : null,
+        el('a', { class: 'btn', href: words.home, text: 'Cancel' }),
+        id ? el('a', { class: 'btn', href: `${words.duplicate}${id}`, text: 'Duplicate' }) : null,
         el('div', { class: 'spacer' }),
         id ? el('button', { class: 'btn danger', type: 'button', text: 'Delete', onclick: remove }) : null,
       ]),
     ]),
   );
+  inputs.prompt.focus();
+}
+
+/** The settings a job stores null for while it follows the defaults, apart from the Delay for usage boxes. */
+const JOB_SETTINGS = ['useWorktree', 'cleanupWorktree', 'model', 'effort', 'retrospective'];
+
+/**
+ * An ISO time in the shape the datetime-local field wants: local, no zone.
+ *
+ * With nothing to read — a new execution, or a duplicate of one already run —
+ * it offers tomorrow at 8am, for someone who picks At a time: most timed
+ * one-time runs are "do this overnight", and a morning is one nobody has to clear first.
+ */
+function scheduledFieldValue(iso) {
+  let date;
+  if (iso) date = new Date(iso);
+  else {
+    date = new Date();
+    date.setDate(date.getDate() + 1);
+    date.setHours(8, 0, 0, 0);
+  }
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function renderForm(id, duplicateOf) {
+  return renderJobForm('cron', id, duplicateOf);
+}
+
+function renderExecutionForm(id, duplicateOf) {
+  return renderJobForm('execution', id, duplicateOf);
 }
 
 // ---- settings ---------------------------------------------------------
@@ -2079,7 +2352,7 @@ function versionText(node, hubCommit) {
  * a single local node shows them on the Settings page and any other setup shows
  * them on the node's own page.
  */
-function nodeSettingsParts(node, config) {
+function nodeSettingsParts(node, config, clusterJobDefaults = {}) {
   const url = `/api/nodes/${encodeURIComponent(node.id)}/settings`;
   const save = async (patch, description) => {
     try {
@@ -2267,8 +2540,32 @@ function nodeSettingsParts(node, config) {
     save({ defaultWorkingDirectory: value }, `New jobs on ${node.name} start in ${value}`);
   });
 
+  // ---- job defaults ----
+  // Built only for the node's own page: each follows the cluster's until set
+  // here, and the node's listing carries what it sets itself.
+  const jobDefaults = () => {
+    const defaults = jobDefaultsParts({
+      own: node.jobDefaultOverrides ?? {},
+      inherited: clusterJobDefaults,
+      follow: NODE_FOLLOW,
+      save: (patch) => save({ jobDefaults: patch }, `New job defaults on ${node.name} saved`),
+    });
+    defaults.usageDelay.setThresholds(node.config.usageDelayThresholds);
+    return [
+      el('h3', { text: 'New job defaults' }),
+      el('div', { class: 'hint' }, [
+        'What a job on this node uses for each of these when its form leaves it alone. ',
+        'Each follows the New job defaults on the ',
+        el('a', { href: '#/settings', text: 'Settings page' }),
+        ' until it is changed here; Use the cluster default puts it back.',
+      ]),
+      ...defaults.parts,
+    ];
+  };
+
   return {
     paintQueue,
+    jobDefaults,
     limit: [
       el('h3', { text: 'Limit concurrent jobs' }),
       el('div', { class: 'preset-row' }, [
@@ -2308,7 +2605,7 @@ function nodeSettingsParts(node, config) {
     ],
     directory: [
       el('h3', { text: 'Default working directory' }),
-      directoryPicker(startDirectoryInput, { label: null, node: () => node.id }),
+      directoryPicker(startDirectoryInput, { label: null, node: () => node.id }).field,
       el('div', { class: 'hint' }, [
         'Where the Working Directory field of a new cron or one-time execution on this node starts. ',
         'Editing or duplicating a job keeps the directory it already has, and changing this moves no saved job. ',
@@ -2608,6 +2905,15 @@ async function renderSettings() {
     saveSettings({ updateCheckIntervalHours: hours }, `Checking every ${hours}h`);
   });
 
+  // ---- new job defaults ----
+  const clusterDefaults = jobDefaultsParts({
+    own: settings.jobDefaults ?? {},
+    inherited: settings.jobDefaults ?? {},
+    follow: null,
+    save: (patch) => saveSettings({ jobDefaults: patch }, 'New job defaults saved'),
+  });
+  if (local) clusterDefaults.usageDelay.setThresholds(soleLocal.config.usageDelayThresholds);
+
   // ---- default prompt ----
   const defaultPrompt = el('textarea', {
     class: 'compact',
@@ -2790,6 +3096,16 @@ async function renderSettings() {
     ]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Job Settings' }),
+      el('section', { class: 'settings-section', id: 'job-defaults', 'aria-labelledby': 'job-defaults-title' }, [
+        el('h3', { id: 'job-defaults-title', text: 'New job defaults' }),
+        el('div', { class: 'hint' }, [
+          'What a cron or one-time execution uses for each of these when its form leaves it alone. ',
+          'A job that leaves one alone follows it, so a change here reaches that job from its next run; a job that set its own keeps it. ',
+          'Each node can change any of them for the jobs it runs, on its page under Nodes.',
+        ]),
+        ...clusterDefaults.parts,
+      ]),
+      divider(),
       ...(local
         ? [...local.usage, divider(), ...local.directory, divider()]
         : [
@@ -2878,8 +3194,12 @@ async function renderSettings() {
 }
 
 async function renderNode(id) {
-  const [node, config] = await Promise.all([api(`/api/nodes/${encodeURIComponent(id)}`), api('/api/config')]);
-  const parts = nodeSettingsParts(node, config);
+  const [node, config, settings] = await Promise.all([
+    api(`/api/nodes/${encodeURIComponent(id)}`),
+    api('/api/config'),
+    api('/api/settings').catch(() => ({})),
+  ]);
+  const parts = nodeSettingsParts(node, config, settings.jobDefaults ?? {});
   const statusBody = el('div', {});
 
   const paintStatus = async () => {
@@ -2953,6 +3273,8 @@ async function renderNode(id) {
       ...parts.directory,
       el('div', { class: 'card-divider' }),
       ...parts.usage,
+      el('div', { class: 'card-divider' }),
+      ...parts.jobDefaults(),
     ]),
   );
 

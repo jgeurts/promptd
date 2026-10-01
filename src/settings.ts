@@ -1,5 +1,6 @@
 import os from 'node:os';
 import { db } from './db.js';
+import { BUILT_IN_JOB_DEFAULTS, readJobDefaults } from './jobDefaults.js';
 import type { Settings } from './types.js';
 
 /**
@@ -44,6 +45,10 @@ export const DEFAULT_SETTINGS: Settings = {
   retrospectivePrompt: '',
   // The node that runs a job with no node of its own. Set to the first node that connects.
   defaultNodeId: '',
+  // What a job's worktree, model, effort, Delay for usage and retrospective
+  // settings are when it leaves them alone. A node can change any of them for
+  // the jobs it runs; see jobDefaults.ts.
+  jobDefaults: BUILT_IN_JOB_DEFAULTS,
 };
 
 function parseValue(text: string): unknown {
@@ -63,7 +68,8 @@ export async function loadSettings(): Promise<Settings> {
     return { ...DEFAULT_SETTINGS };
   }
   const stored: Partial<Settings> = Object.fromEntries(rows.map((row) => [row.key, parseValue(row.value)]));
-  return { ...DEFAULT_SETTINGS, ...stored };
+  // Read field by field, so a set saved before a setting existed still has all of them.
+  return { ...DEFAULT_SETTINGS, ...stored, jobDefaults: readJobDefaults(stored.jobDefaults) };
 }
 
 async function writeKeys(values: Partial<Settings>): Promise<void> {

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 import type * as JobCache from '../src/jobCache.js';
-import type { Cron, Execution } from '../src/types.js';
+import type { RunnableCron as Cron, RunnableExecution as Execution } from '../src/types.js';
 
 let cache: typeof JobCache;
 
@@ -17,6 +17,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   return {
     id: 'e1',
     name: 'once',
+    nameInferred: false,
     description: '',
     scheduledAt: '2026-09-24T12:00:00.000Z',
     workingDirectory: '',
@@ -41,7 +42,13 @@ function execution(overrides: Partial<Execution> = {}): Execution {
   };
 }
 
-const settings = { maxConcurrentJobs: 2, usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 }, defaultWorktreeInclude: '', retrospectivePrompt: '', timezone: null };
+const settings = {
+  maxConcurrentJobs: 2,
+  usageDelayThresholds: { credits: 90, fable: 95, session: 90, weekly: 95 },
+  defaultWorktreeInclude: '',
+  retrospectivePrompt: '',
+  timezone: null,
+};
 
 describe('jobCache', () => {
   it('reports a change only when the hub sends something new', () => {

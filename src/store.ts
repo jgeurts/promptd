@@ -5,8 +5,8 @@ import { db } from './db.js';
 import { cronToRow, rowToCron } from './jobRows.js';
 import { LOGS_DIR } from './paths.js';
 import { hasRetrospectiveSection } from './retrospective.js';
-import { normalizeUsageDelay } from './usage.js';
-import type { Cron, CronInput } from './types.js';
+import { jobSettingOverrides } from './jobDefaults.js';
+import type { Cron, CronInput, JobKind } from './types.js';
 
 export interface LogFile {
   file: string;
@@ -52,16 +52,12 @@ export async function createCron(input: CronInput): Promise<Cron> {
   const cron: Cron = {
     id: randomUUID(),
     name: input.name,
+    nameInferred: Boolean(input.nameInferred),
     description: input.description ?? '',
     cron: input.cron,
     timezone: input.timezone ?? '',
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
-    cleanupWorktree: Boolean(input.cleanupWorktree),
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
+    ...jobSettingOverrides(input),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
@@ -82,16 +78,13 @@ export async function updateCron(id: string, input: CronInput): Promise<Cron | n
   const cron: Cron = {
     ...existing,
     name: input.name,
+    // A name saved back unchanged is still the one taken from the prompt.
+    nameInferred: Boolean(input.nameInferred) || (input.name === existing.name && existing.nameInferred),
     description: input.description ?? '',
     cron: input.cron,
     timezone: input.timezone ?? '',
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
-    cleanupWorktree: Boolean(input.cleanupWorktree),
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
+    ...jobSettingOverrides(input),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
@@ -110,6 +103,30 @@ export async function patchCron(id: string, patch: Partial<Cron>): Promise<Cron 
   const cron: Cron = { ...existing, ...patch };
   await writeCron(cron);
   return cron;
+}
+
+/**
+ * Puts a title from claude in place of a name taken from the prompt, in one
+ * statement, so nothing can land between the check and the write: only where
+ * the job still has the inferred name the title was asked for, is still
+ * marked inferred, and still has the prompt it was made from. A person who
+ * renamed the job, or saved another prompt, meanwhile keeps what they saved.
+ * Answers whether a job changed. Serves both kinds, which share the columns.
+ */
+export async function applyInferredTitle(
+  kind: JobKind,
+  id: string,
+  { askedName, prompt, title }: { askedName: string; prompt: string; title: string },
+): Promise<boolean> {
+  const result = await db()
+    .updateTable(kind === 'execution' ? 'executions' : 'crons')
+    .set({ name: title })
+    .where('id', '=', id)
+    .where('name', '=', askedName)
+    .where('nameInferred', '=', 1)
+    .where('prompt', '=', prompt)
+    .executeTakeFirst();
+  return Number(result.numUpdatedRows) > 0;
 }
 
 export async function deleteCron(id: string): Promise<boolean> {

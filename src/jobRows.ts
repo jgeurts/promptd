@@ -1,18 +1,23 @@
 import type { CronTable, ExecutionTable } from './db.js';
+import { readUsageDelayOverride } from './jobDefaults.js';
 import type { Cron, Execution, ExecutionStatus, JobBase, RunStatus } from './types.js';
-import { normalizeUsageDelay } from './usage.js';
 
 type JobColumns = Omit<CronTable, 'cron' | 'timezone'>;
 
-function flag(value: boolean): number {
-  return value ? 1 : 0;
+/** Null stays null: it is a setting the job leaves to its node's defaults. */
+function flag(value: boolean | null | undefined): number | null {
+  return value === null || value === undefined ? null : value ? 1 : 0;
+}
+
+function readFlag(value: number | null): boolean | null {
+  return value === null || value === undefined ? null : Boolean(value);
 }
 
 function parseUsageDelay(text: string): JobBase['usageDelay'] {
   try {
-    return normalizeUsageDelay(JSON.parse(text));
+    return readUsageDelayOverride(JSON.parse(text));
   } catch {
-    return normalizeUsageDelay({});
+    return readUsageDelayOverride({});
   }
 }
 
@@ -20,16 +25,17 @@ function toColumns(job: JobBase): JobColumns {
   return {
     id: job.id,
     name: job.name,
+    nameInferred: job.nameInferred ? 1 : 0,
     description: job.description ?? '',
     workingDirectory: job.workingDirectory ?? '',
     useWorktree: flag(job.useWorktree),
     cleanupWorktree: flag(job.cleanupWorktree),
     retrospective: flag(job.retrospective),
-    model: job.model ?? '',
-    effort: job.effort ?? '',
-    usageDelay: JSON.stringify(normalizeUsageDelay(job.usageDelay)),
+    model: job.model ?? null,
+    effort: job.effort ?? null,
+    usageDelay: JSON.stringify(readUsageDelayOverride(job.usageDelay)),
     prompt: job.prompt ?? '',
-    isActive: flag(job.isActive),
+    isActive: job.isActive ? 1 : 0,
     nodeId: job.nodeId ?? '',
     projectId: job.projectId ?? null,
     createdAt: job.createdAt,
@@ -50,13 +56,14 @@ function fromColumns(row: JobColumns): JobBase {
   const job: JobBase = {
     id: row.id,
     name: row.name,
+    nameInferred: Boolean(row.nameInferred),
     description: row.description,
     workingDirectory: row.workingDirectory,
-    useWorktree: Boolean(row.useWorktree),
-    cleanupWorktree: Boolean(row.cleanupWorktree),
-    retrospective: Boolean(row.retrospective),
-    model: row.model,
-    effort: row.effort,
+    useWorktree: readFlag(row.useWorktree),
+    cleanupWorktree: readFlag(row.cleanupWorktree),
+    retrospective: readFlag(row.retrospective),
+    model: row.model ?? null,
+    effort: row.effort ?? null,
     usageDelay: parseUsageDelay(row.usageDelay),
     prompt: row.prompt,
     isActive: Boolean(row.isActive),

@@ -12,16 +12,21 @@ import { ROOT } from './paths.js';
 /** 0 or 1 in both dialects, so one schema serves SQLite and Postgres. */
 type Flag = number;
 
+/** A setting a job may leave to its node's defaults, stored as null when it does. */
+type Setting<T> = T | null;
+
 interface JobColumns {
   id: string;
   name: string;
+  nameInferred: Flag;
   description: string;
   workingDirectory: string;
-  useWorktree: Flag;
-  cleanupWorktree: Flag;
-  retrospective: Flag;
-  model: string;
-  effort: string;
+  useWorktree: Setting<Flag>;
+  cleanupWorktree: Setting<Flag>;
+  retrospective: Setting<Flag>;
+  model: Setting<string>;
+  effort: Setting<string>;
+  /** JSON, one key per Delay for usage box; a key missing or null follows the defaults. */
   usageDelay: string;
   prompt: string;
   isActive: Flag;
@@ -317,6 +322,59 @@ const MIGRATIONS: Record<string, Migration> = {
     async up(db: Kysely<unknown>): Promise<void> {
       await db.schema.alterTable('notifications').addColumn('alert_value', 'double precision').execute();
       await db.schema.alterTable('notifications').addColumn('alert_running', 'integer').execute();
+    },
+  },
+  /**
+   * A job now stores null for a setting it leaves to its node's defaults. SQLite
+   * cannot drop NOT NULL in place, so each column is copied into a nullable one
+   * that takes its name, the same statements in both dialects.
+   *
+   * A blank model or effort already meant "whatever the CLI uses", which is the
+   * built-in default, so those become null. Every other stored value is what
+   * its job was set to and is kept as the job's own, so nothing runs
+   * differently after the upgrade.
+   */
+  '20260930_006_job_setting_defaults': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      const columns = [
+        ['use_worktree', 'integer'],
+        ['cleanup_worktree', 'integer'],
+        ['retrospective', 'integer'],
+        ['model', 'text'],
+        ['effort', 'text'],
+      ] as const;
+      for (const table of ['crons', 'executions']) {
+        for (const [column, type] of columns) {
+          const staged = `${column}_setting`;
+          const value = type === 'text' ? sql`nullif(${sql.ref(column)}, '')` : sql.ref(column);
+          await db.schema.alterTable(table).addColumn(staged, type).execute();
+          await sql`update ${sql.table(table)} set ${sql.ref(staged)} = ${value}`.execute(db);
+          await db.schema.alterTable(table).dropColumn(column).execute();
+          await db.schema.alterTable(table).renameColumn(staged, column).execute();
+        }
+        // A box left out of the stored JSON used to mean off, and would now
+        // mean "follow the default", so every row is written out in full.
+        // The camel case plugin renames result columns, raw queries included.
+        const rows = await sql<{ id: string; usageDelay: string }>`select id, usage_delay from ${sql.table(table)}`.execute(db);
+        for (const row of rows.rows) {
+          let stored: Record<string, unknown> = {};
+          try {
+            stored = (JSON.parse(row.usageDelay) as Record<string, unknown> | null) ?? {};
+          } catch {
+            // Unreadable read as all off before, and still does.
+          }
+          const full = JSON.stringify(Object.fromEntries(['session', 'weekly', 'fable', 'credits'].map((id) => [id, Boolean(stored[id])])));
+          if (full !== row.usageDelay) await sql`update ${sql.table(table)} set usage_delay = ${full} where id = ${row.id}`.execute(db);
+        }
+      }
+    },
+  },
+  // Whether a job's name was taken from its prompt, so a title from claude may still replace it.
+  '20260930_007_name_inferred': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      for (const table of ['crons', 'executions']) {
+        await db.schema.alterTable(table).addColumn('name_inferred', 'integer', (col) => col.notNull().defaultTo(0)).execute();
+      }
     },
   },
 };

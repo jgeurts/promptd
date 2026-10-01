@@ -31,6 +31,7 @@ function cronWithCounters(overrides: Partial<Cron> = {}): Cron {
   return {
     id: 'c1',
     name: 'nightly',
+    nameInferred: false,
     description: '',
     cron: '0 9 * * *',
     timezone: '',

@@ -192,11 +192,28 @@ Model discovery is slower on the first run after login, around 14 seconds agains
 - **`brew services`** manages Homebrew formulae, not arbitrary projects.
 - Running `npm start` in a terminal remains fine for occasional use; it stops when the terminal closes.
 
+## The job forms
+
+The cron and one-time execution forms read in the order you fill them in:
+
+1. **Prompt**, the one thing you have to write. It has the focus when the form opens, and the [common commands](#settings-and-self-update) sit under it as buttons.
+2. **When**: a cron expression for a cron, with its shortcuts; for a one-time execution, **As soon as possible** or **At a time** (see [One-time executions](#one-time-executions)).
+3. **Node** and **Working Directory**, side by side. The note under the folder says whether it is in a git repository. A worktree needs one, so when the folder is not in one the form turns **Use worktree** off and says _Not in a git repository, so no worktree_; moving to a folder that is in one turns it back on, unless you changed the box yourself.
+4. **Name**, which is optional. Left blank, the placeholder shows the name the job will get, and changes as you type the prompt: the prompt's first sentence, cut to about six words. Saving names the job that way at once, then asks the job's node to have Claude title it: `claude -p --model haiku` in a throwaway folder with no tools (`--tools ""`), none of your customizations (`--safe-mode`), a spending cap (`--max-budget-usd 0.02`) and a minute to answer. Its system prompt is _Reply with a 2 to 6 word title for this task, and nothing else._, and the first 4,000 characters of the prompt go in the message, marked as the task to name rather than instructions to follow. The title replaces the first words only if the name is still the one taken from the prompt, so a name you type meanwhile wins. If the node is offline, the call fails, or the answer is empty or longer than 60 characters, the first words stay; either way the node's log says what happened, and nothing is sent as a notification.
+5. **More options**, folded away: Worktree, Model, Effort, Delay for usage, Project, Retrospective, Description, and on a cron **Is Active** (_Off keeps the cron but stops it firing_). The line beside it lists what the job sets for itself rather than following its [defaults](#job-defaults), such as `Worktree off · Sonnet · waits for Weekly`, or says **Cluster defaults** when it sets none of them. Editing or duplicating a job opens it when anything inside differs from what a new job would have.
+
+A one-time execution has no Is Active box: a new one is saved active, and an edit keeps what it had, so saving an inactive one does not set it running. The API still takes `isActive`.
+
 ## One-time executions
 
-The **One-time Execution** tab holds prompts that run once, at a date and time you pick, instead of on a repeating schedule. Everything else about them is a cron: the same working directory, model, effort, usage delay, prompt, `Is Active` checkbox, prompt preamble, log, statistics block and Stop button.
+The **One-time Execution** tab holds prompts that run once instead of on a repeating schedule. Everything else about them is a cron: the same working directory, model, effort, usage delay, prompt, prompt preamble, log, statistics block and Stop button.
 
-The form is the cron form with **Runs at** where the Cron field was: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a _Select datetime_ calendar that opens on whatever Runs at already says. A new one defaults to tomorrow at 8am; editing keeps the time it was scheduled for. The server stores it as UTC.
+The form is the cron form with a choice under **When** where the cron expression was:
+
+- **As soon as possible**, which a new one starts on. It is saved dated now by the hub's clock with the Session wait ticked, whatever the defaults say, so it _runs now, or as soon as the session limit has room_. The API does the same for `"asSoonAsPossible": true` in place of a `scheduledAt`.
+- **At a time**: a date and time in your local clock, with `+30m`, `+1hr`, `+3hr` shortcuts and a _Select datetime_ calendar that opens on whatever the field already says. It offers tomorrow at 8am until you change it.
+
+Editing one opens on At a time with the time it was scheduled for. The server stores it as UTC.
 
 The list shows the ten most recent, newest first, and **Load 10 older** goes back through the rest. A finished one stays in the list as history, so the tab is both what is coming and what has already gone.
 
@@ -244,9 +261,24 @@ What a pause does and does not do:
 
 When the time is up, or you cancel, the crons and one-time executions are re-read from disk and re-armed, so any edit made during the pause takes effect.
 
+## Job defaults
+
+Six settings on a job can be left to its node: **Use worktree**, **Clean up worktree**, **Model**, **Effort**, each of the four **Delay for usage** boxes, and **Retrospective**. A job stores only the ones its person changed; the rest are `null`, in the database and the API. The hub fills them in from the job's node's defaults each time it sends that node its jobs, so a node runs exactly what it is sent — a node older than job defaults included — and changing a default reaches every job that did not set its own from its next run. Each log's header records the values the run actually used.
+
+Where a default comes from:
+
+1. **The cluster's**, under **New job defaults** on the Settings page, stored as the `jobDefaults` setting. Out of the box: Use worktree and Clean up worktree on, the CLI's own model and effort, the Session wait on, everything else off.
+2. **The node's own**, under **New job defaults** on its page. Each one says **cluster default** until it is changed there, and **Use the cluster default** puts it back.
+
+A worktree needs a git repository, so a run whose folder is not in one goes without, even when Use worktree is on — as it can be for a job that follows a default changed after it was saved. The node checks at launch: no `--worktree`, no worktree notice in the prompt, no `.worktreeinclude` written, and the log header says `Use worktree      false (on for this job, but <folder> is not in a git repository, so this run has none)`.
+
+On a job's form each of the six shows the value it will use. One it follows is marked **default**; one it sets itself has **Use default** beside it, which puts it back to following. Picking another node moves the ones it follows with it.
+
+Jobs saved before this existed were moved over without changing what they run: a blank model or effort, which already meant the CLI's own, now follows the default (the CLI's own, unless you change it), and every other stored value is kept as that job's own.
+
 ## Delaying a cron for usage
 
-Each cron has a **Delay for usage** section on its form: four checkboxes, all off by default. Each one holds the trigger while its limit is at or above a percentage, shown in parentheses next to the checkbox.
+Each cron has a **Delay for usage** section on its form: four checkboxes, each following the [job defaults](#job-defaults) until changed, which out of the box tick Session and nothing else. Each one holds the trigger while its limit is at or above a percentage, shown in parentheses next to the checkbox.
 
 | Checkbox        | Watches                             | Default |
 | --------------- | ----------------------------------- | ------- |
@@ -335,11 +367,19 @@ Settings live in the database's `settings` table, one row per key, and are writt
   "lastUpdateFromCommit": null,
   "defaultPrompt": "",
   "commonCommands": "",
-  "defaultWorktreeInclude": ""
+  "defaultWorktreeInclude": "",
+  "jobDefaults": {
+    "useWorktree": true,
+    "cleanupWorktree": true,
+    "retrospective": false,
+    "model": "",
+    "effort": "",
+    "usageDelay": { "session": true, "weekly": false, "fable": false, "credits": false }
+  }
 }
 ```
 
-`serverName` is shown in the header bar as `promptd - <name>`, so two open servers can be told apart; it is trimmed, and blank shows `promptd` alone. `serverColor` is a `#rrggbb` color that replaces the orange accent and colors the band across the top of every page, so each server can wear its own; the Settings page offers eight presets and a custom picker, and blank is the default orange. The job limit, usage delay percentages and default working directory are per node, stored with the node and written with `PUT /api/nodes/:id/settings`: `maxConcurrentJobs` (see [Limiting concurrent jobs](#limiting-concurrent-jobs)), `usageDelayThresholds` with any subset of the four percentages (see [Delaying a cron for usage](#delaying-a-cron-for-usage)), and `defaultWorkingDirectory`, where the Working Directory field of a new job on that node starts. `null` puts one back to its default. `defaultPrompt` is where the Prompt field of a new cron or one-time execution starts, blank unless you change it; editing or duplicating a job keeps its own prompt, and no saved job changes when it does. `commonCommands` holds one command per line; each becomes a button under the Prompt field of the cron and one-time execution forms that copies it to the clipboard. `PUT /api/settings` saves the lines sorted with blank ones dropped, and the buttons follow that order. `defaultWorktreeInclude` is the text written as `.worktreeinclude` to the root of the git repository a job's working directory is in, before each run of a job with **Use worktree** ticked, overwriting any file already there. It goes at the root even when the working directory is a subfolder, because that is the only place Claude Code reads it; nothing is written while it is empty. Claude Code copies the ignored files it lists, such as `.env`, into each new worktree. The first two are yours to set, from the Settings page, by editing the file, or with `PUT /api/settings`. The `last*` fields are the server's bookkeeping, and are what make "once a day" hold across restarts. A file that will not parse is left alone and the defaults are used, so a bad edit cannot wedge the server.
+`serverName` is shown in the header bar as `promptd - <name>`, so two open servers can be told apart; it is trimmed, and blank shows `promptd` alone. `serverColor` is a `#rrggbb` color that replaces the orange accent and colors the band across the top of every page, so each server can wear its own; the Settings page offers eight presets and a custom picker, and blank is the default orange. The job limit, usage delay percentages and default working directory are per node, stored with the node and written with `PUT /api/nodes/:id/settings`: `maxConcurrentJobs` (see [Limiting concurrent jobs](#limiting-concurrent-jobs)), `usageDelayThresholds` with any subset of the four percentages (see [Delaying a cron for usage](#delaying-a-cron-for-usage)), `defaultWorkingDirectory`, where the Working Directory field of a new job on that node starts, and `jobDefaults`, the node's own changes to the cluster's job defaults. `null` puts one back to its default. `jobDefaults` is the settings a job follows when it does not set its own; see [Job defaults](#job-defaults). `defaultPrompt` is where the Prompt field of a new cron or one-time execution starts, blank unless you change it; editing or duplicating a job keeps its own prompt, and no saved job changes when it does. `commonCommands` holds one command per line; each becomes a button under the Prompt field of the cron and one-time execution forms that copies it to the clipboard. `PUT /api/settings` saves the lines sorted with blank ones dropped, and the buttons follow that order. `defaultWorktreeInclude` is the text written as `.worktreeinclude` to the root of the git repository a job's working directory is in, before each run of a job with **Use worktree** ticked, overwriting any file already there. It goes at the root even when the working directory is a subfolder, because that is the only place Claude Code reads it; nothing is written while it is empty. Claude Code copies the ignored files it lists, such as `.env`, into each new worktree. The first two are yours to set, from the Settings page, by editing the file, or with `PUT /api/settings`. The `last*` fields are the server's bookkeeping, and are what make "once a day" hold across restarts. A file that will not parse is left alone and the defaults are used, so a bad edit cannot wedge the server.
 
 The check runs on the interval either way. `selfUpdate` decides only whether what it finds gets applied: with it off, the server still fetches and compares, and an available update shows as an amber **Update available** badge in the header that links to this page. Nothing is pulled and no cron is paused until you press **Update now**.
 
@@ -430,25 +470,35 @@ The paths in use are listed on the Settings page, under **Storage**.
 
 Set `DATABASE_URL=postgres://user:password@host:5432/db` to keep the same tables in Postgres instead; the log files stay on disk either way. The schema is created and migrated when the hub starts.
 
-A cron, as the API returns it:
+A cron, as the API returns it. Each of the six [job-default](#job-defaults) settings is as the job stores it, `null` where it follows the defaults, and `effective` says what a run on its node would use:
 
 ```json
 {
   "id": "e628139b-b4dc-4e50-af3f-c439c92515be",
   "name": "Nightly Digest",
+  "nameInferred": false,
   "description": "Summarize the day",
   "cron": "0 9 * * *",
   "timezone": "America/Chicago",
   "workingDirectory": "/Users/you/code/project",
   "useWorktree": false,
-  "cleanupWorktree": false,
+  "cleanupWorktree": null,
+  "retrospective": null,
   "model": "claude-sonnet-4-5",
-  "effort": "",
+  "effort": null,
   "usageDelay": {
-    "session": true,
-    "weekly": false,
-    "fable": false,
+    "session": null,
+    "weekly": null,
+    "fable": null,
     "credits": true
+  },
+  "effective": {
+    "useWorktree": false,
+    "cleanupWorktree": true,
+    "retrospective": false,
+    "model": "claude-sonnet-4-5",
+    "effort": "",
+    "usageDelay": { "session": true, "weekly": false, "fable": false, "credits": true }
   },
   "prompt": "Write a two line summary of today.",
   "isActive": true,
@@ -471,18 +521,20 @@ A one-time execution is the same shape with `scheduledAt` where `cron` was, plus
 {
   "id": "b1a72c6c-f9fd-4341-b723-56630c3bf00e",
   "name": "Backfill September invoices",
+  "nameInferred": true,
   "description": "",
   "scheduledAt": "2026-09-20T13:00:00.000Z",
   "workingDirectory": "/Users/you/code/project",
-  "useWorktree": false,
+  "useWorktree": null,
   "cleanupWorktree": true,
-  "model": "",
-  "effort": "",
+  "retrospective": null,
+  "model": null,
+  "effort": null,
   "usageDelay": {
     "session": true,
-    "weekly": false,
-    "fable": false,
-    "credits": false
+    "weekly": null,
+    "fable": null,
+    "credits": null
   },
   "prompt": "Backfill the September invoices and write a summary.",
   "isActive": true,
@@ -498,7 +550,7 @@ A one-time execution is the same shape with `scheduledAt` where `cron` was, plus
 }
 ```
 
-`useWorktree` and `cleanupWorktree` are the two boxes in the form's Worktree section. A one-time execution is always saved with `cleanupWorktree: true`, whatever the request sent.
+`useWorktree` and `cleanupWorktree` are the two boxes in the form's Worktree section. A one-time execution is always saved with `cleanupWorktree: true`, whatever the request sent. `nameInferred` says the name was taken from the prompt because none was given, so a title from Claude may still replace it.
 
 Both kinds write their logs into `logs/` under their own id, so the folder serves the two without a prefix.
 
@@ -528,7 +580,7 @@ While a run is in flight, that cron's **Run now** button becomes **Stop**. Stopp
 --- stopped after 6.2s (killed by user, signal SIGKILL) ---
 ```
 
-The run's outcome is recorded as `stopped`, distinct from `succeeded` and `failed`. The schedule is left alone: an active cron stays armed and fires again at its next trigger, so stopping one run never disables the cron. Use the Is Active checkbox for that.
+The run's outcome is recorded as `stopped`, distinct from `succeeded` and `failed`. The schedule is left alone: an active cron stays armed and fires again at its next trigger, so stopping one run never disables the cron. Use its Is Active box, under More options, for that.
 
 Stopping a one-time execution works the same way and is documented in two places rather than one: the log carries the `stop requested by user` line and the `killed by user` footer, and the record itself keeps `stoppedBy` alongside a `stopped` outcome. The log is pruned eventually; the record is what the list reads. A stopped one-time execution is `done` — it has had its run — and **Run now** will run it again.
 
@@ -711,7 +763,7 @@ Two Server-Sent Event streams, no polling loops in the UI:
 
 ## Model
 
-The form has a Model dropdown. Leave it on **Default** and nothing is passed, so the run uses whatever the CLI is configured to use. Pick anything else and it is passed as `claude --model <value>`.
+The form has a Model dropdown under More options, which follows the [job defaults](#job-defaults) until you pick something. **CLI default** passes nothing, so the run uses whatever the CLI is configured to use. Anything else is passed as `claude --model <value>`.
 
 The list is discovered from the installed CLI, not hardcoded, so it tracks the version you have:
 
@@ -725,7 +777,7 @@ An alias records what it resolved to: a cron set to `haiku` logs `Model: claude-
 
 ## Working directory
 
-On a new cron or one-time execution the field starts at the chosen node's **Default working directory** (`~/` unless you change it), and follows a change of node until you type in it; editing or duplicating a job keeps its own. It autocompletes as you type: suggestions come from the chosen node's filesystem, `↑`/`↓` picks one, `Enter` or `Tab` accepts it. Accepting ends the path in `/`, so pressing `Enter` again drills into that directory. Under the field, a live note shows the absolute path the run will use, or says the path does not exist.
+On a new cron or one-time execution the field starts at the chosen node's **Default working directory** (`~/` unless you change it), and follows a change of node until you type in it; editing or duplicating a job keeps its own. It autocompletes as you type: suggestions come from the chosen node's filesystem, `↑`/`↓` picks one, `Enter` or `Tab` accepts it. Accepting ends the path in `/`, so pressing `Enter` again drills into that directory. Under the field, a live note shows the absolute path the run will use and whether it is inside a git repository, or says the path does not exist. The node answers that from its own disk, asking git, so it is the same answer a worktree run will get.
 
 Paths are stored exactly as typed. They are resolved at spawn time:
 
@@ -770,8 +822,8 @@ As the field changes, a green line below it shows when the expression next fires
 
 | Method           | Path                                        | Purpose                                                                                                                                                                                                                                                                                                                  |
 | ---------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| GET              | `/api/crons`                                | List, with next run time and live-run state                                                                                                                                                                                                                                                                              |
-| POST             | `/api/crons`                                | Create                                                                                                                                                                                                                                                                                                                   |
+| GET              | `/api/crons`                                | List, with next run time and live-run state. Each job carries its six job-default settings as stored (`null` where it follows the defaults) and, under `effective`, what a run on its node would use                                                                                                                     |
+| POST             | `/api/crons`                                | Create. `useWorktree`, `cleanupWorktree`, `retrospective`, `model`, `effort` and each `usageDelay` box take `null`, or can be left out, to follow the defaults                                                                                                                                                           |
 | GET, PUT, DELETE | `/api/crons/:id`                            | Read, update, delete                                                                                                                                                                                                                                                                                                     |
 | POST             | `/api/crons/:id/run`                        | Ask the cron's node to run it. 202 with `requested: true`; the node picks it up on its next sync, and may still hold it for usage or a free slot. 409 if already running, if crons are paused, if a trigger is already waiting, or if the node is offline                                                                |
 | POST             | `/api/crons/:id/stop`                       | Ask the node to kill the in-flight run, or drop a waiting trigger (409 if neither)                                                                                                                                                                                                                                       |
@@ -784,7 +836,7 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/nodes`                                | Every node that has connected, whether it is online, which is the default, whether it runs beside the hub, its settings and commit, its Claude account, usage reading, latest machine sample and readings over their alert line, the `cluster` summary `/api/health` also carries, and where the node token is kept |
 | GET              | `/api/join`                                 | The command that adds another Mac as a node: `hubUrl` (null when nothing off this machine can reach the hub), the hub's `port`, and `command` with the address and token filled in                                                                                                                                          |
 | GET              | `/api/nodes/:id`                            | One node, with its queue, usage reading and fifteen-minute machine window, and the hub's commit                                                                                                                                                                                                                         |
-| PUT              | `/api/nodes/:id/settings`                   | Write the node's `maxConcurrentJobs`, `usageDelayThresholds` and `defaultWorkingDirectory`; `null` resets one                                                                                                                                                                                                           |
+| PUT              | `/api/nodes/:id/settings`                   | Write the node's `maxConcurrentJobs`, `usageDelayThresholds`, `defaultWorkingDirectory` and `jobDefaults` (any subset of the six); `null` resets one, or all of `jobDefaults`                                                                                                                                              |
 | DELETE           | `/api/nodes/:id`                            | Forget a node (409 while it is online)                                                                                                                                                                                                                                                                                   |
 | POST             | `/api/node/report`, `/api/node/leave`       | Node API, bearer token required: a node's status, log output, run results and events; and its sign-off on shutdown                                                                                                                                                                                                       |
 | GET              | `/api/node/work`                            | Node API, bearer token required: the node's jobs, settings, the pause, and pending Run now and Stop presses                                                                                                                                                                                                              |
@@ -793,7 +845,7 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/notifications?before=&limit=`         | One page of notifications, newest first; `unread=1`, `level=` and `node=` filter it. With the bell's counts and each level's total                                                                                                                                                                                       |
 | POST             | `/api/notifications/read`                   | Mark read. Body `{"ids":[...],"revisions":{"<id>":<count>}}`: only a row whose count still matches; or `{"all":true}`                                                                                                                                                                                                    |
 | GET              | `/api/health`                               | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, `usage` with a percentage and reset time per subscription limit on the default node, and `cluster`: nodes online, running jobs against the online nodes' limit, one entry per Claude account with its limits and nodes, machine readings over their alert line, and nodes on another build than the hub |
-| GET, PUT         | `/api/settings`                             | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `defaultNodeId`, `defaultPrompt`, `commonCommands` and `defaultWorktreeInclude`                                                                      |
+| GET, PUT         | `/api/settings`                             | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `defaultNodeId`, `defaultPrompt`, `commonCommands`, `defaultWorktreeInclude` and `jobDefaults` (only the keys sent change; `null` puts one back to its built-in value) |
 | GET              | `/api/queue?node=`                          | The concurrent job limit (every node's, or one node's), what is running under it with each job's average run length, and what is queued behind it with each one's position and estimated start                                                                                                                                                         |
 | GET              | `/api/pause`                                | Pause state, the offered lengths, how many runs are still in flight, and how many triggers this pause has dropped                                                                                                                                                                                                        |
 | POST             | `/api/pause`                                | Hold every schedule. Body `{"option":"30m"\|"1h"\|"3h"\|"restart"}`                                                                                                                                                                                                                                                      |
@@ -805,7 +857,7 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/models`                               | Discovered models, plus whether discovery is running                                                                                                                                                                                                                                                                     |
 | POST             | `/api/models/refresh`                       | Re-run discovery                                                                                                                                                                                                                                                                                                         |
 | GET              | `/api/executions?before=&limit=`            | One page of one-time executions, newest first, plus the total, how many are still scheduled, and the cursor for the next page                                                                                                                                                                                            |
-| POST             | `/api/executions`                           | Create. A `scheduledAt` already in the past is accepted and runs at once                                                                                                                                                                                                                                                 |
+| POST             | `/api/executions`                           | Create. A `scheduledAt` already in the past is accepted and runs at once; `"asSoonAsPossible": true` instead dates it now with the Session wait on. A blank `name` is taken from the prompt, then replaced by a title from Claude if it is still that name                                                              |
 | GET, PUT, DELETE | `/api/executions/:id`                       | Read, update, delete. A PUT that moves `scheduledAt` arms it again                                                                                                                                                                                                                                                       |
 | POST             | `/api/executions/:id/rearm`                 | Put a finished or cancelled one back to `scheduled` on its own date (409 while it is running)                                                                                                                                                                                                                            |
 | POST             | `/api/executions/:id/run`                   | Same contract as `/api/crons/:id/run`                                                                                                                                                                                                                                                                                    |

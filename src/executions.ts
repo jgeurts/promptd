@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { db } from './db.js';
 import { executionToRow, rowToExecution } from './jobRows.js';
-import { normalizeUsageDelay } from './usage.js';
+import { jobSettingOverrides } from './jobDefaults.js';
 import type { Execution, ExecutionInput, ExecutionStatus } from './types.js';
 
 export interface ExecutionPage {
@@ -80,15 +80,13 @@ export async function createExecution(input: ExecutionInput): Promise<Execution>
   const execution: Execution = {
     id: randomUUID(),
     name: input.name,
+    nameInferred: Boolean(input.nameInferred),
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
+    ...jobSettingOverrides(input),
+    // A job that runs once would only leave its worktree behind.
     cleanupWorktree: true,
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',
@@ -122,15 +120,14 @@ export async function updateExecution(id: string, input: ExecutionInput): Promis
   const execution: Execution = {
     ...existing,
     name: input.name,
+    // A name saved back unchanged is still the one taken from the prompt.
+    nameInferred: Boolean(input.nameInferred) || (input.name === existing.name && existing.nameInferred),
     description: input.description ?? '',
     scheduledAt: input.scheduledAt,
     workingDirectory: input.workingDirectory ?? '',
-    useWorktree: Boolean(input.useWorktree),
+    ...jobSettingOverrides(input),
+    // A job that runs once would only leave its worktree behind.
     cleanupWorktree: true,
-    retrospective: Boolean(input.retrospective),
-    model: input.model ?? '',
-    effort: input.effort ?? '',
-    usageDelay: normalizeUsageDelay(input.usageDelay),
     prompt: input.prompt ?? '',
     isActive: Boolean(input.isActive),
     nodeId: input.nodeId ?? '',

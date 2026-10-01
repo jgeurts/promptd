@@ -3,8 +3,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { sql } from 'kysely';
+import pg from 'pg';
+
 import type * as DbModule from '../src/db.js';
 import type * as ExecutionsModule from '../src/executions.js';
+import type * as JobDefaultsModule from '../src/jobDefaults.js';
+import type * as JobFormsModule from '../src/jobForms.js';
 import type * as ProjectsModule from '../src/projects.js';
 import type * as SettingsModule from '../src/settings.js';
 import type * as StoreModule from '../src/store.js';
@@ -18,6 +23,8 @@ let store: typeof StoreModule;
 let executions: typeof ExecutionsModule;
 let projects: typeof ProjectsModule;
 let settings: typeof SettingsModule;
+let jobForms: typeof JobFormsModule;
+let jobDefaults: typeof JobDefaultsModule;
 
 beforeAll(async () => {
   dbModule = await import('../src/db.js');
@@ -25,6 +32,8 @@ beforeAll(async () => {
   executions = await import('../src/executions.js');
   projects = await import('../src/projects.js');
   settings = await import('../src/settings.js');
+  jobForms = await import('../src/jobForms.js');
+  jobDefaults = await import('../src/jobDefaults.js');
 });
 
 afterAll(async () => {
@@ -94,6 +103,42 @@ describe.each(targets)('storage on $name', ({ url }) => {
     expect(await store.getCron(id)).toEqual(updated);
   });
 
+  it('keeps a name inferred while it is saved back unchanged', async () => {
+    const created = await store.createCron({ ...cronInput, name: 'Tidy up', nameInferred: true });
+    expect(await store.getCron(created.id)).toMatchObject({ name: 'Tidy up', nameInferred: true });
+    expect((await store.updateCron(created.id, { ...cronInput, name: 'Tidy up' }))?.nameInferred).toBe(true);
+    expect((await store.updateCron(created.id, { ...cronInput, name: 'Mine' }))?.nameInferred).toBe(false);
+  });
+
+  it('puts a title in place only while the name is still the inferred one, for both kinds', async () => {
+    const inferred = { ...cronInput, name: 'Rotate the staging keys', nameInferred: true, prompt: 'Rotate the staging keys.' };
+    const title = { askedName: 'Rotate the staging keys', prompt: 'Rotate the staging keys.', title: 'Staging key rotation' };
+
+    const cron = await store.createCron(inferred);
+    expect(await store.applyInferredTitle('cron', cron.id, title)).toBe(true);
+    expect(await store.getCron(cron.id)).toMatchObject({ name: 'Staging key rotation', nameInferred: true });
+
+    const execution = await executions.createExecution({ ...inferred, scheduledAt: '2026-01-01T00:00:00.000Z' });
+    expect(await store.applyInferredTitle('execution', execution.id, title)).toBe(true);
+    expect((await executions.getExecution(execution.id))?.name).toBe('Staging key rotation');
+
+    // A person renamed it while claude was thinking.
+    const renamed = await store.createCron(inferred);
+    await store.updateCron(renamed.id, { ...inferred, name: 'Keys', nameInferred: false });
+    expect(await store.applyInferredTitle('cron', renamed.id, title)).toBe(false);
+    expect((await store.getCron(renamed.id))?.name).toBe('Keys');
+
+    // Saved again with another prompt, so this title is for a prompt it no longer has.
+    const reprompted = await store.createCron(inferred);
+    await store.updateCron(reprompted.id, { ...inferred, prompt: 'Rotate the production keys.' });
+    expect(await store.applyInferredTitle('cron', reprompted.id, title)).toBe(false);
+
+    // Named by a person from the start, under the very same words.
+    const named = await store.createCron({ ...inferred, nameInferred: false });
+    expect(await store.applyInferredTitle('cron', named.id, title)).toBe(false);
+    expect(await store.applyInferredTitle('cron', 'no-such-job', title)).toBe(false);
+  });
+
   it('deletes a cron once', async () => {
     const { id } = await store.createCron(cronInput);
     expect(await store.deleteCron(id)).toBe(true);
@@ -135,6 +180,113 @@ describe.each(targets)('storage on $name', ({ url }) => {
     await settings.patchSettings({ serverName: 'Office' });
     await settings.patchSettings({ updateCheckIntervalHours: 6 });
     expect(await settings.loadSettings()).toMatchObject({ serverName: 'Office', updateCheckIntervalHours: 6, selfUpdate: true });
+  });
+
+  it('keeps the settings a job leaves to the defaults as null, and answers what it would use', async () => {
+    const body = { name: 'Follows', cron: '0 9 * * *', prompt: 'Tidy up.', isActive: true, model: 'haiku', useWorktree: null, usageDelay: { weekly: true } };
+    const { errors, value } = jobForms.readCronForm(body);
+    expect(errors).toEqual([]);
+    const created = await store.createCron(value);
+    const stored = await store.getCron(created.id);
+    expect(stored).toMatchObject({
+      useWorktree: null,
+      cleanupWorktree: null,
+      retrospective: null,
+      model: 'haiku',
+      effort: null,
+      usageDelay: { session: null, weekly: true, fable: null, credits: null },
+    });
+
+    const cluster = { ...jobDefaults.BUILT_IN_JOB_DEFAULTS, effort: 'low' };
+    expect(jobForms.withEffective(stored!, cluster).effective).toEqual({
+      useWorktree: true,
+      cleanupWorktree: true,
+      retrospective: false,
+      model: 'haiku',
+      effort: 'low',
+      usageDelay: { session: true, weekly: true, fable: false, credits: false },
+    });
+
+    // Saving the job again with an override, and then with it cleared, lands where it says.
+    const edited = jobForms.readCronForm({ ...body, useWorktree: false, model: null });
+    await store.updateCron(created.id, edited.value);
+    expect(jobForms.withEffective((await store.getCron(created.id))!, cluster)).toMatchObject({
+      useWorktree: false,
+      model: null,
+      effective: { useWorktree: false, model: '', effort: 'low' },
+    });
+  });
+});
+
+/**
+ * An upgrade from the schema before job defaults, on an empty database: a
+ * fresh SQLite file, or the test Postgres with its public schema rebuilt.
+ * That Postgres is the suite's own; the storage tests above clear its tables
+ * anyway, and a schema of its own would not do, since the migrator finds its
+ * bookkeeping table in public whatever the search path says.
+ */
+async function freshUpgradeTarget(url: string): Promise<string> {
+  if (!url.startsWith('postgres')) return `sqlite:${path.join(home, `upgrade-${Date.now()}.sqlite`)}`;
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  await client.query('drop schema if exists public cascade');
+  await client.query('create schema public');
+  await client.end();
+  return url;
+}
+
+describe.each(targets)('the migration to job setting defaults on $name', ({ url }) => {
+  beforeAll(async () => {
+    await dbModule.closeDatabase();
+    dbModule.openDatabase(await freshUpgradeTarget(url));
+    await dbModule.migrate('20260930_001_projects');
+    const db = dbModule.db();
+    const columns = sql`id, name, description, working_directory, use_worktree, cleanup_worktree, retrospective, model, effort, usage_delay, prompt, is_active, node_id, created_at, updated_at`;
+    const values = (id: string, model: string, effort: string, flags: [number, number, number], usageDelay: string) =>
+      sql`${id}, ${id}, '', '~/', ${flags[0]}, ${flags[1]}, ${flags[2]}, ${model}, ${effort}, ${usageDelay}, 'Do it.', 1, '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'`;
+    const seed = async (id: string, model: string, effort: string, flags: [number, number, number], usageDelay: string) => {
+      await sql`insert into crons (${columns}, cron, timezone) values (${values(id, model, effort, flags, usageDelay)}, '0 9 * * *', '')`.execute(db);
+      await sql`insert into executions (${columns}, scheduled_at, status) values (${values(`${id}-once`, model, effort, flags, usageDelay)}, '2026-01-02T00:00:00.000Z', 'done')`.execute(db);
+    };
+    await seed('blank', '', '', [0, 0, 0], '{"session":false,"weekly":false,"fable":false,"credits":false}');
+    await seed('set', 'opus', 'high', [1, 1, 1], '{"session":true}');
+    await dbModule.migrate();
+  });
+
+  const both = async (id: string) => [await store.getCron(id), await executions.getExecution(`${id}-once`)];
+
+  it('turns a blank model and effort into following the defaults, in both tables', async () => {
+    for (const job of await both('blank')) expect(job).toMatchObject({ model: null, effort: null });
+  });
+
+  it('keeps every other stored value as the job\'s own, so nothing runs differently', async () => {
+    for (const job of await both('blank')) {
+      expect(job).toMatchObject({
+        useWorktree: false,
+        cleanupWorktree: false,
+        retrospective: false,
+        usageDelay: { session: false, weekly: false, fable: false, credits: false },
+      });
+    }
+    for (const job of await both('set')) {
+      expect(job).toMatchObject({
+        useWorktree: true,
+        cleanupWorktree: true,
+        retrospective: true,
+        model: 'opus',
+        effort: 'high',
+        // A box the stored set left out meant off, and still does.
+        usageDelay: { session: true, weekly: false, fable: false, credits: false },
+      });
+    }
+    expect(await executions.getExecution('set-once')).toMatchObject({ status: 'done', scheduledAt: '2026-01-02T00:00:00.000Z' });
+  });
+
+  it('lets a job store null once migrated', async () => {
+    await store.patchCron('set', { model: null, useWorktree: null });
+    await executions.patchExecution('set-once', { effort: null, retrospective: null });
+    expect(await store.getCron('set')).toMatchObject({ model: null, useWorktree: null });
+    expect(await executions.getExecution('set-once')).toMatchObject({ effort: null, retrospective: null });
   });
 });
 

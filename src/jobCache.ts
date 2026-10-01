@@ -5,8 +5,10 @@ import { safeName } from './store.js';
 import { byScheduledAtDesc } from './executions.js';
 import { countRun as countFromRecord, hasLifetimeStats } from './stats.js';
 import type { RunOutcome } from './stats.js';
-import type { Cron, Execution, JobKind, JobPatch, LifetimeStats, NodeSettings, NodeWork } from './types.js';
+import type { JobKind, JobPatch, LifetimeStats, NodeSettings, NodeWork, RunnableCron as Cron, RunnableExecution as Execution } from './types.js';
 
+// The hub sends each job with its settings already filled in from this
+// node's defaults, so the copy holds them as they run.
 interface JobRecord {
   cron: Cron;
   execution: Execution;

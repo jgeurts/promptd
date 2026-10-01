@@ -18,12 +18,11 @@ export interface LifetimeStats {
   lifetimeRuntimeSeconds?: number;
 }
 
-/** What every job carries, whichever kind it is. */
-export interface JobBase extends LifetimeStats {
-  id: string;
-  name: string;
-  description: string;
-  workingDirectory: string;
+/**
+ * The settings a job can leave to its node's defaults, as a run uses them.
+ * A blank model or effort leaves the flag off, so the CLI uses its own.
+ */
+export interface JobSettings {
   useWorktree: boolean;
   cleanupWorktree: boolean;
   /** Ends each run with a retrospective, written into its log. */
@@ -31,6 +30,34 @@ export interface JobBase extends LifetimeStats {
   model: string;
   effort: string;
   usageDelay: UsageDelay;
+}
+
+/** The cluster's defaults for those settings, and so what a node falls back to. */
+export type JobDefaults = JobSettings;
+
+/** A node's own changes to the cluster's defaults. A key left out follows the cluster. */
+export type JobDefaultsOverride = Partial<Omit<JobDefaults, 'usageDelay'>> & { usageDelay?: Partial<UsageDelay> };
+
+export type UsageDelayOverride = Record<UsageDelayCategoryId, boolean | null>;
+
+/** Those settings as a job stores them: null follows its node's defaults, anything else is the job's own. */
+export interface JobSettingOverrides {
+  useWorktree: boolean | null;
+  cleanupWorktree: boolean | null;
+  retrospective: boolean | null;
+  model: string | null;
+  effort: string | null;
+  usageDelay: UsageDelayOverride;
+}
+
+/** What every job carries, whichever kind it is. */
+export interface JobBase extends LifetimeStats, JobSettingOverrides {
+  id: string;
+  name: string;
+  /** The name was taken from the prompt because none was given, so a title from claude may replace it. */
+  nameInferred: boolean;
+  description: string;
+  workingDirectory: string;
   prompt: string;
   isActive: boolean;
   nodeId?: string;
@@ -58,6 +85,17 @@ export interface Execution extends JobBase {
 
 export type Job = (Cron & { kind: 'cron' }) | (Execution & { kind: 'execution' });
 
+/** A job with every setting it leaves to the defaults filled in from them, as a node runs it. */
+export type Resolved<T extends JobSettingOverrides> = Omit<T, keyof JobSettings> & JobSettings;
+
+export type RunnableJobBase = Resolved<JobBase>;
+
+export type RunnableCron = Resolved<Cron>;
+
+export type RunnableExecution = Resolved<Execution>;
+
+export type RunnableJob = (RunnableCron & { kind: 'cron' }) | (RunnableExecution & { kind: 'execution' });
+
 /** The fields a form submits, before the store adds ids, dates and run bookkeeping. */
 export type CronInput = Pick<
   Cron,
@@ -76,7 +114,8 @@ export type CronInput = Pick<
   | 'usageDelay'
   | 'useWorktree'
   | 'workingDirectory'
->;
+> &
+  Partial<Pick<Cron, 'nameInferred'>>;
 
 export type ExecutionInput = Omit<CronInput, 'cron' | 'timezone'> & Pick<Execution, 'scheduledAt'>;
 
@@ -238,6 +277,7 @@ export interface Settings {
   defaultWorktreeInclude: string;
   retrospectivePrompt: string;
   defaultNodeId: string;
+  jobDefaults: JobDefaults;
 }
 
 /** What each node is set to on its own page. A key left out takes the node's default. */
@@ -245,6 +285,7 @@ export interface NodeConfig {
   maxConcurrentJobs?: number;
   usageDelayThresholds?: UsageThresholds;
   defaultWorkingDirectory?: string;
+  jobDefaults?: JobDefaultsOverride;
 }
 
 /** What a node needs to run its jobs. A null limit is the node's own processor count. */
@@ -334,7 +375,7 @@ export interface LogChunk {
   data: string;
 }
 
-export type NodeCommandType = 'browse' | 'refreshModels' | 'run' | 'stop';
+export type NodeCommandType = 'browse' | 'refreshModels' | 'run' | 'stop' | 'title';
 
 export interface NodeCommand {
   id: string;
@@ -360,10 +401,11 @@ export interface NodeReport {
   status: NodeStatus;
 }
 
+/** A node's share of the jobs, each with its settings filled in from the node's defaults by the hub. */
 export interface NodeWork {
   node: { id: string; isDefault: boolean };
-  crons: Cron[];
-  executions: Execution[];
+  crons: RunnableCron[];
+  executions: RunnableExecution[];
   settings: NodeSettings;
   pause: PauseState | null;
   commands: NodeCommand[];

@@ -8,7 +8,7 @@ import type * as Events from '../src/events.js';
 import type * as JobCache from '../src/jobCache.js';
 import type * as Notifications from '../src/notifications.js';
 import type * as Usage from '../src/usage.js';
-import type { BusEvent, Cron, UsageReading } from '../src/types.js';
+import type { BusEvent, RunnableCron as Cron, UsageReading } from '../src/types.js';
 
 let service: typeof CronService;
 let cache: typeof JobCache;
@@ -35,6 +35,7 @@ function heldCron(): Cron {
   return {
     id: 'held',
     name: 'Weekly cleanup',
+    nameInferred: false,
     description: '',
     cron: '0 9 * * *',
     timezone: '',

@@ -1,6 +1,7 @@
-import type { NodeConfig, UsageThresholds } from './types.js';
+import type { JobDefaults, NodeConfig, UsageThresholds } from './types.js';
 import { DEFAULT_USAGE_THRESHOLDS, USAGE_DELAY_CATEGORIES, normalizeUsageThresholds, parseUsageThreshold } from './usage.js';
 import { normalizeMaxConcurrentJobs } from './settings.js';
+import { BUILT_IN_JOB_DEFAULTS, JobDefaultsError, effectiveJobDefaults, patchJobDefaultsOverride, readJobDefaultsOverride } from './jobDefaults.js';
 
 export const DEFAULT_WORKING_DIRECTORY = '~/';
 
@@ -9,6 +10,8 @@ export interface EffectiveNodeConfig {
   maxConcurrentJobs: number;
   usageDelayThresholds: UsageThresholds;
   defaultWorkingDirectory: string;
+  /** The cluster's job defaults with this node's own changes. */
+  jobDefaults: JobDefaults;
 }
 
 export class NodeConfigError extends Error {}
@@ -37,6 +40,8 @@ export function readNodeConfig(input: unknown): NodeConfig {
   if (typeof given.defaultWorkingDirectory === 'string' && given.defaultWorkingDirectory.trim()) {
     config.defaultWorkingDirectory = given.defaultWorkingDirectory.trim();
   }
+  const jobDefaults = readJobDefaultsOverride(given.jobDefaults);
+  if (Object.keys(jobDefaults).length) config.jobDefaults = jobDefaults;
   return config;
 }
 
@@ -77,13 +82,25 @@ export function patchNodeConfig(current: NodeConfig, patch: Record<string, unkno
     if (!directory || directory === DEFAULT_WORKING_DIRECTORY) delete next.defaultWorkingDirectory;
     else next.defaultWorkingDirectory = directory;
   }
+  if ('jobDefaults' in patch) {
+    let jobDefaults;
+    try {
+      jobDefaults = patchJobDefaultsOverride(next.jobDefaults ?? {}, patch.jobDefaults);
+    } catch (err) {
+      if (err instanceof JobDefaultsError) throw new NodeConfigError(err.message);
+      throw err;
+    }
+    if (Object.keys(jobDefaults).length) next.jobDefaults = jobDefaults;
+    else delete next.jobDefaults;
+  }
   return next;
 }
 
-export function effectiveNodeConfig(config: NodeConfig, processors: number): EffectiveNodeConfig {
+export function effectiveNodeConfig(config: NodeConfig, processors: number, clusterJobDefaults: JobDefaults = BUILT_IN_JOB_DEFAULTS): EffectiveNodeConfig {
   return {
     maxConcurrentJobs: config.maxConcurrentJobs ?? processors,
     usageDelayThresholds: config.usageDelayThresholds ?? DEFAULT_USAGE_THRESHOLDS,
     defaultWorkingDirectory: config.defaultWorkingDirectory ?? DEFAULT_WORKING_DIRECTORY,
+    jobDefaults: effectiveJobDefaults(clusterJobDefaults, config.jobDefaults),
   };
 }
