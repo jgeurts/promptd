@@ -94,6 +94,8 @@ const uploads = new Map<string, Upload>();
 let commit: string | null = null;
 let reconciled = false;
 let appliedPauseKey: string | null = null;
+/** The pause the hub last sent, which an update's hold stands in for until it ends. */
+let hubPause: PauseState | null = null;
 /** The hub's build this binary is installed as and waiting to restart into, and whether new runs are held for it. */
 let updatingTo: { version: string; since: number; holding: boolean } | null = null;
 /** Checks the wait for runs to finish on its own clock, since the hub may be out of reach. */
@@ -380,6 +382,7 @@ async function reconcileOnce(): Promise<void> {
 }
 
 async function applyPause(pause: PauseState | null | undefined): Promise<void> {
+  hubPause = pause ?? null;
   // The node's own update pause holds until it restarts, whatever the hub says.
   if (updatingTo?.holding) return;
   if (!pause) {
@@ -449,7 +452,9 @@ async function abandonUpdate(version: string, why: string): Promise<void> {
   updateDrainTimer = null;
   if (!holding) return;
   appliedPauseKey = null;
-  await cronService.resumeAll('update abandoned');
+  // Resuming first would let work start that the hub has paused, until the next sync paused it again.
+  if (hubPause) await applyPause(hubPause);
+  else await cronService.resumeAll('update abandoned');
 }
 
 /**
