@@ -107,11 +107,12 @@ export interface WaitingJob {
   kind: JobKind;
   nodeId: string;
   nodeName: string;
-  /** `usage` waits for an account limit to clear; `concurrency` for a free slot under the node's job limit. */
+  /** `usage` waits for an account limit to clear; `concurrency` for a free slot under its node's job limit. */
   hold: DelayEntry['hold'];
   /** The limits a usage hold waits on, by their plain names. */
   limits: Array<{ name: string; usedPercent: number | null; threshold: number | null; resetsAt: string | null }>;
   resumeAt: string | null;
+  /** When the trigger first had to wait, for whatever reason: its place in line, which the nodes queue by. */
   since: string;
   /** Its place in line, counting from 1, while it waits for a free slot. */
   position: number | null;
@@ -347,7 +348,9 @@ export function machineExceptions(nodes: ClusterNode[]): MachineException[] {
 
 /**
  * Every trigger the online nodes are holding. Usage holds come first, because
- * they wait on the clock rather than on a job finishing, then oldest first.
+ * they wait on the clock rather than on a job finishing, then in the order the
+ * nodes queue them: by when each trigger first had to wait, which a trigger
+ * moved from a usage hold into the slot queue keeps.
  */
 export function waitingJobs(nodes: ClusterNode[]): WaitingJob[] {
   const order = (job: WaitingJob): number => (job.hold === 'usage' ? 0 : 1);
@@ -372,7 +375,7 @@ export function waitingJobs(nodes: ClusterNode[]): WaitingJob[] {
                 }))
               : [],
           resumeAt: entry.resumeAt ?? null,
-          since: entry.delayedAt,
+          since: entry.arrivedAt ?? entry.delayedAt,
           position: entry.hold === 'concurrency' && Number.isInteger(entry.position) ? entry.position! + 1 : null,
           queueLength: entry.hold === 'concurrency' ? entry.queueLength ?? null : null,
         }),
@@ -404,7 +407,7 @@ export function headerSummary(summary: Omit<ClusterSummary, 'header'>): HeaderSu
 
   const warnings: HeaderWarning[] = [];
   if (forUsage) warnings.push({ id: 'waiting-usage', section: 'jobs', text: `${count(forUsage, 'job')} waiting for account limits` });
-  if (forSlot) warnings.push({ id: 'waiting-slot', section: 'jobs', text: `${count(forSlot, 'job')} waiting for a free slot` });
+  if (forSlot) warnings.push({ id: 'waiting-slot', section: 'jobs', text: `${count(forSlot, 'job')} queued behind the job limit` });
   if (accounts.reached || accounts.near) {
     const parts = [accounts.reached ? `${accounts.reached} reached` : null, accounts.near ? `${accounts.near} near` : null];
     warnings.push({ id: 'accounts', section: 'accounts', text: `Account limits: ${parts.filter(Boolean).join(', ')}` });

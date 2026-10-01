@@ -535,6 +535,37 @@ a {
   }
 }
 
+/*
+ * Too narrow for one line: the brand and the buttons share the first row and
+ * the buttons drop under the brand when a long server name or the update
+ * badge leaves no room, then the summary and the warnings take rows of their own.
+ */
+@media (max-width: 900px) {
+  .topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 12px;
+  }
+  .brand {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .topbar-right {
+    order: 1;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  .summary,
+  .warnings {
+    order: 2;
+    flex: 1 1 100%;
+    margin-top: 0;
+  }
+}
+
 /* Narrower than the panel's two columns: each account stacks, and so does each limit. */
 @media (max-width: 720px) {
   .acct {
@@ -561,15 +592,7 @@ a {
 @media (max-width: 640px) {
   .topbar {
     position: relative;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas:
-      'brand right'
-      'summary summary'
-      'warnings warnings';
     padding: 10px 16px 12px;
-  }
-  .summary {
-    margin-top: 10px;
   }
   .summary,
   .warnings {

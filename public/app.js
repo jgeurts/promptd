@@ -1986,8 +1986,8 @@ async function renderExecutionForm(id, duplicateOf) {
  * There is nothing to count down to when Update now is pressed: the server first
  * holds the schedules and waits for any run to finish, and only then restarts.
  * So report the wait, and start the 5 second countdown once this page notices the
- * server is on a new commit — the same signal behind the "live - refresh window"
- * badge in the header.
+ * server is on a new commit — the same signal behind the header's "Page out of
+ * date" warning.
  */
 function watchUpdate(status, updateButton, updateLog) {
   clearTimeout(reloadTimer);
@@ -3305,10 +3305,10 @@ function connectEvents() {
       handler(event);
     });
 
+  // Drawn once fresh health is in, so the header never says "all clear" from what it held through the gap.
   on('hello', () => {
     stream.state = 'connected';
-    paintHeader();
-    checkHealth();
+    checkHealth().then(paintHeader);
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
   });
@@ -3883,6 +3883,15 @@ function fmtWhen(iso) {
   return new Date(iso).toLocaleString(undefined, soon ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
+/**
+ * A usage percentage. Whole numbers, except just short of 100: a limit at
+ * 99.6% is near, not reached, and must not read as "100%".
+ */
+function fmtUsed(percent) {
+  const used = Math.max(0, Math.min(100, Number(percent) || 0));
+  return used >= 99.5 && used < 100 ? `${Math.floor(used * 10) / 10}%` : `${Math.round(used)}%`;
+}
+
 /** Items with a separator between them, as children for `el`. */
 function joined(items, separator) {
   return items.flatMap((item, index) => (index ? [separator, item] : [item]));
@@ -3976,7 +3985,8 @@ function paintHeader() {
 function announce(warnings, attention) {
   const cluster = healthState.cluster;
   const facts = {
-    waiting: cluster.waiting?.length ?? 0,
+    // By identity, so one job starting while another begins to wait is still news.
+    waiting: (cluster.waiting ?? []).map((job) => `${job.nodeId}:${job.id}:${job.hold}`),
     offline: cluster.nodes.offline.length,
     disconnected: stream.state === 'disconnected',
     attention,
@@ -3986,7 +3996,7 @@ function announce(warnings, attention) {
   if (!before) return;
   const said = [];
   const text = (id) => warnings.find((warning) => warning.id === id)?.text;
-  if (facts.waiting > before.waiting) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
+  if (facts.waiting.some((job) => !before.waiting.includes(job))) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
   if (facts.offline > before.offline && text('offline')) said.push(text('offline'));
   if (facts.disconnected && !before.disconnected) said.push('Updates disconnected');
   if (!facts.disconnected && before.disconnected) said.push('Updates reconnected');
@@ -4044,9 +4054,11 @@ function showSection(section) {
     return;
   }
   const area = heading.closest('section');
-  // The body scrolls on its own when the panel is capped to the window; on a phone the page does.
+  // The body scrolls on its own when the panel is capped to the window; on a phone the page does,
+  // and only when the section is not already in view.
+  const box = area.getBoundingClientRect();
   if (statusPanelBodyEl.scrollHeight > statusPanelBodyEl.clientHeight) statusPanelBodyEl.scrollTop = area.offsetTop;
-  else area.scrollIntoView({ block: 'start' });
+  else if (box.top < 0 || box.bottom > innerHeight) area.scrollIntoView({ block: 'start' });
   heading.focus({ preventScroll: true });
 }
 
@@ -4084,10 +4096,10 @@ function waitingReason(job) {
   if (job.hold === 'concurrency') {
     const place = job.position && job.queueLength ? `, ${job.position} of ${job.queueLength} in line` : '';
     const when = job.resumeAt ? `; could start ${fmtCountdown(job.resumeAt)}` : '';
-    return `Waiting for a free slot${place}${when}`;
+    return `Queued behind ${job.nodeName}'s job limit${place}${when}`;
   }
   const limits = (job.limits ?? []).map((limit) => {
-    const used = Number.isFinite(limit.usedPercent) ? ` ${Math.round(limit.usedPercent)}% used` : '';
+    const used = Number.isFinite(limit.usedPercent) ? ` ${fmtUsed(limit.usedPercent)} used` : '';
     return `${limit.name}${used}${limit.resetsAt ? `, resets ${fmtIn(limit.resetsAt)}` : ''}`;
   });
   return `Waiting for account limits: ${limits.join('; ') || 'usage to clear'}`;
@@ -4107,7 +4119,7 @@ function jobsSection() {
   const waiting = cluster.waiting ?? [];
   const armed = [
     healthState.armedCrons ? `${healthState.armedCrons} cron${healthState.armedCrons === 1 ? '' : 's'}` : null,
-    healthState.armedExecutions ? `${healthState.armedExecutions} one-time` : null,
+    healthState.armedExecutions ? `${healthState.armedExecutions} one-time job${healthState.armedExecutions === 1 ? '' : 's'}` : null,
   ].filter(Boolean);
   return panelSection('jobs', 'Jobs', [
     el('p', { class: 'sp-lead' }, [el('strong', { text: cluster.header.jobs }), ` · ${cluster.header.capacity}`]),
@@ -4139,7 +4151,7 @@ function limitRow(limit) {
     el('span', { class: 'lim-name', text: limit.name }),
     // Its own column, empty when the limit is fine, so the numbers line up across accounts.
     el('span', { class: 'lim-flag-cell' }, LIMIT_FLAG[limit.status] ? [el('span', { class: 'lim-flag', text: LIMIT_FLAG[limit.status] })] : []),
-    el('span', { class: 'lim-pct', text: `${Math.round(used)}% used` }),
+    el('span', { class: 'lim-pct', text: `${fmtUsed(used)} used` }),
     el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: 'lim-fill', style: `width: ${used}%` })]),
     el('span', { class: 'lim-reset', text: resetLine(limit) }),
   ]);
@@ -4216,7 +4228,7 @@ function computersSection() {
     ...(builds?.differing ?? [])
       .map((id) => byId.get(id))
       .filter(Boolean)
-      .map((node) => el('li', { class: 'sp-item muted' }, [nodeLink(node, 'build'), ' runs a different build than this server'])),
+      .map((node) => el('li', { class: 'sp-item muted' }, [nodeLink(node, 'build'), ' runs a different version of promptd than this server'])),
   ];
   return panelSection('computers', 'Computers', [
     el('p', { class: 'sp-lead' }, [el('strong', { text: nodes.total ? `${nodes.online} of ${nodes.total} online` : 'No computers connected' })]),
@@ -4267,11 +4279,20 @@ function paintPanel() {
   if (drawn === panelDrawn) return;
   panelDrawn = drawn;
   statusPanelTitleEl.replaceChildren('System status — ', el('span', { class: attention ? 'attention' : 'clear', text: attention ? 'Needs attention' : 'All clear' }));
-  const focusedKey = statusPanelBodyEl.contains(document.activeElement) ? document.activeElement.dataset.key ?? null : null;
+  const inside = statusPanelBodyEl.contains(document.activeElement) ? document.activeElement : null;
+  const focusedKey = inside?.dataset.key ?? null;
+  const focusedSection = inside?.closest('[data-section]')?.dataset.section ?? null;
   const scroll = statusPanelBodyEl.scrollTop;
   statusPanelBodyEl.replaceChildren(jobsSection(), accountsSection(), computersSection(), updatesSection());
   statusPanelBodyEl.scrollTop = scroll;
-  if (focusedKey) statusPanelBodyEl.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus({ preventScroll: true });
+  if (inside) {
+    // A link that went with the redraw, say a job that started, hands focus to its section's heading rather than dropping it.
+    const again =
+      (focusedKey && statusPanelBodyEl.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)) ||
+      statusPanelBodyEl.querySelector(`[data-section="${CSS.escape(focusedSection ?? '')}"] h3`) ||
+      statusPanelTitleEl;
+    again.focus({ preventScroll: true });
+  }
 }
 
 statusPanelCloseEl?.addEventListener('click', () => closePanel());

@@ -319,26 +319,29 @@ function held(overrides: Partial<DelayEntry>): DelayEntry {
 }
 
 describe('waitingJobs', () => {
-  it('lists usage holds first, then slot holds, each oldest first, with their reasons in plain names', () => {
+  it('lists usage holds first, then slot holds, each in arrival order, with their reasons in plain names', () => {
     const jobs = waitingJobs([
       node({
         id: 'mini',
         name: 'mini',
         waiting: [
-          held({ cronId: 'b', cronName: 'Backup', hold: 'concurrency', position: 0, queueLength: 2, delayedAt: '2026-09-30T10:00:00.000Z' }),
-          held({ cronId: 'r', cronName: 'Report', delayedAt: '2026-09-30T11:30:00.000Z', reasons: [{ id: 'weekly', label: 'Weekly', usedPercent: 100, threshold: 95, resetsAt: null }] }),
+          // Queued first but moved into the queue last: it arrived waiting on usage, which keeps its place.
+          held({ cronId: 'q', cronName: 'Queue later', hold: 'concurrency', position: 1, queueLength: 2, arrivedAt: '2026-09-30T10:30:00.000Z', delayedAt: '2026-09-30T10:30:00.000Z' }),
+          held({ cronId: 'b', cronName: 'Backup', hold: 'concurrency', position: 0, queueLength: 2, arrivedAt: '2026-09-30T10:00:00.000Z', delayedAt: '2026-09-30T11:45:00.000Z' }),
+          held({ cronId: 'r', cronName: 'Report', arrivedAt: '2026-09-30T11:30:00.000Z', delayedAt: '2026-09-30T11:30:00.000Z', reasons: [{ id: 'weekly', label: 'Weekly', usedPercent: 100, threshold: 95, resetsAt: null }] }),
         ],
       }),
-      node({ id: 'air', name: 'air', waiting: [held({ cronId: 'd', cronName: 'Digest', delayedAt: '2026-09-30T11:00:00.000Z', reasons: [{ id: 'fable', label: 'Fable' }] })] }),
+      node({ id: 'air', name: 'air', waiting: [held({ cronId: 'd', cronName: 'Digest', arrivedAt: '2026-09-30T11:00:00.000Z', reasons: [{ id: 'fable', label: 'Fable' }] })] }),
       node({ id: 'old', online: false, waiting: [held({ cronId: 'x' })] }),
     ]);
-    expect(jobs.map((job) => [job.id, job.hold, job.nodeName])).toEqual([
-      ['d', 'usage', 'air'],
-      ['r', 'usage', 'mini'],
-      ['b', 'concurrency', 'mini'],
+    expect(jobs.map((job) => [job.id, job.hold, job.nodeName, job.position])).toEqual([
+      ['d', 'usage', 'air', null],
+      ['r', 'usage', 'mini', null],
+      ['b', 'concurrency', 'mini', 1],
+      ['q', 'concurrency', 'mini', 2],
     ]);
     expect(jobs[1]?.limits).toEqual([{ name: 'Weekly, all models', usedPercent: 100, threshold: 95, resetsAt: null }]);
-    expect(jobs[2]).toMatchObject({ position: 1, queueLength: 2, limits: [] });
+    expect(jobs[2]).toMatchObject({ queueLength: 2, limits: [], since: '2026-09-30T10:00:00.000Z' });
   });
 });
 
@@ -411,7 +414,7 @@ describe('header summary', () => {
     );
     expect(header.warnings).toEqual([
       { id: 'waiting-usage', section: 'jobs', text: '2 jobs waiting for account limits' },
-      { id: 'waiting-slot', section: 'jobs', text: '1 job waiting for a free slot' },
+      { id: 'waiting-slot', section: 'jobs', text: '1 job queued behind the job limit' },
       { id: 'accounts', section: 'accounts', text: 'Account limits: 1 reached' },
       { id: 'machines', section: 'computers', text: 'Machine warnings: 2' },
       { id: 'offline', section: 'computers', text: '1 computer offline' },
