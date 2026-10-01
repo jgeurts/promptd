@@ -5,7 +5,6 @@ import {
   accountSummaries,
   clusterLimit,
   clusterSummary,
-  headlineWindows,
   limitName,
   limitStatus,
   machineExceptions,
@@ -85,17 +84,6 @@ describe('tightestWindow', () => {
   });
 });
 
-describe('headlineWindows', () => {
-  it('is Session and the tightest other window, in that order', () => {
-    const windows = [usageWindow('weekly_all', 40), usageWindow('session', 95), usageWindow('weekly_scoped', 70, 'normal', 'Fable')];
-    expect(headlineWindows(windows).map((window) => window.label)).toEqual(['Session', 'Weekly · Fable']);
-  });
-
-  it('is the tightest window alone when the account reports no session', () => {
-    expect(headlineWindows([usageWindow('spend', 20), usageWindow('weekly_all', 30)]).map((window) => window.label)).toEqual(['Weekly']);
-  });
-});
-
 describe('accountSummaries', () => {
   it('gives two nodes on one account one entry, named by the email', () => {
     const accounts = accountSummaries([
@@ -133,8 +121,6 @@ describe('accountSummaries', () => {
       node({ usage: reading([usageWindow('session', 38), usageWindow('weekly_all', 83, 'warning'), usageWindow('weekly_scoped', 52, 'normal', 'Fable')]) }),
     ]);
     expect(account?.severity).toBe('warning');
-    expect(account?.tightest).toBe('weekly_all:0');
-    expect(account?.headline).toEqual(['session:0', 'weekly_all:0']);
     expect(account?.status).toBe('near');
     expect(account?.windows.map((window) => [window.name, window.status])).toEqual([
       ['5-hour session', 'ok'],
@@ -170,7 +156,7 @@ describe('unknownAccountUsage', () => {
   it("keeps the usage of a node that names no account, as an older build's does", () => {
     const summary = clusterSummary([node({ id: 'mini', account: null, usage: reading([usageWindow('session', 38)]) })], null);
     expect(summary.accounts).toEqual([]);
-    expect(summary.unknownAccountUsage).toMatchObject([{ nodeId: 'mini', nodeName: 'mini', headline: ['session:0'], status: 'ok', severity: 'normal' }]);
+    expect(summary.unknownAccountUsage).toMatchObject([{ nodeId: 'mini', nodeName: 'mini', status: 'ok', severity: 'normal' }]);
     expect(summary.unknownAccountUsage[0]?.windows[0]?.usedPercent).toBe(38);
   });
 
