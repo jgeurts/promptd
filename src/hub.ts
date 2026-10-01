@@ -23,6 +23,7 @@ import type {
   CommandResult,
   ConcurrencyInfo,
   Cron,
+  DelayEntry,
   Execution,
   JobPatch,
   JobView,
@@ -339,11 +340,18 @@ class Hub {
       id: node.id,
       name: node.name,
       online,
+      lastSeenAt: node.lastSeenAt ?? null,
       commit: node.commit,
       account: node.account,
       usage: online ? node.status.usage ?? null : null,
       running: online ? node.status.counts?.running ?? 0 : 0,
       concurrencyLimit: online ? Number(node.status.counts?.concurrencyLimit) || 0 : 0,
+      thresholds: this.nodeConfig(node.id).usageDelayThresholds,
+      waiting: online
+        ? Object.values(node.status.jobs ?? {})
+            .map((view) => view?.delayed ?? null)
+            .filter((entry): entry is DelayEntry => entry !== null)
+        : [],
       samples: node.samples,
       intervalMs: this.sampleIntervalMs(node),
     };
