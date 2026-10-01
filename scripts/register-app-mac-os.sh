@@ -70,6 +70,7 @@ registered() { launchctl print "$DOMAIN/$1" >/dev/null 2>&1; }
 # How many times launchd has started the agent since it was registered.
 runs_of() { launchctl print "$DOMAIN/$1" 2>/dev/null | sed -nE 's/^[[:space:]]*runs = ([0-9]+).*/\1/p' | head -n 1; }
 running() { launchctl print "$DOMAIN/$1" 2>/dev/null | grep -qE '^[[:space:]]*pid = [0-9]+'; }
+pid_of() { launchctl print "$DOMAIN/$1" 2>/dev/null | sed -nE 's/^[[:space:]]*pid = ([0-9]+).*/\1/p' | head -n 1; }
 
 printf '\nRegistering promptd with launchd\n\n'
 
@@ -239,8 +240,9 @@ fi
 # launchd starting promptd again unaided is what brings it back after a restart or
 # login, and some Macs never do. So stop the new agent once and see it come back.
 check_relaunch() {
-  local label="$1" before
+  local label="$1" log="$2" before pid still_stopping=0
   before="$(runs_of "$label")"
+  pid="$(pid_of "$label")"
   printf '  • checking that launchd starts %s again by itself' "$label"
   launchctl kill SIGTERM "$DOMAIN/$label" >/dev/null 2>&1
   # launchd waits until 10s after the last start before starting it again.
@@ -254,6 +256,8 @@ check_relaunch() {
     fi
   done
   printf '\n'
+  # The process asked to stop is still there, so launchd never had the chance to start it again.
+  [ -n "$pid" ] && [ "$(pid_of "$label")" = "$pid" ] && still_stopping=1
   # Started by hand for now, so this Mac is not left without it. -k because the old
   # process may still be stopping, and a plain kickstart would leave it to exit later.
   before="$(runs_of "$label")"
@@ -263,6 +267,7 @@ check_relaunch() {
     sleep 0.5
   done
   running "$label" || die "launchd will not start $label, even when asked. Allow promptd under System Settings → General → Login Items & Extensions → Allow in the Background, then $RUN_AGAIN."
+  [ "$still_stopping" = "1" ] && die "$label was still stopping 30s after it was asked to, so whether launchd starts it again by itself is unchecked. launchd has been asked to restart it; see $log for what held it up, then $RUN_AGAIN."
   die "macOS is not letting promptd start on its own, so this Mac will drop off after a restart or login. Turn promptd on under System Settings → General → Login Items & Extensions → Allow in the Background, then $RUN_AGAIN."
 }
 
@@ -327,7 +332,7 @@ if [ "$HUB_INSTALLED" = "1" ]; then
     LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
     [ -n "$LAN_IP" ] && ok "on your network at http://$LAN_IP:$PORT"
   fi
-  check_relaunch "$LABEL"
+  check_relaunch "$LABEL" "$HUB_LOG"
   hub_answers || die "launchd started the hub again, but nothing answered on $CHECK_HOST:$PORT within 30s. Check $HUB_LOG"
 fi
 
@@ -352,7 +357,7 @@ if [ "$NODE_INSTALLED" = "1" ]; then
   printf '\n'
   if [ "$connected" = "1" ]; then
     ok "$CHECK_ID connected to $HUB_URL"
-    check_relaunch "$NODE_LABEL"
+    check_relaunch "$NODE_LABEL" "$NODE_LOG"
   elif [ "$connected" = "locked" ]; then
     ok "node registered; the hub requires a login, so check it under Settings → Nodes"
     # Stopping the node before it keeps the hub's token could spend its join code for nothing.
@@ -362,7 +367,7 @@ if [ "$NODE_INSTALLED" = "1" ]; then
       sleep 1
     done
     if [ "$paired" = "1" ]; then
-      check_relaunch "$NODE_LABEL"
+      check_relaunch "$NODE_LABEL" "$NODE_LOG"
     else
       warn "$CHECK_ID has not paired with $HUB_URL yet, so whether launchd starts it again by itself is unchecked"
     fi
