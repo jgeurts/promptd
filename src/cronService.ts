@@ -252,11 +252,11 @@ function statsBlock(result: CliEvent, afterCost: string[] = []): string {
  * happened in a line for the log. Never throws: a failed clean up is reported,
  * and the run's own outcome stands.
  */
-async function cleanUpWorktree(job: Job, cwd: string): Promise<string> {
+async function cleanUpWorktree(job: Job, cwd: string, at: string | null = null): Promise<string> {
   if (!job.cleanupWorktree) return 'not cleaned up: Clean up worktree after execution is off';
   const started = Date.now();
   try {
-    const result: { cleaned?: string; skipped?: string } = await removeWorktree(cwd, job.id);
+    const result: { cleaned?: string; skipped?: string } = await removeWorktree(cwd, job.id, at ? { at } : {});
     if (!result.cleaned) return `not cleaned up: ${result.skipped}`;
     return `cleaned up in ${((Date.now() - started) / 1000).toFixed(1)}s: ${result.cleaned}`;
   } catch (err) {
@@ -1558,6 +1558,8 @@ class CronService {
     // own, or something it started may still be writing in it. Clean up
     // finds the worktree by its branch, which could be a checkout elsewhere.
     let keepWorktree: string | null = null;
+    // The tree this run set up for its commands, which is the only one its clean up removes.
+    let preparedTree: string | null = null;
     // `reason` is for a run that never reached claude: what stopped it, for the notification.
     let finishing = false;
     const finish = async (status: RunStatus, detail: string, reason: string | null = null): Promise<void> => {
@@ -1568,7 +1570,7 @@ class CronService {
       // Every way a run ends comes through here once the child has exited, so
       // nothing is still writing in the folder being removed. The run keeps its
       // slot until this is done, so its next trigger cannot race the removal.
-      const cleanupLine = `Worktree cleanup: ${keepWorktree ? `not cleaned up: ${keepWorktree}` : await cleanUpWorktree(cron, cwd)}`;
+      const cleanupLine = `Worktree cleanup: ${keepWorktree ? `not cleaned up: ${keepWorktree}` : await cleanUpWorktree(cron, cwd, preparedTree)}`;
       if (retroSplitter && retroPrompt !== null) {
         const held = retroSplitter.flush();
         if (held) stream.write(held);
@@ -1782,6 +1784,7 @@ class CronService {
           stream.write(`could not make the worktree: ${message}\n`);
           return finish('failed', 'could not make the worktree', `could not make its worktree: ${message}`);
         }
+        preparedTree = tree.path;
         for (const note of tree.notes) stream.write(`worktree   ${note}\n`);
         if (tree.created) {
           try {

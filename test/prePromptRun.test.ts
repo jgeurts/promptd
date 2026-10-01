@@ -251,6 +251,22 @@ describe('commands before the prompt', () => {
     expect(git(app, 'branch', '--list', `worktree-${job.id}`)).not.toBe('');
   });
 
+  it('clean up only the tree they ran in, when the worktree branch is checked out somewhere else', async () => {
+    const { app } = repoBehindOrigin();
+    const job = cron(app, ['true'], { cleanupWorktree: true });
+    const tree = path.join(app, '.claude', 'worktrees', job.id);
+    git(app, 'worktree', 'add', '-q', '-b', 'feature', tree);
+    const elsewhere = path.join(path.dirname(app), 'elsewhere-too');
+    git(app, 'worktree', 'add', '-q', '-b', `worktree-${job.id}`, elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'unsaved.txt'), 'work in progress\n');
+
+    const ran = await run(job);
+    expect(ran.event.status).toBe('succeeded');
+    expect(fs.existsSync(tree)).toBe(false);
+    expect(fs.readFileSync(path.join(elsewhere, 'unsaved.txt'), 'utf8')).toBe('work in progress\n');
+    expect(ran.log).toContain(`kept branch worktree-${job.id}, which ${fs.realpathSync(elsewhere)} has checked out`);
+  });
+
   it('copy what .worktreeinclude names into a new worktree before the commands run', async () => {
     const { app } = repoBehindOrigin();
     fs.writeFileSync(path.join(app, '.git', 'info', 'exclude'), '.env\n');

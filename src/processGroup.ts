@@ -107,14 +107,25 @@ export function runInGroup(command: string, args: string[], options: GroupOption
       ending ??= child.pid === undefined ? Promise.resolve(true) : endGroup(child.pid);
       return ending;
     };
+    // Ending it is waited out here as well as on exit: a command stuck past
+    // SIGKILL may never exit, and the caller must not wait on it forever.
+    const endNow = (): void => {
+      void end().then((gone) => {
+        if (gone) return; // its exit, which follows, answers
+        result.leftRunning = true;
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        settle();
+      });
+    };
     const onAbort = (): void => {
       result.aborted = true;
-      void end();
+      endNow();
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     const timer = timeoutMs === undefined ? null : setTimeout(() => {
       result.timedOut = true;
-      void end();
+      endNow();
     }, Math.max(0, timeoutMs));
 
     child.stdout?.on('data', (chunk: Buffer) => onOutput?.(chunk, 'stdout'));

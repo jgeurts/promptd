@@ -2,9 +2,9 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { copyWorktreeIncludes, prepareWorktree, removeWorktree, worktreeBranch, worktreePath, writeWorktreeInclude } from '../src/worktree.js';
+import { copyWorktreeIncludes, isStuck, prepareWorktree, removeWorktree, worktreeBranch, worktreePath, writeWorktreeInclude } from '../src/worktree.js';
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
@@ -219,6 +219,22 @@ describe('prepareWorktree', () => {
     expect(branchExists(mainRepo, 'worktree-job-14')).toBe(false);
     expect(git(mainRepo, 'worktree', 'list')).not.toContain('job-14');
   });
+
+  it('fails rather than going on when a fetch leaves processes it cannot end', async () => {
+    const { app } = behindOrigin();
+    const realKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (pid < 0 && signal === 0) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      return realKill(pid, signal);
+    });
+    try {
+      const failure = await prepareWorktree(app, 'job-15', { signal: new AbortController().signal }).then(() => null, (err: unknown) => err);
+      expect(isStuck(failure)).toBe(true);
+      expect(fs.existsSync(worktreePath(fs.realpathSync(app), 'job-15'))).toBe(false);
+    } finally {
+      kill.mockRestore();
+    }
+  }, 30_000);
 
   it('stops when asked, before making anything', async () => {
     const { app } = behindOrigin();

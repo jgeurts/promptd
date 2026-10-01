@@ -118,18 +118,28 @@ async function listWorktrees(dir: string): Promise<Array<{ path: string; branch:
  * Code puts it under the main checkout's `.claude/worktrees`, which is not the
  * folder `dir` is in when the job runs inside a linked worktree.
  *
+ * `at` is for a run that set up its tree itself and knows exactly where it
+ * is: only that tree is removed, and the branch only when no other checkout
+ * has it, since the branch can be checked out somewhere else entirely.
+ *
  * @returns {Promise<{ cleaned: string } | { skipped: string }>} What was removed,
  *   or why there was nothing to remove.
  */
-export async function removeWorktree(dir: string, name: string): Promise<WorktreeCleanup> {
+export async function removeWorktree(dir: string, name: string, { at }: { at?: string } = {}): Promise<WorktreeCleanup> {
   const root = await repoRoot(dir);
   if (!root) return { skipped: `${dir} is not in a git repository` };
   const branch = `worktree-${name}`;
   const removed: string[] = [];
 
-  const registered = (await listWorktrees(root)).find((worktree) => worktree.branch === `refs/heads/${branch}`)?.path;
-  const fallback = path.join((await mainCheckoutRoot(root)) ?? root, '.claude', 'worktrees', name);
-  const worktreePath = registered ?? ((await fsp.stat(fallback).then(() => true, () => false)) ? fallback : null);
+  let worktreePath: string | null;
+  if (at) {
+    const real = await fsp.realpath(at).catch(() => at);
+    worktreePath = (await listWorktrees(root)).find((worktree) => worktree.path === at || worktree.path === real)?.path ?? null;
+  } else {
+    const registered = (await listWorktrees(root)).find((worktree) => worktree.branch === `refs/heads/${branch}`)?.path;
+    const fallback = path.join((await mainCheckoutRoot(root)) ?? root, '.claude', 'worktrees', name);
+    worktreePath = registered ?? ((await fsp.stat(fallback).then(() => true, () => false)) ? fallback : null);
+  }
 
   if (worktreePath) {
     // Claude Code locks the worktrees it makes, and git refuses to remove a locked one.
@@ -140,7 +150,9 @@ export async function removeWorktree(dir: string, name: string): Promise<Worktre
   }
 
   const tip = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).catch(() => '');
-  if (tip) {
+  const elsewhere = at ? (await listWorktrees(root)).find((worktree) => worktree.branch === `refs/heads/${branch}`)?.path : undefined;
+  if (tip && elsewhere) removed.push(`kept branch ${branch}, which ${elsewhere} has checked out`);
+  else if (tip) {
     await git(root, ['branch', '-D', branch]);
     removed.push(`deleted branch ${branch} (was ${tip.slice(0, 10)})`);
   }
@@ -248,7 +260,11 @@ async function freshBase(root: string, checkout: string, signal: AbortSignal | u
   }
   const failure = await git(root, ['fetch', '--quiet', 'origin', branch], { timeout: 60_000, signal }).then(
     () => null,
-    (err: Error) => err.message.replace(/\s+/g, ' '),
+    (err: Error) => {
+      // A fetch that could not be ended is not a warning: something may still be writing.
+      if (isStuck(err)) throw err;
+      return err.message.replace(/\s+/g, ' ');
+    },
   );
   signal?.throwIfAborted();
   notes.push(failure === null ? `fetched origin ${branch}` : `could not fetch origin ${branch}, so it starts from origin/${branch} as last fetched: ${failure}`);

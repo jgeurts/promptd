@@ -69,6 +69,27 @@ describe('runInGroup', () => {
     }
   }, 30_000);
 
+  it('answers when stopped even if the command outlasts SIGKILL and never exits', async () => {
+    const pidFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-group-')), 'pid');
+    const realKill = process.kill.bind(process);
+    // Signals to the group go nowhere, as for a process stuck in the kernel.
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      if (pid < 0 && signal === 0) return true;
+      if (pid < 0) return true;
+      return realKill(pid, signal);
+    });
+    const controller = new AbortController();
+    try {
+      const running = runInGroup('/bin/bash', ['-c', `echo $$ > ${pidFile}; exec sleep 30`], { signal: controller.signal });
+      for (let i = 0; i < 100 && !fs.existsSync(pidFile); i += 1) await new Promise((resolve) => setTimeout(resolve, 20));
+      controller.abort();
+      expect(await running).toMatchObject({ aborted: true, leftRunning: true });
+    } finally {
+      kill.mockRestore();
+      realKill(Number(fs.readFileSync(pidFile, 'utf8')), 'SIGKILL');
+    }
+  }, 30_000);
+
   it('says so when the command cannot start', async () => {
     expect((await runInGroup('/no/such/shell', [], {})).error).toMatch(/ENOENT/);
   });
