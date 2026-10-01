@@ -11,8 +11,8 @@
 # Overrides:
 #   PORT=4321                 port the hub listens on
 #   HOST=0.0.0.0              bind address; 0.0.0.0 accepts connections from your
-#                             whole network. The web page has no password — see
-#                             the README before using it.
+#                             whole network, and needs an admin password first
+#                             (npm run set-password) — see docs/ADVANCED.md.
 #   LABEL=local.promptd       launchd name of the hub
 #   NODE_LABEL=$LABEL.node    launchd name of the node
 #   NODE_ONLY=1               register only the node
@@ -80,9 +80,10 @@ if [ "$NODE_ONLY" != "1" ]; then
       ;;
     *)
       warn "binding $HOST — reachable from your network."
-      warn "The web page has no password. Anyone who can reach this port can run"
-      warn "arbitrary Claude prompts on every node. Only do this on a network you"
-      warn "trust, and see 'Network access' in the README."
+      warn "The hub will not start without an admin password (npm run set-password)."
+      warn "Anyone who has it can run arbitrary Claude prompts on every node, and it"
+      warn "crosses the network unencrypted. Only do this on a network you trust, and"
+      warn "see 'Network access' in docs/ADVANCED.md."
       ;;
   esac
 fi
@@ -268,4 +269,8 @@ for label in $([ "$NODE_ONLY" != "1" ] && echo "$LABEL") "$NODE_LABEL"; do
   printf '    Remove    launchctl bootout %s/%s && rm %s\n' "$DOMAIN" "$label" "$HOME/Library/LaunchAgents/$label.plist"
 done
 printf '\n  Logs        tail -f %s/*.log\n\n' "$LOG_DIR"
+if [ "$HUB_INSTALLED" = "1" ]; then
+  printf 'To add another Mac as a node, open Settings → Nodes at http://%s:%s\n' "$CHECK_HOST" "$PORT"
+  printf 'and run the command it shows in a checkout on that Mac.\n\n'
+fi
 exit 0

@@ -185,6 +185,11 @@ class Hub {
     this.settings = settings;
   }
 
+  /** The secret nodes present, for the join command on the Settings page. Null before start. */
+  public nodeToken(): string | null {
+    return this.token;
+  }
+
   private async ensureToken(): Promise<string> {
     const fromEnv = process.env.PROMPTD_NODE_TOKEN?.trim();
     if (fromEnv) return fromEnv;

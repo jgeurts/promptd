@@ -1247,6 +1247,11 @@ input.narrow {
   flex-wrap: wrap;
 }
 
+.join-command {
+  flex: 1;
+  min-width: 0;
+}
+
 /* A long common command is cut short on its button; the title carries all of it. */
 .command-button {
   max-width: 280px;

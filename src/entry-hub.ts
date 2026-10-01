@@ -10,6 +10,7 @@ import { databaseTarget, migrate, openDatabase } from './db.js';
 import { LOGS_DIR, NODE_TOKEN_FILE, ROOT, ensureDirs } from './paths.js';
 import { EFFORT_LEVELS, PAUSE_OPTIONS, isEffortLevel, isTimeZone, pauseOption, previewNextRun, validateCronExpression } from './schedule.js';
 import { HubError, hub } from './hub.js';
+import { joinCommand, joinUrl } from './join.js';
 import { NodeConfigError } from './nodeConfig.js';
 import {
   PAGE_SIZE as EXECUTIONS_PAGE_SIZE,
@@ -300,6 +301,16 @@ app.get('/api/nodes', (_req, res) => {
     tokenSource: process.env.PROMPTD_NODE_TOKEN?.trim() ? 'environment' : 'file',
     tokenFile: NODE_TOKEN_FILE,
   });
+});
+
+/** The command that adds another Mac as a node, with the address it should use and the token filled in. */
+app.get('/api/join', async (req, res, next) => {
+  try {
+    const hubUrl = await joinUrl({ host: HOST, port: PORT, origin: `${req.protocol}://${req.get('host')}` });
+    res.json({ hubUrl, port: PORT, command: joinCommand(hubUrl ?? '<hub-address>', hub.nodeToken() ?? '<token>') });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.get('/api/nodes/:id', (req, res) => {

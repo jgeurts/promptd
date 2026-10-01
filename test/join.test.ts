@@ -1,0 +1,77 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { beforeAll, describe, expect, it } from 'vitest';
+
+import type * as JoinModule from '../src/join.js';
+
+process.env.PROMPTD_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-join-'));
+
+let join: typeof JoinModule;
+
+beforeAll(async () => {
+  join = await import('../src/join.js');
+});
+
+// A port no real `tailscale serve` on the test machine is forwarding to.
+const PORT = 49321;
+
+describe('serveUrl', () => {
+  it('reads the address tailscale serve shares the hub on over HTTP', () => {
+    const config = {
+      TCP: { '4321': { HTTP: true } },
+      Web: { 'laptop.tail1234.ts.net:4321': { Handlers: { '/': { Proxy: 'http://127.0.0.1:4321' } } } },
+    };
+    expect(join.serveUrl(config, 4321)).toBe('http://laptop.tail1234.ts.net:4321');
+  });
+
+  it('drops the port for HTTPS on 443', () => {
+    const config = {
+      TCP: { '443': { HTTPS: true } },
+      Web: { 'laptop.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://localhost:4321' } } } },
+    };
+    expect(join.serveUrl(config, 4321)).toBe('https://laptop.tail1234.ts.net');
+  });
+
+  it('ignores what is served for another port or another machine', () => {
+    const config = {
+      TCP: { '443': { HTTPS: true }, '8080': { HTTP: true } },
+      Web: {
+        'laptop.tail1234.ts.net:443': { Handlers: { '/': { Proxy: 'http://127.0.0.1:3000' } } },
+        'laptop.tail1234.ts.net:8080': { Handlers: { '/': { Proxy: 'http://10.0.0.5:4321' } } },
+      },
+    };
+    expect(join.serveUrl(config, 4321)).toBeNull();
+  });
+
+  it('answers null when nothing is served', () => {
+    expect(join.serveUrl({}, 4321)).toBeNull();
+  });
+});
+
+describe('joinUrl', () => {
+  it('uses the address the browser reached the hub on', async () => {
+    expect(await join.joinUrl({ host: '127.0.0.1', port: PORT, origin: `http://roundhead.local:${PORT}` })).toBe(
+      `http://roundhead.local:${PORT}`,
+    );
+  });
+
+  it('answers null for a hub only this machine can reach', async () => {
+    expect(await join.joinUrl({ host: '127.0.0.1', port: PORT, origin: `http://127.0.0.1:${PORT}` })).toBeNull();
+  });
+});
+
+describe('joinCommand', () => {
+  it('fills in the hub address and token', () => {
+    expect(join.joinCommand('http://laptop.tail1234.ts.net:4321', 'abc123')).toBe(
+      'NODE_ONLY=1 HUB_URL=http://laptop.tail1234.ts.net:4321 NODE_TOKEN=abc123 ./scripts/register-app-mac-os.sh',
+    );
+  });
+
+  it('quotes a value the shell would split', () => {
+    expect(join.joinCommand("http://it's here", 'abc')).toBe(
+      `NODE_ONLY=1 HUB_URL='http://it'\\''s here' NODE_TOKEN=abc ./scripts/register-app-mac-os.sh`,
+    );
+  });
+});
