@@ -2,7 +2,6 @@
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 
 const view = document.getElementById('view');
-const connEl = document.getElementById('conn');
 const toastsEl = document.getElementById('toasts');
 const updateBadgeEl = document.getElementById('update-badge');
 const brandNameEl = document.getElementById('brand-name');
@@ -2260,8 +2259,8 @@ function renderExecutionForm(id, duplicateOf) {
  * There is nothing to count down to when Update now is pressed: the server first
  * holds the schedules and waits for any run to finish, and only then restarts.
  * So report the wait, and start the 5 second countdown once this page notices the
- * server is on a new commit — the same signal behind the "live - refresh window"
- * badge in the header.
+ * server is on a new commit — the same signal behind the header's "Page out of
+ * date" warning.
  */
 function watchUpdate(status, updateButton, updateLog) {
   clearTimeout(reloadTimer);
@@ -3167,7 +3166,7 @@ async function renderSettings() {
       ]),
     ]),
     el('div', { class: 'card' }, [el('h2', { text: 'Projects' }), ...projects.parts]),
-    el('div', { class: 'card' }, [el('h2', { text: 'Nodes' }), ...nodes.parts]),
+    el('div', { class: 'card', 'data-card': 'nodes' }, [el('h2', { text: 'Nodes' }), ...nodes.parts]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Storage' }),
       readOnlyField('Storage root', config.storageRoot),
@@ -3638,7 +3637,11 @@ async function route() {
   const { kind, section, id, file, retro } = parseHash();
   if (section === 'logs' && id && file) openLinkedLog(kind, id, file, retro);
   try {
-    if (section === 'settings') await renderSettings();
+    if (section === 'settings') {
+      await renderSettings();
+      // The header panel's "View all computers" lands on the Nodes card.
+      if (id === 'nodes') view.querySelector('[data-card="nodes"]')?.scrollIntoView({ block: 'start' });
+    }
     else if (section === 'nodes' && id) await renderNode(decodeURIComponent(id));
     else if (kind === 'execution') {
       if (section === 'new') await renderExecutionForm(null, id || null);
@@ -3673,38 +3676,44 @@ function refreshCurrentView() {
 
 function connectEvents() {
   const events = new EventSource('/api/events');
+  // Every event is an update, so the header can say when the last one came if the stream drops.
+  const on = (type, handler) =>
+    events.addEventListener(type, (event) => {
+      stream.lastAt = new Date().toISOString();
+      handler(event);
+    });
 
-  events.addEventListener('hello', () => {
-    setConnState();
+  on('hello', () => {
+    stream.awaitingHealth = healthAsked + 1;
     checkHealth();
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
   });
 
   // Every node's samples arrive; only the open node page wants them, and only its own.
-  events.addEventListener('system:sample', (event) => {
+  on('system:sample', (event) => {
     const payload = JSON.parse(event.data);
     if (nodeMachine && payload.nodeId === nodeMachine.id) nodeMachine.push(payload);
   });
 
-  events.addEventListener('notification:new', (event) => {
+  on('notification:new', (event) => {
     const { notification, counts } = JSON.parse(event.data);
     setBellBadge(counts);
     prependNotification(notification);
   });
 
   // Another tab read something; this one's badge is now wrong.
-  events.addEventListener('notification:read', (event) => setBellBadge(JSON.parse(event.data).counts));
+  on('notification:read', (event) => setBellBadge(JSON.parse(event.data).counts));
 
   // A machine alert is worth interrupting for; it is also in the drawer. One
   // found already under way when a node restarted is not news, so it is quiet.
-  events.addEventListener('system:alert', (event) => {
+  on('system:alert', (event) => {
     const { metric, label, summary, seeded } = JSON.parse(event.data);
     if (!seeded) toast(`${label}: ${summary}`, true, `system-alert:${metric}`);
   });
 
   for (const type of ['crons:changed', 'run:started', 'run:finished', 'run:skipped', 'run:stopping', 'run:delayed', 'run:released', 'run:dropped']) {
-    events.addEventListener(type, (event) => {
+    on(type, (event) => {
       const payload = JSON.parse(event.data);
       // Matches the wording the server writes into the notification drawer.
       const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
@@ -3745,47 +3754,47 @@ function connectEvents() {
       if (type === 'run:skipped') {
         toast(payload.reason ? `${named} skipped: ${payload.reason}` : `${named} was still running; trigger skipped`, true);
       }
-      refreshJobs();
+      refreshHealth();
       refreshCurrentView();
     });
   }
 
   // Matches the wording the server writes into the notification drawer.
-  events.addEventListener('run:retrospective', (event) => {
+  on('run:retrospective', (event) => {
     const payload = JSON.parse(event.data);
     const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
     toast(`${named} left a retrospective`);
     refreshCurrentView();
   });
-  events.addEventListener('worktree:include-failed', (event) => {
+  on('worktree:include-failed', (event) => {
     const payload = JSON.parse(event.data);
     const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
     toast(`${named} could not write .worktreeinclude: ${payload.error}`, true);
   });
-  events.addEventListener('worktree:cleanup-failed', (event) => {
+  on('worktree:cleanup-failed', (event) => {
     const payload = JSON.parse(event.data);
     const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
     toast(`${named} worktree clean up failed: ${payload.error}`, true);
   });
 
   // Pause and update progress: the badges and the sub line both come from it.
-  events.addEventListener('update:availability', (event) => {
+  on('update:availability', (event) => {
     const { updateAvailable, updateBehind } = JSON.parse(event.data);
     setUpdateBadge(Boolean(updateAvailable), updateBehind);
   });
-  events.addEventListener('queue:changed', (event) => {
-    setJobs(JSON.parse(event.data));
+  on('queue:changed', () => {
+    refreshHealth();
     repaintQueue?.();
   });
-  events.addEventListener('pause:changed', () => refreshCurrentView());
-  events.addEventListener('update:waiting', () => refreshCurrentView());
-  events.addEventListener('update:launched', () => refreshCurrentView());
-  events.addEventListener('update:abandoned', (event) => {
+  on('pause:changed', () => refreshCurrentView());
+  on('update:waiting', () => refreshCurrentView());
+  on('update:launched', () => refreshCurrentView());
+  on('update:abandoned', (event) => {
     const { runningCount } = JSON.parse(event.data);
     toast(`Update gave up waiting on ${runningCount} run(s); schedules resumed`, true);
     refreshCurrentView();
   });
-  events.addEventListener('update:failed', (event) => {
+  on('update:failed', (event) => {
     const { code } = JSON.parse(event.data);
     toast(`Update script failed (exit ${code}); schedules resumed`, true);
     refreshCurrentView();
@@ -3793,15 +3802,17 @@ function connectEvents() {
 
   // A one-time execution whose trigger was missed: the catch-up is starting it
   // now, which is worth saying out loud since nobody asked for it just then.
-  events.addEventListener('execution:overdue', (event) => {
+  on('execution:overdue', (event) => {
     const payload = JSON.parse(event.data);
     toast(`One-time "${payload.cronName}" missed its trigger by ${payload.lateBy}; running now`);
     refreshCurrentView();
   });
 
+  // The browser retries on its own; until the next hello, the header says the updates are down.
   events.onerror = () => {
-    connEl.textContent = 'reconnecting';
-    connEl.className = 'conn down';
+    stream.state = 'disconnected';
+    stream.awaitingHealth = 0;
+    paintHeader();
   };
 }
 
@@ -4415,474 +4426,531 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
 
-// ---- cluster header ---------------------------------------------------
+// ---- header -----------------------------------------------------------
 
 /**
- * The header's middle: the nodes, the jobs running across them, one chip per
- * Claude account, and a machine reading only when one is out of line. Every
- * chip is a button onto the one panel that has the rest.
+ * The header answers two questions: what is happening, and what needs
+ * attention.
  *
- * All of it comes from the cluster summary /api/health carries, so what is
- * worth a chip is decided on the server, where it is tested, not here.
+ * The summary row is always there: jobs running, computers online, and one
+ * overall status in words. The warning row shows only while something needs
+ * attention, one button per kind of trouble, in a fixed order. Every part of
+ * both rows opens the same System status panel, at the section that explains it.
+ *
+ * The words and the rules behind them come from the cluster summary that
+ * /api/health carries (src/cluster.ts, where they are tested). The page adds
+ * only what it alone knows: whether its own event stream is connected, and
+ * whether it was loaded from an older build than the server now runs.
  */
-const clusterEl = document.getElementById('cluster');
-const clusterPanelEl = document.getElementById('cluster-panel');
-const clusterPanelBodyEl = document.getElementById('cluster-panel-body');
-const clusterPanelFootEl = document.getElementById('cluster-panel-foot');
-const clusterPanelCloseEl = document.getElementById('cluster-panel-close');
-let clusterState = null; // the summary from the last health poll
-let jobsState = null; // running and queued counts, from health polls and queue events
-let jobsRefreshTimer = null;
-let panelOpener = null; // the chip that opened the panel, which focus returns to
-let panelTimer = null; // re-reads the panel while it is open
-let panelPaint = 0; // the newest panel request; an older one landing late is dropped
+const summaryEl = document.getElementById('summary');
+const warningsEl = document.getElementById('warnings');
+const statusPanelEl = document.getElementById('status-panel');
+const statusPanelTitleEl = document.getElementById('status-panel-title');
+const statusPanelBodyEl = document.getElementById('status-panel-body');
+const statusPanelCloseEl = document.getElementById('status-panel-close');
+const announcerEl = document.getElementById('status-announcer');
+
+let healthState = null; // the last /api/health answer
+let healthRefreshTimer = null;
+let panelOpener = null; // the button that opened the panel, by key, which focus returns to
+let panelTimer = null; // re-reads health while the panel is open
+let headerDrawn = null; // what the rows were last drawn from, so an unchanged poll redraws nothing
+let panelDrawn = null; // the same for the panel
+let announced = null; // the facts last announced, so only a change is spoken
 
 /**
- * What the Limit figure means when it is 0: no limit, which the panel spells
- * out against the processor count it would otherwise have defaulted to.
+ * The page's own event stream: `connecting` until the first hello, then
+ * connected or not. A hello counts as connected only once a health reading
+ * asked for after it has landed (`awaitingHealth` is the first such request's
+ * number), so the header never says the updates are back over numbers it held
+ * through the gap.
  */
-function jobsScale({ limit, defaultLimit }) {
-  const ceiling = Number(limit) > 0 ? Number(limit) : Number(defaultLimit);
-  return Number.isFinite(ceiling) && ceiling > 0 ? ceiling : 1;
-}
+const stream = { state: 'connecting', lastAt: null, awaitingHealth: 0 };
+let healthAsked = 0; // health requests started, numbered
+let healthDrawn = 0; // the newest of them whose answer is drawn, so a slow older one cannot replace it
 
-/** "41m", "2h", "3d": the one largest unit, for text that has to stay short. */
-function fmtSpanShort(ms) {
-  const minutes = Math.max(0, Math.round(ms / 60000));
-  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+// Past this many, the panel's list of waiting jobs says how many more there are.
+const WAITING_SHOWN = 6;
+// A hub that has just started has not heard from its nodes yet, so for this long
+// it reports them offline and their jobs gone. Longer than the node sync and the
+// 15 seconds a node may be silent before it counts as offline.
+const HUB_SETTLE_MS = 20000;
+
+const ACCOUNT_STATUS = { reached: 'Limit reached', near: 'Near limit', ok: 'OK', unknown: 'No usage reading' };
+const LIMIT_FLAG = { reached: 'Reached', near: 'Near' };
+
+/** Said once, under the accounts, so the two words never need a tooltip. The rules are `limitStatus` in src/cluster.ts. */
+const LIMIT_DEFINITIONS =
+  'Limit reached: a limit is at 100%, so nothing on that account can use it until it resets. ' +
+  'Near limit: Claude flags a limit as running high, or it is at or past the percentage where jobs set to wait for usage are held ' +
+  "(Delay for usage, on each computer's page).";
+
+/** "12 minutes", "16 hours", "2 days": one unit, rounded, for text meant to be read rather than parsed. */
+function fmtSpanWords(ms) {
+  const minutes = Math.max(1, Math.round(Math.abs(ms) / 60000));
+  const unit = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (minutes < 60) return unit(minutes, 'minute');
   const hours = Math.round(minutes / 60);
-  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
+  return hours < 48 ? unit(hours, 'hour') : unit(Math.round(hours / 24), 'day');
 }
 
-/** "just now", "3 min ago", or the two-unit form past the hour. */
+/** "just now", "3 minutes ago". */
 function fmtAgo(iso) {
-  const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} min ago`;
-  return fmtRelative(iso);
+  const ms = Date.now() - Date.parse(iso);
+  return ms < 60000 ? 'just now' : `${fmtSpanWords(ms)} ago`;
 }
 
-/** A reset time written out: "Thu, Oct 2, 3:00 PM (in 2d 4h)". */
-function fmtReset(iso) {
-  const at = new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  return `${at} (${fmtRelative(iso)})`;
+/** "in 2 days", or "any moment" once the time has come. */
+function fmtIn(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  return ms <= 0 ? 'any moment' : `in ${fmtSpanWords(ms)}`;
 }
 
-function localPart(email) {
-  return String(email ?? '').split('@')[0];
+/** "Fri 3:00 PM" within the week, "Oct 12, 3:00 PM" past it. */
+function fmtWhen(iso) {
+  const soon = Math.abs(Date.parse(iso) - Date.now()) < 6 * 86400000;
+  return new Date(iso).toLocaleString(undefined, soon ? { weekday: 'short', hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/**
+ * A usage percentage. Whole numbers, except just short of 100: a limit at
+ * 99.6% is near, not reached, and must not read as "100%".
+ */
+function fmtUsed(percent) {
+  const used = Math.max(0, Math.min(100, Number(percent) || 0));
+  return used >= 99.5 && used < 100 ? `${Math.floor(used * 10) / 10}%` : `${Math.round(used)}%`;
+}
+
+/** Items with a separator between them, as children for `el`. */
+function joined(items, separator) {
+  return items.flatMap((item, index) => (index ? [separator, item] : [item]));
 }
 
 /**
  * The glyph a warning carries, plus the word for a screen reader, so severity
- * is never told by colour alone.
+ * is never told by colour alone. The node page's charts use it too.
  */
 function severityMark(severity) {
   if (severity !== 'warning' && severity !== 'critical') return [];
   return [el('span', { class: 'glyph', 'aria-hidden': 'true', text: '▲' }), el('span', { class: 'sr-only', text: `${severity}: ` })];
 }
 
-/** Items with a separator between them, as children for `el`. */
-function joined(items, separator = ' · ') {
-  return items.flatMap((item, index) => (index ? [separator, item] : [item]));
+/** The warning triangle beside visible words, so it is decoration to a screen reader. */
+function warnIcon() {
+  return el('span', { class: 'hdr-icon', 'aria-hidden': 'true', html: WARN_ICON });
 }
 
-/** The summary names an account's headline windows by key rather than repeating them. */
-function windowByKey(account, key) {
-  return account.windows.find((window) => window.key === key) ?? null;
+/** The warnings the server knows of, then the page's own. */
+function pageWarnings() {
+  const warnings = [...(healthState?.cluster?.header?.warnings ?? [])];
+  if (stream.state === 'disconnected') warnings.push({ id: 'updates', section: 'updates', text: 'Updates disconnected' });
+  if (staleBuild) warnings.push({ id: 'stale', section: 'updates', text: 'Page out of date' });
+  return warnings;
 }
 
-/** "▲ Weekly · Fable 100% · resets 2h": a critical window says when it clears. */
-function windowText(window) {
-  const critical = window.severity === 'critical' && window.resetsAt;
-  return el('span', { class: `win ${window.severity}` }, [
-    ...severityMark(window.severity),
-    `${window.label} `,
-    el('span', { class: 'num', text: `${Math.round(window.usedPercent)}%` }),
-    critical ? ` · resets ${fmtSpanShort(Date.parse(window.resetsAt) - Date.now())}` : null,
-  ]);
-}
-
-function chip(key, children, className = '') {
+/** A button onto the panel. `key` finds it again after a redraw; `section` is where it opens the panel. */
+function opener(key, section, children, className) {
   return el(
     'button',
     {
       type: 'button',
-      class: `chip ${className}`.trim(),
-      'data-chip': key,
+      class: `hdr-btn ${className ?? ''}`.trim(),
+      'data-opener': key,
       'aria-haspopup': 'dialog',
-      'aria-controls': 'cluster-panel',
-      'aria-expanded': String(!clusterPanelEl.hidden),
-      onclick: () => toggleClusterPanel(key),
+      'aria-controls': 'status-panel',
+      'aria-expanded': String(!statusPanelEl.hidden),
+      onclick: () => togglePanel(key, section),
     },
     children,
   );
 }
 
-function runningText() {
-  const running = Number(jobsState?.runningCount) || 0;
-  const limit = Number(jobsState?.limit) || 0;
-  return limit > 0 ? `${running}/${limit}` : String(running);
-}
-
-/** Shown with two or more nodes, or when the only one is down. */
-function nodesChip({ total, online, offline }) {
-  if (total === 1 && online === 1) return null;
-  const down = offline.length === 1 ? `${offline[0].name} offline` : offline.length ? `${offline.length} offline` : null;
-  const warn = Boolean(down) || total === 0;
-  return chip(
-    'nodes',
-    [...severityMark(warn ? 'warning' : 'normal'), el('span', { class: 'chip-label', text: 'Nodes ' }), el('span', { class: 'num', text: `${online}/${total}` }), down ? ` · ${down}` : null],
-    warn ? 'warning' : '',
-  );
-}
-
 /**
- * One account. The wide form is Session and the tightest other window; below
- * 1160px the email shortens and only the tightest window stays. Both are in
- * the button and the stylesheet picks one, so a resize needs no redraw.
- */
-function usageChip({ key, full, short, labelled, usage }) {
-  const stale = usage.stale && usage.checkedAt;
-  const tightest = windowByKey(usage, usage.tightest);
-  return chip(
-    key,
-    [
-      el('span', { class: `chip-email${labelled ? ' chip-label' : ''}` }, [
-        el('span', { class: 'email-full', text: full }),
-        el('span', { class: 'email-short', text: short }),
-        labelled ? ' ·' : null,
-      ]),
-      el('span', { class: 'chip-wide' }, joined(usage.headline.map((headline) => windowByKey(usage, headline)).filter(Boolean).map(windowText))),
-      el('span', { class: 'chip-narrow' }, tightest ? [windowText(tightest)] : []),
-      stale ? el('span', { class: 'chip-stale', text: ` · read ${fmtSpanShort(Date.now() - Date.parse(usage.checkedAt))} ago` }) : null,
-    ],
-    `account${stale ? ' stale' : ''}`,
-  );
-}
-
-/**
- * What goes in the header for usage: one entry per account, then one per node
- * that reports usage without naming its account, typically on an older build.
- * Those are never merged, since they may be on different accounts, and name
- * their node once there is more than one to tell apart.
- */
-function usageEntries({ accounts, unknownAccountUsage = [], nodes }) {
-  const several = nodes.total > 1;
-  return [
-    ...accounts
-      .filter((account) => account.windows.length)
-      .map((account) => ({ key: `account:${account.id}`, full: account.email, short: localPart(account.email), folded: `${localPart(account.email)}@…`, labelled: false, usage: account })),
-    ...unknownAccountUsage.map((entry) => {
-      const where = several ? ` (${entry.nodeName})` : '';
-      return { key: `unknown:${entry.nodeId}`, full: `Account unknown${where}`, short: `unknown${where}`, folded: `unknown${where}`, labelled: true, usage: entry };
-    }),
-  ];
-}
-
-/** Below 900px the usage chips fold into one button that names only those at warning or worse. */
-function usageSummaryChip(entries) {
-  const flagged = entries
-    .map((entry) => ({ entry, tightest: windowByKey(entry.usage, entry.usage.tightest) }))
-    .filter(({ entry, tightest }) => entry.usage.severity !== 'normal' && tightest);
-  const children = flagged.length
-    ? joined(
-        flagged.map(({ entry, tightest }) =>
-          el('span', { class: `win ${entry.usage.severity}` }, [
-            ...severityMark(entry.usage.severity),
-            `${entry.folded} `,
-            el('span', { class: 'num', text: `${Math.round(tightest.usedPercent)}%` }),
-          ]),
-        ),
-      )
-    : ['usage ok'];
-  return chip('usage', children, 'usage-summary');
-}
-
-/** The worst machine reading over its alert line, and how many more there are. */
-function exceptionChip(exceptions) {
-  const [worst] = exceptions;
-  return chip(
-    'machine',
-    [
-      el('span', { class: `win ${worst.severity}` }, [
-        ...severityMark(worst.severity),
-        `${worst.label} `,
-        el('span', { class: 'num', text: fmtMetricValue(worst, worst.value) }),
-        ` · ${worst.nodeName}`,
-      ]),
-      exceptions.length > 1 ? el('span', { class: 'chip-more' }, [`+${exceptions.length - 1}`, el('span', { class: 'sr-only', text: ' more' })]) : null,
-    ],
-    'machine',
-  );
-}
-
-/**
- * Redraws the chips from the last summary. They are rebuilt rather than
- * patched, so the one holding focus is found again by its key afterwards.
+ * Redraws both rows from the last health reading and the page's own state.
+ * They are rebuilt rather than patched, so the button holding focus is found
+ * again by its key afterwards.
  */
 function paintHeader() {
-  if (!clusterEl || !clusterState) return;
-  const focused = document.activeElement?.closest?.('[data-chip]')?.dataset.chip ?? null;
-  const { nodes, builds, exceptions } = clusterState;
-  const behind = builds?.differing?.length ?? 0;
-  const usage = usageEntries(clusterState);
-  clusterEl.replaceChildren(
-    ...[
-      nodesChip(nodes),
-      behind ? chip('builds', `${behind} old build${behind === 1 ? '' : 's'}`, 'muted') : null,
-      chip('running', [el('span', { class: 'chip-label', text: 'Running ' }), el('span', { class: 'num running-count', text: runningText() })]),
-      ...usage.map(usageChip),
-      usage.length ? usageSummaryChip(usage) : null,
-      exceptions.length ? exceptionChip(exceptions) : null,
-    ].filter(Boolean),
+  const header = healthState?.cluster?.header;
+  if (!header || !summaryEl) return;
+  const warnings = pageWarnings();
+  const attention = warnings.length > 0;
+  announce(warnings, attention);
+  paintPanel();
+  const drawn = JSON.stringify([header, warnings]);
+  if (drawn === headerDrawn) return;
+  headerDrawn = drawn;
+  const focused = document.activeElement?.closest?.('[data-opener]')?.dataset.opener ?? null;
+  summaryEl.replaceChildren(
+    opener('jobs', 'jobs', header.jobs),
+    opener('computers', 'computers', header.computers),
+    opener(
+      'status',
+      null,
+      [
+        attention ? warnIcon() : el('span', { class: 'hdr-dot', 'aria-hidden': 'true' }),
+        el('span', { class: 'sr-only', text: 'System status: ' }),
+        attention ? 'Needs attention' : 'All clear',
+      ],
+      attention ? 'status attention' : 'status clear',
+    ),
   );
-  clusterEl.hidden = false;
-  if (focused) clusterEl.querySelector(`[data-chip="${CSS.escape(focused)}"]`)?.focus();
-}
-
-/**
- * The job counts, from a health poll or straight off the queue. Only the
- * Running figure is in the header, so that is written in place.
- */
-function setJobs(state) {
-  if (!state) return;
-  jobsState = state;
-  const count = clusterEl?.querySelector('.running-count');
-  if (count) count.textContent = runningText();
-  if (!clusterPanelEl.hidden) paintPanelFoot();
-}
-
-/**
- * Re-reads the queue after run activity, coalesced: a burst of starts and
- * finishes is one request rather than one each.
- */
-function refreshJobs() {
-  clearTimeout(jobsRefreshTimer);
-  jobsRefreshTimer = setTimeout(async () => {
-    try {
-      setJobs({ ...jobsState, ...(await api('/api/queue')) });
-    } catch {
-      /* the next health poll draws it instead */
-    }
-  }, 250);
-}
-
-// ---- cluster panel ----------------------------------------------------
-
-function syncExpanded() {
-  for (const node of clusterEl.querySelectorAll('[data-chip]')) node.setAttribute('aria-expanded', String(!clusterPanelEl.hidden));
-}
-
-/** Where a chip points inside the panel: its account's group, or the node a machine reading is from. */
-function panelAnchor(key) {
-  if (key?.startsWith('account:')) return key;
-  if (key?.startsWith('unknown:')) return `node:${key.slice('unknown:'.length)}`;
-  if (key === 'machine' && clusterState?.exceptions?.[0]) return `node:${clusterState.exceptions[0].nodeId}`;
-  return null;
-}
-
-function toggleClusterPanel(key) {
-  if (!clusterPanelEl.hidden) closeClusterPanel();
-  else openClusterPanel(key);
-}
-
-function openClusterPanel(key) {
-  panelOpener = key;
-  clusterPanelEl.hidden = false;
+  warningsEl.replaceChildren(...warnings.map((warning) => opener(`warning:${warning.id}`, warning.section, [warnIcon(), warning.text], 'warning')));
+  warningsEl.hidden = !attention;
+  summaryEl.hidden = false;
   syncExpanded();
-  clusterPanelBodyEl.replaceChildren(el('p', { class: 'hint', text: 'Loading nodes…' }));
-  paintPanelFoot();
-  clusterPanelEl.focus();
-  paintClusterPanel(panelAnchor(key));
-  clearInterval(panelTimer);
-  panelTimer = setInterval(() => paintClusterPanel(null), 5000);
+  if (focused) {
+    const again = document.querySelector(`[data-opener="${CSS.escape(focused)}"]`);
+    // A warning that cleared while focused hands focus to the status, which says what is left.
+    (again ?? document.querySelector('[data-opener="status"]'))?.focus();
+  }
 }
 
-function closeClusterPanel({ restoreFocus = true } = {}) {
-  if (clusterPanelEl.hidden) return;
-  clusterPanelEl.hidden = true;
+/**
+ * One polite message when something meaningful changes: jobs start waiting, a
+ * computer goes offline, the updates drop or come back, or it is all clear
+ * again. Never a percentage tick, nothing for the state the page opened in,
+ * and nothing for a hub still hearing back from its nodes after a restart.
+ */
+function announce(warnings, attention) {
+  const cluster = healthState.cluster;
+  const facts = {
+    // By identity, so one job starting while another begins to wait is still news.
+    waiting: (cluster.waiting ?? []).map((job) => `${job.nodeId}:${job.id}:${job.hold}`),
+    // By identity too: one computer coming back as another drops out is still news.
+    offline: cluster.nodes.offline.map((node) => node.id),
+    disconnected: stream.state === 'disconnected',
+    attention,
+  };
+  const before = announced;
+  announced = facts;
+  if (!before) return;
+  const said = [];
+  const text = (id) => warnings.find((warning) => warning.id === id)?.text;
+  // Just after a hub restart its nodes come back one by one; that is not news.
+  const settling = Date.now() - Date.parse(healthState.startedAt ?? '') < HUB_SETTLE_MS;
+  if (!settling && facts.waiting.some((job) => !before.waiting.includes(job))) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
+  if (!settling && facts.offline.some((id) => !before.offline.includes(id)) && text('offline')) said.push(text('offline'));
+  if (facts.disconnected && !before.disconnected) said.push('Updates disconnected');
+  if (!facts.disconnected && before.disconnected) said.push('Updates reconnected');
+  if (!settling && !facts.attention && before.attention) said.push('All clear');
+  if (!said.length) return;
+  // Emptied first, so a message that repeats an earlier one is still spoken.
+  announcerEl.textContent = '';
+  setTimeout(() => {
+    announcerEl.textContent = `${said.join('. ')}.`;
+  }, 50);
+}
+
+/** Re-reads health after run activity, coalesced: a burst of starts and finishes is one request. */
+function refreshHealth() {
+  clearTimeout(healthRefreshTimer);
+  healthRefreshTimer = setTimeout(checkHealth, 250);
+}
+
+// ---- status panel -----------------------------------------------------
+
+/** Every button onto the panel says whether it is open; the one that opened it is marked as the current one. */
+function syncExpanded() {
+  for (const node of document.querySelectorAll('[data-opener]')) {
+    node.setAttribute('aria-expanded', String(!statusPanelEl.hidden));
+    node.classList.toggle('current', !statusPanelEl.hidden && node.dataset.opener === panelOpener);
+  }
+}
+
+/** The same button closes it; any other moves it to that button's section. */
+function togglePanel(key, section) {
+  if (!statusPanelEl.hidden && panelOpener === key) closePanel();
+  else openPanel(key, section);
+}
+
+function openPanel(key, section) {
+  panelOpener = key;
+  const opening = statusPanelEl.hidden;
+  statusPanelEl.hidden = false;
+  syncExpanded();
+  if (opening) {
+    panelDrawn = null;
+    paintPanel();
+    clearInterval(panelTimer);
+    panelTimer = setInterval(checkHealth, 5000);
+  }
+  showSection(section);
+}
+
+/** Scrolls a section to the top of the panel and moves focus to its heading, or to the title with none. */
+function showSection(section) {
+  const heading = section ? statusPanelBodyEl.querySelector(`[data-section="${CSS.escape(section)}"] h3`) : null;
+  if (!heading) {
+    statusPanelBodyEl.scrollTop = 0;
+    statusPanelTitleEl.focus({ preventScroll: true });
+    return;
+  }
+  const area = heading.closest('section');
+  // The body scrolls on its own when the panel is capped to the window; on a phone the page does,
+  // and only when the section is not already in view.
+  const box = area.getBoundingClientRect();
+  if (statusPanelBodyEl.scrollHeight > statusPanelBodyEl.clientHeight) statusPanelBodyEl.scrollTop = area.offsetTop;
+  else if (box.top < 0 || box.bottom > innerHeight) area.scrollIntoView({ block: 'start' });
+  heading.focus({ preventScroll: true });
+}
+
+function closePanel({ restoreFocus = true } = {}) {
+  if (statusPanelEl.hidden) return;
+  statusPanelEl.hidden = true;
   clearInterval(panelTimer);
   panelTimer = null;
   syncExpanded();
-  // Found by key: the chip that opened the panel may have been redrawn since.
-  if (restoreFocus && panelOpener) clusterEl.querySelector(`[data-chip="${CSS.escape(panelOpener)}"]`)?.focus();
+  if (restoreFocus) {
+    // Found by key: the button may have been redrawn since, or gone with the warning it was.
+    (document.querySelector(`[data-opener="${CSS.escape(panelOpener ?? '')}"]`) ?? document.querySelector('[data-opener="status"]'))?.focus();
+  }
   panelOpener = null;
 }
 
-/** "online", or when an offline node was last heard from. */
-function nodeStatusText(node) {
-  return node.online ? 'online' : `offline · seen ${fmtRelative(node.lastSeenAt)}`;
-}
-
-/** One machine reading, marked when it is over its alert line. */
-function metricCell(metric, node) {
-  const value = node.latestSample?.[metric.id];
-  const exception = node.exceptions?.find((entry) => entry.metric === metric.id);
-  const severity = exception?.severity ?? 'normal';
-  return el('td', { class: `n ${exception ? `win ${severity}` : ''}`.trim(), 'data-label': metric.label }, [
-    ...severityMark(severity),
-    Number.isFinite(value) ? fmtMetricValue(metric, value) : '—',
+function panelSection(id, title, children) {
+  return el('section', { class: 'sp-section', 'data-section': id, 'aria-labelledby': `sp-${id}` }, [
+    el('h3', { id: `sp-${id}`, tabindex: '-1', 'data-key': `section:${id}`, text: title }),
+    ...children,
   ]);
 }
 
-/** A node's build, or that it is behind the hub's. Muted, not amber: it is worth knowing, not alarming. */
-function buildCell(node, hubCommit) {
-  if (!node.commit) return el('td', { class: 'muted', 'data-label': 'Build', text: 'unknown' });
-  if (hubCommit && node.commit !== hubCommit) {
-    return el('td', { class: 'muted', 'data-label': 'Build', title: versionText(node, hubCommit), text: 'behind hub' });
+function nodeLink(node, scope) {
+  return el('a', {
+    class: 'link',
+    href: `#/nodes/${encodeURIComponent(node.id)}`,
+    'data-key': `node:${scope}:${node.id}`,
+    text: node.name,
+  });
+}
+
+/** Why one job is waiting, in a sentence. */
+function waitingReason(job) {
+  if (job.hold === 'concurrency') {
+    const place = job.position && job.queueLength ? `, ${job.position} of ${job.queueLength} in line` : '';
+    const when = job.resumeAt ? `; could start ${fmtCountdown(job.resumeAt)}` : '';
+    return `Queued behind ${job.nodeName}'s job limit${place}${when}`;
   }
-  return el('td', { class: 'mono', 'data-label': 'Build', text: node.commit });
+  const limits = (job.limits ?? []).map((limit) => {
+    const used = Number.isFinite(limit.usedPercent) ? ` ${fmtUsed(limit.usedPercent)} used` : '';
+    return `${limit.name}${used}${limit.resetsAt ? `, resets ${fmtIn(limit.resetsAt)}` : ''}`;
+  });
+  return `Waiting for account limits: ${limits.join('; ') || 'usage to clear'}`;
 }
 
-/**
- * The windows a node with no account named reports, in a row under its own.
- * They are its numbers alone: the next such node may be on another account.
- */
-function nodeUsageRow(node, span) {
-  const usage = node.usage;
-  if (!node.online || !usage?.windows?.length) return null;
-  return el('tr', { class: 'node-usage' }, [
-    el('td', { colspan: String(span) }, [
-      el('div', { class: `acct-read${usage.stale ? ' stale' : ''}`, text: `${node.name}'s usage, ${readLine(usage)}` }),
-      el('div', { class: 'acct-windows' }, usage.windows.map(windowRow)),
-    ]),
+function waitingItem(job) {
+  return el('li', { class: 'sp-item' }, [
+    el('a', { class: 'link', href: `${hashBase(job)}/logs/${encodeURIComponent(job.id)}`, 'data-key': `job:${job.id}`, text: job.name }),
+    el('span', { class: 'muted', text: ` on ${job.nodeName}` }),
+    el('div', { class: 'sp-why', text: waitingReason(job) }),
   ]);
 }
 
-function nodeTable(nodes, metrics, hubCommit, { usageUnderNodes = false } = {}) {
-  const count = (node, key) => (node.online ? String(node[key]) : '—');
-  const limit = (node) => {
-    const value = node.concurrencyLimit ?? node.config?.maxConcurrentJobs ?? 0;
-    return value > 0 ? String(value) : 'none';
-  };
-  const columns = ['Node', 'Status', 'Running', 'Queued', 'Scheduled', 'Limit', ...metrics.map((metric) => metric.label), 'Build'];
-  const numeric = new Set(['Running', 'Queued', 'Scheduled', 'Limit', ...metrics.map((metric) => metric.label)]);
-  // Fixed widths, so the tables under each account line up column for column.
-  const widths = { Node: 14, Status: 17, Running: 8, Queued: 7, Scheduled: 9, Limit: 6, 'I/O': 9, Build: 11 };
-  return el('table', { class: 'node-table' }, [
-    el('colgroup', {}, columns.map((column) => el('col', { style: `width: ${widths[column] ?? 6}%` }))),
-    el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { scope: 'col', class: numeric.has(column) ? 'n' : '', text: column })))]),
-    el(
-      'tbody',
-      {},
-      nodes.flatMap((node) => [
-        el('tr', { 'data-anchor': `node:${node.id}`, class: node.online ? '' : 'offline' }, [
-          el('td', { class: 'node-name', 'data-label': 'Node' }, [
-            el('a', { class: 'link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-key': `node:${node.id}`, title: node.name, text: node.name }),
-            node.isDefault ? el('span', { class: 'node-default', text: ' default' }) : null,
-          ]),
-          el('td', { class: node.online ? '' : 'muted', 'data-label': 'Status', text: nodeStatusText(node) }),
-          el('td', { class: 'n', 'data-label': 'Running', text: count(node, 'running') }),
-          el('td', { class: 'n', 'data-label': 'Queued', text: count(node, 'queued') }),
-          el('td', { class: 'n', 'data-label': 'Scheduled', text: count(node, 'scheduled') }),
-          el('td', { class: 'n', 'data-label': 'Limit', text: limit(node) }),
-          ...metrics.map((metric) => metricCell(metric, node)),
-          buildCell(node, hubCommit),
-        ]),
-        usageUnderNodes ? nodeUsageRow(node, columns.length) : null,
-      ].filter(Boolean)),
-    ),
+/** What is running against the limit, then what is held and why. */
+function jobsSection() {
+  const { cluster } = healthState;
+  const waiting = cluster.waiting ?? [];
+  const armed = [
+    healthState.armedCrons ? `${healthState.armedCrons} cron${healthState.armedCrons === 1 ? '' : 's'}` : null,
+    healthState.armedExecutions ? `${healthState.armedExecutions} one-time job${healthState.armedExecutions === 1 ? '' : 's'}` : null,
+  ].filter(Boolean);
+  return panelSection('jobs', 'Jobs', [
+    el('p', { class: 'sp-lead' }, [el('strong', { text: cluster.header.jobs }), ` · ${cluster.header.capacity}`]),
+    waiting.length ? el('h4', { text: `Waiting (${waiting.length})` }) : null,
+    waiting.length ? el('ul', { class: 'sp-list' }, waiting.slice(0, WAITING_SHOWN).map(waitingItem)) : null,
+    waiting.length > WAITING_SHOWN ? el('p', { class: 'muted', text: `and ${waiting.length - WAITING_SHOWN} more, marked delayed on the jobs list` }) : null,
+    armed.length ? el('p', { class: 'sp-meta', text: `Scheduled: ${armed.join(', ')}` }) : null,
+    el('p', { class: 'sp-links' }, [el('a', { class: 'link', href: '#/', 'data-key': 'link:jobs', text: 'View all jobs' })]),
   ]);
 }
 
-/** One usage window with its bar, percentage and reset time, all as text as well as drawn. */
-function windowRow(window) {
-  const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0));
-  const reset = window.resetsAt ? `resets ${fmtReset(window.resetsAt)}` : 'no reset time reported';
-  return el('div', { class: `win-row ${window.severity}` }, [
-    el('span', { class: 'win-label' }, [...severityMark(window.severity), window.label]),
-    el('span', { class: 'usage-track', 'aria-hidden': 'true' }, [el('span', { class: 'usage-fill', style: `width: ${used}%` })]),
-    el('span', { class: 'win-pct num', text: `${Math.round(used)}%` }),
-    el('span', { class: 'win-reset', text: window.note ? `${reset}. ${window.note}` : reset }),
-  ]);
-}
-
-/** When a reading was taken, and why it has not moved since if it is stale. */
-function readLine(usage) {
-  if (!usage) return 'Signed out, or on a build that does not say which account it uses.';
+/** When the reading was taken, and why it has not moved since if it is stale. */
+function checkedLine(usage) {
+  if (!usage) return 'Signed out of Claude, or on a build that does not say which account it uses.';
   if (!usage.checkedAt) return usage.reason ? `No usage reading: ${usage.reason}` : 'No usage reading yet';
-  const read = `read ${fmtAgo(usage.checkedAt)}`;
-  return usage.stale && usage.reason ? `${read}; not refreshed since: ${usage.reason}` : read;
+  if (!usage.stale) return `Usage checked ${fmtAgo(usage.checkedAt)}`;
+  return `Usage last checked ${fmtAgo(usage.checkedAt)}${usage.reason ? `; not refreshed since: ${usage.reason}` : ', so it may be out of date'}`;
 }
 
-/** One account: its windows, then a row per node signed in to it. Null is the nodes that have not said. */
-function accountGroup(account, nodes, metrics, hubCommit) {
-  const anchor = account ? `account:${account.id}` : 'account:unknown';
-  const headingId = `cluster-group-${anchor.replace(/[^a-z0-9-]/gi, '-')}`;
-  return el('section', { class: 'acct-group', 'data-anchor': anchor, 'aria-labelledby': headingId }, [
-    el('div', { class: 'acct-head' }, [
-      el('h3', { id: headingId, text: account ? account.email : 'Account unknown' }),
-      el('span', { class: `acct-read${account?.stale ? ' stale' : ''}`, text: readLine(account) }),
-    ]),
-    account?.windows.length ? el('div', { class: 'acct-windows' }, account.windows.map(windowRow)) : null,
-    // With no account to group them under, each node's own numbers sit under its row.
-    nodeTable(nodes, metrics, hubCommit, { usageUnderNodes: !account }),
+function resetLine(limit) {
+  const reset = limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported';
+  return limit.note ? `${reset}. ${limit.note}` : reset;
+}
+
+/** One limit on its own line: plain name, how much is used, when it resets. */
+function limitRow(limit) {
+  const used = Math.max(0, Math.min(100, Number(limit.usedPercent) || 0));
+  return el('li', { class: `lim ${limit.status}` }, [
+    el('span', { class: 'lim-name', text: limit.name }),
+    // Its own column, empty when the limit is fine, so the numbers line up across accounts.
+    el('span', { class: 'lim-flag-cell' }, LIMIT_FLAG[limit.status] ? [el('span', { class: 'lim-flag', text: LIMIT_FLAG[limit.status] })] : []),
+    el('span', { class: 'lim-pct', text: `${fmtUsed(used)} used` }),
+    el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: 'lim-fill', style: `width: ${used}%` })]),
+    el('span', { class: 'lim-reset', text: resetLine(limit) }),
   ]);
 }
 
-/** The footer: the job counts the Running chip sums up, now against merely armed. */
-function paintPanelFoot() {
-  const state = jobsState ?? {};
-  const limit = Number(state.limit) || 0;
-  const item = (label, value) => el('div', { class: 'foot-item' }, [el('dt', { text: label }), el('dd', { class: 'num', text: String(value) })]);
-  clusterPanelFootEl.replaceChildren(
-    el('dl', { class: 'foot-group' }, [
-      item('Running', Number(state.runningCount) || 0),
-      item('Limit', limit > 0 ? limit : `none (of ${jobsScale(state)})`),
-      item('Queued', Number(state.queuedCount) || 0),
-      item('Usage Delay', Number(state.usageDelayedCount) || 0),
+/** An address with a break allowed after the @, so a narrow panel splits it into its two halves rather than anywhere. */
+function emailParts(text) {
+  const at = text.indexOf('@');
+  return at < 0 ? [text] : [text.slice(0, at + 1), el('wbr'), text.slice(at + 1)];
+}
+
+/** One account: its status, each limit, when it was read, and the computers signed in to it. */
+function accountBlock({ key, title, usage, nodes }) {
+  const status = usage?.status ?? 'unknown';
+  // Usage is read from online computers only, so an account with none online has nothing current to show.
+  const offline = Boolean(usage) && !usage.windows?.length && nodes.length > 0 && nodes.every((node) => !node.online);
+  return el('div', { class: `acct ${status}`, 'data-anchor': key }, [
+    el('div', { class: 'acct-who' }, [
+      el('h4', { class: 'acct-email' }, emailParts(title)),
+      el('span', { class: `acct-status ${status}` }, [status === 'reached' || status === 'near' ? warnIcon() : null, ACCOUNT_STATUS[status]]),
     ]),
-    el('dl', { class: 'foot-group' }, [item('Crons Armed', Number(state.armedCrons) || 0), item('OTE Scheduled', Number(state.armedExecutions) || 0)]),
-  );
+    el('div', { class: 'acct-detail' }, [
+      usage?.windows?.length ? el('ul', { class: 'acct-limits' }, usage.windows.map(limitRow)) : null,
+      el('p', { class: `acct-meta${usage?.stale ? ' stale' : ''}`, text: offline ? 'No usage reading while its computers are offline' : checkedLine(usage) }),
+      nodes.length ? el('p', { class: 'acct-meta' }, ['Computers: ', ...joined(nodes.map((node) => nodeLink(node, key)), ', ')]) : null,
+    ]),
+  ]);
 }
 
 /**
- * Reads the nodes and redraws the groups, keeping focus on whatever link held
- * it. `anchor` scrolls a chip's own group or node into view on opening.
+ * Usage once per account, never per machine: an account's limits are shared
+ * by every computer signed in to it. A node that has not said which account it
+ * is on keeps its own block, since two such nodes may be on different accounts.
  */
-async function paintClusterPanel(anchor) {
-  const paint = ++panelPaint;
-  let state;
-  try {
-    state = await api('/api/nodes');
-  } catch (err) {
-    if (paint === panelPaint && !clusterPanelEl.hidden) {
-      clusterPanelBodyEl.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the nodes: ${err.message}` }));
-    }
-    return;
-  }
-  if (paint !== panelPaint || clusterPanelEl.hidden) return;
-  const focusedKey = clusterPanelBodyEl.contains(document.activeElement) ? document.activeElement.dataset.key : null;
-  const byId = new Map(state.nodes.map((node) => [node.id, node]));
+function accountsSection() {
+  const { cluster } = healthState;
+  const byId = new Map(cluster.computers.map((node) => [node.id, node]));
   const pick = (ids) => ids.map((id) => byId.get(id)).filter(Boolean);
-  const metrics = state.metrics ?? [];
-  const groups = state.cluster.accounts.map((account) => accountGroup(account, pick(account.nodeIds), metrics, state.hubCommit));
-  const unknown = pick(state.cluster.unknownAccountNodeIds);
-  if (unknown.length) groups.push(accountGroup(null, unknown, metrics, state.hubCommit));
-  clusterPanelBodyEl.replaceChildren(...(groups.length ? groups : [el('p', { class: 'hint warn', text: 'No node has connected yet, so nothing runs.' })]));
-  if (focusedKey) clusterPanelBodyEl.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus();
-  if (anchor) clusterPanelBodyEl.querySelector(`[data-anchor="${CSS.escape(anchor)}"]`)?.scrollIntoView({ block: 'nearest' });
+  const blocks = [
+    ...cluster.accounts.map((account) => accountBlock({ key: `account:${account.id}`, title: account.email, usage: account, nodes: pick(account.nodeIds) })),
+    ...cluster.unknownAccountUsage.map((entry) => accountBlock({ key: `unknown:${entry.nodeId}`, title: 'Account unknown', usage: entry, nodes: pick([entry.nodeId]) })),
+  ];
+  const reporting = new Set(cluster.unknownAccountUsage.map((entry) => entry.nodeId));
+  const silent = pick(cluster.unknownAccountNodeIds.filter((id) => !reporting.has(id)));
+  if (silent.length) blocks.push(accountBlock({ key: 'unknown', title: 'Account unknown', usage: null, nodes: silent }));
+  return panelSection('accounts', 'Claude accounts', [
+    ...(blocks.length ? blocks : [el('p', { class: 'muted', text: 'No computer has reported a Claude account yet.' })]),
+    el('p', { class: 'sp-note', text: LIMIT_DEFINITIONS }),
+  ]);
 }
 
-clusterPanelCloseEl?.addEventListener('click', () => closeClusterPanel());
+/** How many answer, then only what is wrong with them: readings over their line, and who is offline. */
+function computersSection() {
+  const { cluster } = healthState;
+  const { nodes, exceptions, builds } = cluster;
+  const byId = new Map(cluster.computers.map((node) => [node.id, node]));
+  const items = [
+    ...exceptions.map((exception) =>
+      el('li', { class: `sp-item ${exception.severity}` }, [
+        warnIcon(),
+        el('strong', { text: exception.severity === 'critical' ? 'Critical: ' : 'Warning: ' }),
+        nodeLink({ id: exception.nodeId, name: exception.nodeName }, `${exception.metric}`),
+        ` — ${exception.reading}`,
+      ]),
+    ),
+    ...nodes.offline.map((node) =>
+      el('li', { class: 'sp-item offline' }, [
+        warnIcon(),
+        el('strong', { text: 'Offline: ' }),
+        nodeLink(node, 'offline'),
+        ` — ${node.lastSeenAt ? `last seen ${fmtAgo(node.lastSeenAt)}` : 'not seen yet'}`,
+      ]),
+    ),
+    ...(builds?.differing ?? [])
+      .map((id) => byId.get(id))
+      .filter(Boolean)
+      .map((node) => el('li', { class: 'sp-item muted' }, [nodeLink(node, 'build'), ' runs a different version of promptd than this server'])),
+  ];
+  return panelSection('computers', 'Computers', [
+    el('p', { class: 'sp-lead' }, [el('strong', { text: nodes.total ? `${nodes.online} of ${nodes.total} online` : 'No computers connected' })]),
+    items.length ? el('ul', { class: 'sp-list' }, items) : el('p', { class: 'sp-meta', text: 'No machine warnings.' }),
+    el('p', { class: 'sp-links' }, [el('a', { class: 'link', href: '#/settings/nodes', 'data-key': 'link:computers', text: 'View all computers' })]),
+  ]);
+}
+
+/** The page's own connection, and whether it is older than the server. */
+function updatesSection() {
+  const lines = [];
+  if (stream.state === 'connected') {
+    lines.push(el('p', {}, [el('strong', { text: 'Updates connected' }), el('span', { class: 'muted', text: ' · this page changes as things happen' })]));
+  } else if (stream.state === 'disconnected') {
+    const last = stream.lastAt ? `last update ${fmtWhen(stream.lastAt)} (${fmtAgo(stream.lastAt)})` : 'no update received yet';
+    lines.push(
+      el('p', { class: 'sp-item warning' }, [warnIcon(), el('strong', { text: `Updates disconnected, ${last}` })]),
+      el('p', { class: 'sp-meta', text: 'This page keeps trying to reconnect. Until it does, what it shows may be out of date.' }),
+    );
+  } else {
+    lines.push(el('p', { class: 'sp-meta', text: 'Connecting for updates…' }));
+  }
+  if (staleBuild) {
+    lines.push(
+      el('p', { class: 'sp-item warning' }, [
+        warnIcon(),
+        el('strong', { text: 'Page out of date: ' }),
+        'promptd was updated after this page loaded. ',
+        el('button', { class: 'btn small', type: 'button', 'data-key': 'reload', text: 'Reload page', onclick: () => location.reload() }),
+      ]),
+    );
+  }
+  return panelSection('updates', 'Updates', lines);
+}
+
+/**
+ * Redraws the panel from the last health reading, keeping focus on whatever
+ * held it and the scroll where it was. Nothing is redrawn while it is closed,
+ * or when nothing it shows has changed.
+ */
+function paintPanel() {
+  if (statusPanelEl.hidden || !healthState?.cluster?.header) return;
+  const attention = pageWarnings().length > 0;
+  // The minute is in it so "checked 3 minutes ago" keeps up.
+  // The stream's last event time only shows while it is disconnected; connected, it moves every few seconds.
+  const updates = stream.state === 'disconnected' ? stream : stream.state;
+  const drawn = JSON.stringify([healthState.cluster, healthState.armedCrons, healthState.armedExecutions, updates, staleBuild, Math.floor(Date.now() / 60000)]);
+  if (drawn === panelDrawn) return;
+  panelDrawn = drawn;
+  statusPanelTitleEl.replaceChildren('System status — ', el('span', { class: attention ? 'attention' : 'clear', text: attention ? 'Needs attention' : 'All clear' }));
+  const inside = statusPanelBodyEl.contains(document.activeElement) ? document.activeElement : null;
+  const focusedKey = inside?.dataset.key ?? null;
+  const focusedSection = inside?.closest('[data-section]')?.dataset.section ?? null;
+  const scroll = statusPanelBodyEl.scrollTop;
+  statusPanelBodyEl.replaceChildren(jobsSection(), accountsSection(), computersSection(), updatesSection());
+  statusPanelBodyEl.scrollTop = scroll;
+  if (inside) {
+    // A link that went with the redraw, say a job that started, hands focus to its section's heading rather than dropping it.
+    const again =
+      (focusedKey && statusPanelBodyEl.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)) ||
+      statusPanelBodyEl.querySelector(`[data-section="${CSS.escape(focusedSection ?? '')}"] h3`) ||
+      statusPanelTitleEl;
+    again.focus({ preventScroll: true });
+  }
+}
+
+statusPanelCloseEl?.addEventListener('click', () => closePanel());
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !clusterPanelEl.hidden) {
+  if (event.key === 'Escape' && !statusPanelEl.hidden) {
     event.preventDefault();
-    closeClusterPanel();
+    closePanel();
   }
 });
-// A click anywhere else closes it. A chip is left to its own click, which toggles.
+// A link inside it goes somewhere else, so the panel gets out of the way, even onto the page already open.
+statusPanelEl?.addEventListener('click', (event) => {
+  if (event.target.closest?.('a[href]')) closePanel({ restoreFocus: false });
+});
+// A click anywhere else closes it. A button onto it is left to its own click.
 document.addEventListener('pointerdown', (event) => {
-  if (clusterPanelEl.hidden || clusterPanelEl.contains(event.target) || event.target.closest?.('[data-chip]')) return;
-  closeClusterPanel({ restoreFocus: false });
+  if (statusPanelEl.hidden || statusPanelEl.contains(event.target) || event.target.closest?.('[data-opener]')) return;
+  closePanel({ restoreFocus: false });
 });
 // So does tabbing out of it: left open, it would cover whatever focus moved to.
-clusterPanelEl?.addEventListener('focusout', (event) => {
+statusPanelEl?.addEventListener('focusout', (event) => {
   const next = event.relatedTarget;
-  if (!next || clusterPanelEl.contains(next) || next.closest?.('[data-chip]')) return;
-  closeClusterPanel({ restoreFocus: false });
+  if (!next || statusPanelEl.contains(next) || next.closest?.('[data-opener]')) return;
+  closePanel({ restoreFocus: false });
 });
-window.addEventListener('hashchange', () => closeClusterPanel({ restoreFocus: false }));
+window.addEventListener('hashchange', () => closePanel({ restoreFocus: false }));
 
 // ---- machine charts ---------------------------------------------------
 
@@ -5119,47 +5187,30 @@ function machineCard(nodeId, system) {
   return card;
 }
 
-/** Live, or live-but-out-of-date once the server has moved to another commit. */
-function setConnState() {
-  if (staleBuild) {
-    connEl.textContent = 'live - refresh window';
-    connEl.className = 'conn stale';
-    connEl.title = `This page loaded from ${loadedCommit}; the server now runs newer code. Reload to catch up.`;
-    return;
-  }
-  connEl.textContent = 'live';
-  connEl.className = 'conn live';
-  connEl.title = 'Live connection';
-}
-
-/** Notices when the running commit changes, which means an update landed. */
+/** Reads health, which every part of the header is drawn from, and notices when an update has landed. */
 async function checkHealth() {
+  const asked = ++healthAsked;
   try {
     const health = await api('/api/health');
+    if (asked < healthDrawn) return;
+    healthDrawn = asked;
     if (health.authRequired) {
       location.assign('/login');
       return;
     }
     setUpdateBadge(Boolean(health.updateAvailable), health.updateBehind);
     setBellBadge(health.notificationCounts);
-    // The cluster's own figures when there are any: its limit counts online nodes only.
-    clusterState = health.cluster ?? null;
-    setJobs({
-      runningCount: health.cluster?.running ?? health.running,
-      queuedCount: health.queued,
-      usageDelayedCount: health.usageDelayed,
-      limit: health.cluster?.concurrencyLimit ?? health.concurrencyLimit,
-      defaultLimit: health.defaultConcurrencyLimit,
-      armedCrons: health.armedCrons,
-      armedExecutions: health.armedExecutions,
-    });
+    // A different running commit means the server moved to newer code than this page.
+    if (health.commit && !loadedCommit) loadedCommit = health.commit;
+    else if (health.commit && health.commit !== loadedCommit) staleBuild = true;
+    healthState = health;
+    if (stream.awaitingHealth && asked >= stream.awaitingHealth) {
+      stream.awaitingHealth = 0;
+      stream.state = 'connected';
+    }
     paintHeader();
-    if (!health.commit) return; // not a git checkout, nothing to compare
-    if (!loadedCommit) loadedCommit = health.commit;
-    else if (health.commit !== loadedCommit) staleBuild = true;
-    setConnState();
   } catch {
-    /* the SSE error handler already reports a lost connection */
+    /* the stream's error handler already reports a lost connection */
   }
 }
 

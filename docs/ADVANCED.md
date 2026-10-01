@@ -15,7 +15,17 @@ A node only ever calls the hub, never the other way round. Every 2 seconds it po
 5. **Node identity.** A node names itself after its hostname. Two processes with the same id are refused, so set `PROMPTD_NODE_ID` if two nodes share a hostname.
 6. **Node settings.** Each node has its own job limit, usage delay percentages and default working directory. With one node on the hub's own machine they are on the Settings page as always. With a remote node, or more than one, each node has its own page, reached from **Nodes** on the Settings page.
 
-Usage limits, model discovery and machine stats all belong to a node. The header shows the whole cluster: `Nodes 2/3` once there is more than one node, running jobs against the limits of the online ones, one chip per Claude account the nodes are signed in to, and a node's machine only when a reading is over its alert line. Every chip opens one panel with each account's limits and the nodes on it. The Model dropdown shows the default node's models.
+Usage limits, model discovery and machine stats all belong to a node, and the header sums up every node at once. The Model dropdown shows the default node's models.
+
+### The header
+
+The header answers what is happening and what needs attention, and keeps the two apart.
+
+1. **The summary row is always there:** `1 job running`, `3 of 3 computers online`, and one status in words, `All clear` or `Needs attention`, beside the bell, Settings and Feedback.
+2. **The warning row shows only while something needs attention,** one button per kind of trouble, always in this order: jobs held (`2 jobs waiting for account limits`, `1 job queued behind the job limit`), `Account limits: 1 reached, 2 near`, `Machine warnings: 2`, `1 computer offline`, and `Updates disconnected` when this page's event stream drops. `Needs attention` means this row has something in it.
+3. **Every part of both rows opens one System status panel** at the section that explains it. **Jobs** says what is running against the limit (`up to 36 at once across online computers`) and lists each waiting job with its reason. **Claude accounts** has one block per account, never one per machine: a status word, each limit on its own line with its percentage used and reset time, when usage was last checked, and the computers signed in to it. **Computers** lists each machine warning (`Warning: mini — Memory 86% used`) and each offline computer with when it was last seen. **Updates** says whether this page is connected. Escape closes the panel and puts focus back on the button that opened it.
+
+An account's status word is its worst limit. **Limit reached** is a limit at 100%: nothing on that account can use it until it resets. **Near limit** is a limit Claude's usage API marks as a warning or as critical, or one at or past the percentage where a node holds jobs set to wait for it (see [Delaying a cron for usage](#delaying-a-cron-for-usage)); past that line those jobs are already held, however much is left. The warning row counts accounts, each once, under its worst limit. The rules and the words are worked out on the hub, in `src/cluster.ts`, and reach the page in the `cluster.header` field of `/api/health`.
 
 ### Adding a node on another Mac
 
@@ -423,7 +433,7 @@ The Settings page runs a check as soon as it opens and says what it found:
 Update now reports the wait rather than guessing at a reload time:
 
 1. `Waiting for 1 cron to finish executing before restarting…` while runs drain, then `All crons idle. Waiting for the server to restart…`.
-2. The header badge turns to `live - refresh window` when this page notices the server came back on a different commit.
+2. The header shows `Page out of date` when this page notices the server came back on a different commit.
 3. The page then counts down from 5 seconds and reloads itself.
 
 If the update does not proceed, the message says so and **Update now** becomes clickable again rather than counting down to nothing.
@@ -652,16 +662,16 @@ To recount from the logs, delete the three fields from the cron's JSON file; the
 
 ## Subscription usage
 
-Each node reads the account its Claude CLI is signed in as from Claude Code's config (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), and sends the hub the account id and email, nothing else. The header carries one chip per account, named by its email, however many nodes share it: `alex@example.com Session 38% · ▲ Weekly 83%`, the 5-hour session and whichever other limit is tightest. A node that reports usage without naming its account, as one on an older build does, gets a chip of its own, `Account unknown · Session 38%`, and is never merged with another such node, which may be on a different account. A limit the API marks as a warning gets a `▲`, and a critical one also says when it resets. On a narrower window the chip keeps the tightest limit alone, and below 900px the accounts fold into one button naming only those at warning or worse. Clicking a chip opens a panel with every limit on each account — the rolling 7-day limit, any model-scoped weekly limit, and extra usage credits when they are turned on — each with its bar, percentage and reset time in local time, and the nodes signed in to it. Credits are a monthly spending cap rather than a rolling window, and the panel says so: they reset on the 1st of each month.
+Each node reads the account its Claude CLI is signed in as from Claude Code's config (`~/.claude.json`, or the one in `CLAUDE_CONFIG_DIR`), and sends the hub the account id and email, nothing else. The header's System status panel lists each account once, named by its email, however many nodes share it. Every limit is on its own line under a plain name — `5-hour session`, `Weekly, all models`, a model-scoped weekly limit such as `Weekly, Fable`, and `Credits` when extra usage credits are turned on — with its percentage used and when it resets in local time, then when usage was last checked and the computers signed in to the account. A node that reports usage without naming its account, as one on an older build does, gets a block of its own under **Account unknown**, and is never merged with another such node, which may be on a different account. Each account carries `Limit reached`, `Near limit` or `OK` (see [The header](#the-header)), and the header counts them as `Account limits: 1 reached, 2 near`. Credits are a monthly spending cap rather than a rolling window, and the panel says so: they reset on the 1st of each month.
 
 The numbers come from the same place the CLI's own `/usage` view reads them: the OAuth usage endpoint, asked with the access token the CLI already stores. With `CLAUDE_CONFIG_DIR` set, that token comes from the directory's own `.credentials.json` or the Keychain entry the CLI names after the directory, never from the default login, which may be another account. Nothing is spawned and nothing is estimated from run logs. Reading that token is the only thing this does with it — it is never logged, never written anywhere, and never sent on to anything else.
 
 Three consequences worth knowing:
 
 - **The reading is up to five minutes old.** Every open tab polls `/api/health`, and every poll is answered from the last lookup, so the endpoint is asked at most once every five minutes no matter how many tabs are open. A page refresh redraws from that same reading rather than triggering a lookup of its own. The reading is also kept in `usage-cache.json`, so a restart or a self-update redraws the header immediately.
-- **A failed lookup keeps the last numbers.** The endpoint rate-limits, and several Claude sessions on one machine share that limit. When a refresh fails the account's chip dims and says when it was read (`read 41m ago`), and the panel says why the refresh is waiting, rather than the numbers disappearing. Retries back off from five minutes, doubling to an hour, and a `Retry-After` header wins when it asks for longer.
+- **A failed lookup keeps the last numbers.** The endpoint rate-limits, and several Claude sessions on one machine share that limit. When a refresh fails the panel says when the account was last checked and why the refresh is waiting, rather than the numbers disappearing. Retries back off from five minutes, doubling to an hour, and a `Retry-After` header wins when it asks for longer.
 - **A reading belongs to one account.** Each reading, in memory and in `usage-cache.json`, records the account it was fetched for. When the CLI signs in as someone else, the previous account's numbers are dropped rather than shown under the new name, a lookup still out for the previous account is thrown away when it lands, and the new account is asked at once.
-- **Signed out means no chip, not an error.** If the CLI is not signed in, or its login has expired, that account's chip disappears, a signed-out node is listed under **Account unknown** in the panel, and `usage.reason` on `/api/nodes` says which. Expired logins are left for the CLI to refresh: doing it here would rotate the refresh token underneath it.
+- **Signed out means no reading, not an error.** If the CLI is not signed in, or its login has expired, the account's limits disappear, a signed-out node is listed under **Account unknown** in the panel, and `usage.reason` on `/api/nodes` says which. Expired logins are left for the CLI to refresh: doing it here would rotate the refresh token underneath it.
 
 A cron can also be told to wait on any of these limits rather than run into one; see [Delaying a cron for usage](#delaying-a-cron-for-usage).
 
@@ -703,7 +713,7 @@ Notifications come from the server's own events, which is every toast except the
 
 ## Machine stats
 
-Four readings of how busy each node's machine is while it runs your crons. A service starts with the node and samples every five seconds, and the hub keeps the last fifteen minutes of each node's. The node's own page — click its name in the header's panel — charts that window for each reading, with the current value, the average and the peak, and the numbers behind the percentage. The header shows a machine only while a reading is over its alert line (see [Alerts](#alerts)), as `▲ Disk 91% · air`: the worst one, and `+2` when there are more.
+Four readings of how busy each node's machine is while it runs your crons. A service starts with the node and samples every five seconds, and the hub keeps the last fifteen minutes of each node's. The node's own page — click its name in the header's panel — charts that window for each reading, with the current value, the average and the peak, and the numbers behind the percentage. The header counts the readings over their alert line (see [Alerts](#alerts)) as `Machine warnings: 2`, and the panel names each one, worst first: `Critical: studio — CPU 94%`, `Warning: mini — Memory 86% used`.
 
 | Meter    | Is                                               | Read from                                                    |
 | -------- | ------------------------------------------------ | ------------------------------------------------------------ |
@@ -748,7 +758,7 @@ In practice that means a disk that normally idles alerts at 320 MB/s, and a disk
 
 Two things worth saying plainly about the windows. The ask was 30 seconds for CPU and memory; this uses 60. A 30-second average of 80% CPU is what a cron doing real work looks like, and a minute is quieter without meaningfully delaying anything you would act on. Both, and every threshold above, are named constants at the top of `src/system.js`.
 
-Set `SYSTEM_SAMPLE_MS=0` to turn the service off; the meters go with it. On a narrow window they are the first thing dropped from the header, below 1160px, before the subscription meters go at 900px.
+Set `SYSTEM_SAMPLE_MS=0` to turn the service off; the node's charts and its machine warnings go with it.
 
 ## Real-time updates
 
@@ -756,6 +766,8 @@ Two Server-Sent Event streams, no polling loops in the UI:
 
 - `GET /api/events` — cron changes, run started, run stopping, run finished, trigger skipped, trigger dropped by a pause, trigger held for usage, trigger released, each new notification and each batch marked read, and one machine-stat sample every five seconds. The home page redraws when one arrives.
 - `GET /api/crons/:id/logs/:file/stream` — one log file: everything written so far, then each new chunk. Closes itself with a `done` event when the run ends.
+
+When the first one drops, the header says `Updates disconnected` and the panel says when the last update arrived. The browser reconnects on its own, and the warning goes once it has.
 
 ## Configuration
 
@@ -867,7 +879,7 @@ As the field changes, a green line below it shows when the expression next fires
 | GET              | `/api/system`                               | Machine stats: the current reading, the last fifteen minutes behind it, what each meter means, and this machine's cores, memory and storage path                                                                                                                                                                         |
 | GET              | `/api/notifications?before=&limit=`         | One page of notifications, newest first; `unread=1`, `level=` and `node=` filter it. With the bell's counts and each level's total                                                                                                                                                                                       |
 | POST             | `/api/notifications/read`                   | Mark read. Body `{"ids":[...],"revisions":{"<id>":<count>}}`: only a row whose count still matches; or `{"all":true}`                                                                                                                                                                                                    |
-| GET              | `/api/health`                               | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, `usage` with a percentage and reset time per subscription limit on the default node, and `cluster`: nodes online, running jobs against the online nodes' limit, one entry per Claude account with its limits and nodes, machine readings over their alert line, and nodes on another build than the hub |
+| GET              | `/api/health`                               | Liveness, when this process started, how many crons are scheduled, whether they are paused, how many triggers are waiting and how many of those are queued for a slot, how many notifications are unread, `updateAvailable` with the commits behind, `usage` with a percentage and reset time per subscription limit on the default node, and `cluster`: nodes online, running jobs against the online nodes' limit, one entry per Claude account with its limits, each limit's status, and its nodes, the jobs held and why, machine readings over their alert line, nodes on another build than the hub, and `header`: the words the header shows, with its warnings in order |
 | GET, PUT         | `/api/settings`                             | Read settings; write `serverName`, `serverColor`, `selfUpdate`, `updateCheckIntervalHours`, `defaultNodeId`, `defaultPrompt`, `commonCommands`, `defaultWorktreeInclude` and `jobDefaults` (only the keys sent change; `null` puts one back to its built-in value) |
 | GET              | `/api/queue?node=`                          | The concurrent job limit (every node's, or one node's), what is running under it with each job's average run length, and what is queued behind it with each one's position and estimated start                                                                                                                                                         |
 | GET              | `/api/pause`                                | Pause state, the offered lengths, how many runs are still in flight, and how many triggers this pause has dropped                                                                                                                                                                                                        |
@@ -891,7 +903,7 @@ As the field changes, a green line below it shows when the expression next fires
 
 - A cron here runs an arbitrary prompt through Claude in a directory you choose, on any node. Anyone with the admin password can do the same, so treat it like a shell password. See [Signing in](#signing-in) and [Network access](#network-access).
 - Each node has its own job limit, so with two nodes online the two limits add up.
-- The header's CPU, memory and usage meters, and the Model list, come from the default node.
+- The Model list, `GET /api/system` and the `usage` field of `/api/health` come from the default node. The header covers every node.
 - The directory autocomplete lets any client that can reach the server list directory names anywhere it can read. That is the same trust boundary as the rest of the app, which already runs prompts in any directory you name — another reason to keep it on localhost.
 - A pause lives in memory only. Restarting the server clears it, whichever length was chosen. So does a trigger held for usage: a restart comes back with nothing waiting. A one-time execution is the exception that proves the rule — it is on disk, so a restart finds it and, if its moment has passed, runs it.
 - The **Update available** badge reflects the last check, so it can lag a push by up to `updateCheckIntervalHours`. **Check for updates** on the Settings page refreshes it at once.

@@ -12,6 +12,10 @@
   --green: #4ec98a;
   --red: #f0716a;
   --amber: #e5b95c;
+  /* Borders a control is recognised by, each at least 3:1 against the header bar. */
+  --control-border: #646d80;
+  --warn-border: #8a7240;
+  --ok-border: #3d8a63;
   --radius: 10px;
 }
 
@@ -31,12 +35,20 @@ a {
   text-decoration: none;
 }
 
+/*
+ * The header: the brand, the summary row and the buttons on the first line,
+ * and the warning row under the summary only while something needs attention.
+ * A grid, so the warning row lines up under the summary it explains.
+ */
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    'brand summary right'
+    '. warnings warnings';
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 22px;
+  column-gap: 18px;
+  padding: 12px 22px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   position: sticky;
@@ -47,6 +59,7 @@ a {
 }
 
 .brand {
+  grid-area: brand;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -64,10 +77,11 @@ a {
 }
 
 .topbar-right {
+  grid-area: right;
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-width: 0;
+  gap: 10px;
+  justify-self: end;
 }
 
 /* Offers an update without taking one: amber, and a link to the Settings page. */
@@ -78,7 +92,7 @@ a {
   font-size: 11.5px;
   padding: 3px 10px;
   border-radius: 999px;
-  border: 1px solid rgba(229, 185, 92, 0.4);
+  border: 1px solid var(--warn-border);
   color: var(--amber);
   background: rgba(229, 185, 92, 0.08);
   text-decoration: none;
@@ -102,98 +116,106 @@ a {
   display: none;
 }
 
-/*
- * The cluster chips: nodes, running jobs, one per Claude account, and a machine
- * reading only while one is over its line. Each is a button onto the panel.
- * Amber and red always come with the ▲ and a word, never on their own.
- */
-/* When everything is worth a chip at once, they wrap to a second row rather than overrun the buttons. */
-.cluster {
+.summary {
+  grid-area: summary;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px 8px;
+  gap: 8px;
   min-width: 0;
 }
 
-.cluster[hidden] {
+/* A margin rather than a row gap, so a hidden row leaves no space behind. */
+.warnings {
+  grid-area: warnings;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.summary[hidden],
+.warnings[hidden] {
   display: none;
 }
 
-/* Inline text rather than flex, so the spaces between label and number survive. */
-.chip {
-  display: inline-block;
-  padding: 3px 10px;
-  border: 1px solid var(--border);
+/*
+ * Every part of both rows is a button onto the System status panel. Amber
+ * and green always come with a word and a mark, never on their own; borders
+ * are at least 3:1 against the bar.
+ */
+.hdr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 4px 12px;
+  border: 1px solid var(--control-border);
   border-radius: 999px;
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 13px;
+  line-height: 1.3;
+  /* Digits all one width, so a count changing does not nudge everything after it. */
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: pointer;
 }
 
-.chip:hover,
-.chip[aria-expanded='true'] {
+.hdr-btn:hover,
+.hdr-btn.current {
   background: var(--panel-2);
-  border-color: #3a4152;
 }
 
-.chip:focus-visible,
-.cluster-panel a:focus-visible,
-.cluster-panel .btn:focus-visible {
+.hdr-btn:focus-visible,
+.status-panel a:focus-visible,
+.status-panel .btn:focus-visible,
+.status-panel [tabindex='-1']:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.chip-label,
-.chip.muted,
-.chip-stale,
-.chip-more {
-  color: var(--muted);
+.hdr-btn.status.clear {
+  color: var(--green);
+  border-color: var(--ok-border);
 }
 
-.chip-more {
-  margin-left: 6px;
-}
-
-.chip-email {
-  margin-right: 8px;
-  font-weight: 500;
-}
-
-.chip.warning {
+.hdr-btn.status.attention,
+.hdr-btn.warning {
   color: var(--amber);
-  border-color: rgba(229, 185, 92, 0.45);
+  border-color: var(--warn-border);
 }
 
-.chip.warning .chip-label {
-  color: inherit;
+.hdr-btn.warning {
+  background: rgba(229, 185, 92, 0.07);
 }
 
-/* Last-known numbers: dimmed to the muted colour rather than faded, so they stay readable. */
-.chip.stale {
-  color: var(--muted);
-  border-style: dashed;
+.hdr-btn.warning:hover,
+.hdr-btn.warning.current {
+  background: rgba(229, 185, 92, 0.15);
 }
 
-.chip.stale .chip-email {
-  font-weight: 400;
+.hdr-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.hdr-icon {
+  display: inline-flex;
+  flex: none;
+}
+
+.hdr-icon svg {
+  display: block;
 }
 
 .num {
   font-variant-numeric: tabular-nums;
-}
-
-.win.warning {
-  color: var(--amber);
-}
-
-.win.critical {
-  color: var(--red);
 }
 
 .glyph {
@@ -201,7 +223,7 @@ a {
   font-size: 0.8em;
 }
 
-/* Read by a screen reader, not drawn: the word that goes with a ▲. */
+/* Read by a screen reader, not drawn. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -214,326 +236,402 @@ a {
   border: 0;
 }
 
-/* The narrow forms, swapped in by the breakpoints below. */
-.email-short,
-.chip-narrow,
-.chip.usage-summary {
-  display: none;
-}
-
-@media (max-width: 1160px) {
-  .email-full,
-  .chip-wide {
-    display: none;
-  }
-  .email-short,
-  .chip-narrow {
-    display: inline;
-  }
-}
-
-/* One button for every account, naming only those at warning or worse. */
-@media (max-width: 900px) {
-  .chip.account {
-    display: none;
-  }
-  .chip.usage-summary {
-    display: inline-block;
-  }
-}
-
-/* A phone: the chips take their own row rather than pushing the page sideways. */
-@media (max-width: 640px) {
-  .topbar {
-    flex-wrap: wrap;
-    row-gap: 10px;
-  }
-  .topbar-right {
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    row-gap: 8px;
-  }
-}
-
 /*
- * The panel every chip opens: each account with its windows written out, the
- * nodes on it, and the job counts underneath. Under the header, not over it,
- * so the chip that opened it stays in view.
+ * The System status panel: jobs, Claude accounts, computers and the page's
+ * own updates, in that order. Under the header rather than over it, so the
+ * button that opened it stays in view, and capped to the window.
  */
-.cluster-panel {
+.status-panel {
   position: absolute;
   top: calc(100% + 6px);
   right: 16px;
   z-index: 25;
   display: flex;
   flex-direction: column;
-  width: min(900px, calc(100vw - 32px));
-  max-height: calc(100vh - 90px);
+  width: min(860px, calc(100vw - 32px));
+  /* The percentage is the header's height: the panel never runs off the bottom of the window. */
+  max-height: calc(100vh - 100% - 24px);
   background: #0b0d12;
-  border: 1px solid #3a4152;
-  border-radius: 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 12px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
-  outline: none;
 }
 
-.cluster-panel[hidden] {
+.status-panel[hidden] {
   display: none;
 }
 
-.cluster-panel-head {
+.status-panel-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
 }
 
-.cluster-panel-head h2 {
+.status-panel-head h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: 15px;
 }
 
-.cluster-panel-body {
+.status-panel-head .attention {
+  color: var(--amber);
+}
+
+.status-panel-head .clear {
+  color: var(--green);
+}
+
+/* Positioned, so a section's offsetTop is measured from here when a button scrolls to it. */
+.status-panel-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 16px 4px;
+  padding: 0 16px 12px;
 }
 
-.acct-group {
-  padding: 12px 0 14px;
+.status-panel a.link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: var(--control-border);
+  text-underline-offset: 3px;
+}
+
+.status-panel a.link:hover {
+  text-decoration-color: currentColor;
+}
+
+.sp-section {
+  padding: 14px 0;
   border-top: 1px solid var(--border);
 }
 
-.acct-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 4px 12px;
+.sp-section:first-child {
+  border-top: none;
 }
 
-.acct-head h3 {
-  margin: 0;
+.sp-section h3 {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sp-section h4 {
+  margin: 12px 0 6px;
   font-size: 13px;
+}
+
+.sp-lead {
+  margin: 0;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+/* A job may be named with 120 characters and no space; it wraps rather than pushing the panel wide. */
+.sp-item,
+.acct-meta,
+.sp-lead {
+  overflow-wrap: anywhere;
+}
+
+.sp-item.warning,
+.sp-item.offline {
+  color: var(--amber);
+}
+
+.sp-item.critical {
+  color: var(--red);
+}
+
+.sp-item.muted {
+  color: var(--muted);
+}
+
+.sp-item .hdr-icon {
+  display: inline-flex;
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+.sp-why,
+.sp-meta,
+.acct-meta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.sp-meta {
+  margin: 8px 0 0;
+}
+
+.sp-links {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+
+.sp-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* One account: who it is and how it stands on the left, each limit on its own line on the right. */
+.acct {
+  display: grid;
+  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
+  gap: 6px 20px;
+  padding: 12px 0;
+  border-top: 1px dashed var(--border);
+}
+
+.acct:first-of-type {
+  border-top: none;
+  padding-top: 2px;
+}
+
+.acct-who {
+  min-width: 0;
+}
+
+/* Breaks after the @ when it has to, so the address keeps its two halves. */
+.acct-email {
+  margin: 0;
+  font-size: 13.5px;
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.acct-read {
-  font-size: 11.5px;
-  color: var(--muted);
+.acct-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
 }
 
-.acct-read.stale {
+.acct-status.reached {
+  color: var(--red);
+}
+
+.acct-status.near {
   color: var(--amber);
 }
 
-.acct-windows {
-  display: grid;
-  grid-template-columns: max-content minmax(90px, 180px) 3.2em 1fr;
-  align-items: center;
-  gap: 7px 12px;
-  margin: 10px 0 12px;
-  font-size: 12px;
+.acct-status.ok {
+  color: var(--green);
 }
 
-.win-row {
-  display: contents;
-}
-
-.win-pct {
-  text-align: right;
-}
-
-.win-reset {
-  font-size: 11.5px;
+.acct-status.unknown {
   color: var(--muted);
 }
 
-.usage-track {
+.acct-detail {
+  min-width: 0;
+}
+
+.acct-limits {
+  display: grid;
+  /* Fixed columns, so each account's limits line up with the next one's. */
+  grid-template-columns: 10em 4.8em 5.4em 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.lim {
+  display: contents;
+}
+
+.lim-name {
+  overflow-wrap: anywhere;
+}
+
+.lim-flag {
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.lim-pct {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.lim.near .lim-name,
+.lim.near .lim-flag-cell,
+.lim.near .lim-pct {
+  color: var(--amber);
+}
+
+.lim.reached .lim-name,
+.lim.reached .lim-flag-cell,
+.lim.reached .lim-pct {
+  color: var(--red);
+}
+
+.lim-meter {
   display: block;
-  height: 4px;
+  height: 6px;
   border-radius: 999px;
   background: var(--border);
   overflow: hidden;
 }
 
-.usage-fill {
+.lim-fill {
   display: block;
   height: 100%;
   border-radius: 999px;
   background: var(--green);
 }
 
-.win-row.warning .win-label,
-.win-row.warning .win-pct {
-  color: var(--amber);
-}
-
-.win-row.warning .usage-fill {
+.lim.near .lim-fill {
   background: var(--amber);
 }
 
-.win-row.critical .win-label,
-.win-row.critical .win-pct {
-  color: var(--red);
-}
-
-.win-row.critical .usage-fill {
+.lim.reached .lim-fill {
   background: var(--red);
 }
 
-.node-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-  font-size: 12px;
-}
-
-.node-table th {
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--border);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-
-.node-table td {
-  padding: 7px 8px;
-  border-bottom: 1px solid rgba(39, 44, 56, 0.6);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* The one cell that runs long: "offline · seen 3h 12m ago". */
-.node-table td[data-label='Status'] {
-  white-space: normal;
-}
-
-/* A node with no account named carries its own windows, in a row under its own. */
-.node-table tr:has(+ tr.node-usage) td {
-  border-bottom: none;
-}
-
-.node-table tr.node-usage td {
-  padding-top: 0;
-  white-space: normal;
-}
-
-.node-table tr.node-usage .acct-windows {
-  margin: 6px 0 4px;
-}
-
-.node-table tr:last-child td {
-  border-bottom: none;
-}
-
-.node-table .n {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.node-table .muted,
-.node-table tr.offline td {
+.lim-reset {
   color: var(--muted);
+  font-size: 12.5px;
 }
 
-.node-table .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11.5px;
+.acct-meta {
+  margin: 8px 0 0;
 }
 
-.node-name {
-  font-weight: 500;
+.acct-meta.stale {
+  color: var(--amber);
 }
 
-.node-default {
-  color: var(--muted);
-  font-size: 11px;
+/* The Settings page's Nodes card, scrolled to from the panel, clears the sticky header. */
+[data-card] {
+  scroll-margin-top: 140px;
 }
 
-/* The job counts the Running chip sums: what is happening, then what is merely armed. */
-.cluster-panel-foot {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 18px;
-  padding: 10px 16px 12px;
-  border-top: 1px solid var(--border);
+/* A touch screen gets full-size targets wherever the header is drawn. */
+@media (pointer: coarse) {
+  .hdr-btn {
+    min-height: 44px;
+  }
+  .topbar-right .btn.icon {
+    width: 44px;
+    height: 44px;
+  }
 }
 
-.foot-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 16px;
-  margin: 0;
+/*
+ * Too narrow for one line: the brand and the buttons share the first row and
+ * the buttons drop under the brand when a long server name or the update
+ * badge leaves no room, then the summary and the warnings take rows of their own.
+ */
+@media (max-width: 900px) {
+  .topbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 12px;
+  }
+  .brand {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .topbar-right {
+    order: 1;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+  .summary,
+  .warnings {
+    order: 2;
+    flex: 1 1 100%;
+    margin-top: 0;
+  }
 }
 
-.foot-group + .foot-group {
-  padding-left: 18px;
-  border-left: 1px solid var(--border);
-}
-
-.foot-item {
-  display: flex;
-  gap: 6px;
-  font-size: 12px;
-}
-
-.foot-item dt {
-  color: var(--muted);
-}
-
-.foot-item dd {
-  margin: 0;
-}
-
-/* Narrow: each node becomes a block of labelled readings instead of a row too wide to show. */
+/* Narrower than the panel's two columns: each account stacks, and so does each limit. */
 @media (max-width: 720px) {
-  .acct-windows {
-    grid-template-columns: max-content 1fr 3.2em;
+  .acct {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .win-reset {
+  .acct-limits {
+    grid-template-columns: minmax(0, 1fr) max-content max-content;
+  }
+  .lim-meter,
+  .lim-reset {
     grid-column: 1 / -1;
-    margin-top: -4px;
   }
-  .node-table thead {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
+  .lim-reset {
+    margin: -2px 0 4px;
   }
-  .node-table,
-  .node-table tbody {
-    display: block;
+}
+
+/*
+ * A phone: the brand and the buttons on the first line, then the summary and
+ * the warnings one per line, each a full-size target. The header scrolls away
+ * rather than sticking, since it is now tall, and the panel takes the full
+ * width under it and grows with the page instead of scrolling inside itself.
+ */
+@media (max-width: 640px) {
+  .topbar {
+    position: relative;
+    padding: 10px 16px 12px;
   }
-  .node-table tr {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
-    gap: 6px 10px;
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border);
+  .summary,
+  .warnings {
+    flex-direction: column;
+    align-items: stretch;
   }
-  .node-table td,
-  .node-table td.n {
-    padding: 0;
-    border: none;
+  .hdr-btn {
+    min-height: 44px;
+    border-radius: 10px;
+    white-space: normal;
     text-align: left;
   }
-  .node-table td::before {
-    content: attr(data-label);
-    display: block;
-    color: var(--muted);
-    font-size: 10.5px;
+  .topbar-right {
+    gap: 8px;
   }
-  .node-table td.node-name,
-  .node-table tr.node-usage td {
-    grid-column: 1 / -1;
+  .topbar-right .btn.icon {
+    width: 44px;
+    height: 44px;
   }
-  .node-table td.node-name::before,
-  .node-table tr.node-usage td::before {
-    content: none;
+  .status-panel {
+    top: 100%;
+    right: 0;
+    left: 0;
+    width: auto;
+    max-height: none;
+    border-radius: 0 0 12px 12px;
+    border-left: none;
+    border-right: none;
+  }
+  .status-panel-body {
+    overflow: visible;
   }
 }
 
@@ -1001,33 +1099,6 @@ a {
 .pop-detail[hidden],
 .pop-note[hidden] {
   display: none;
-}
-
-.conn {
-  font-size: 12px;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 2px 10px;
-  white-space: nowrap;
-}
-
-.conn.live {
-  color: var(--green);
-  border-color: rgba(78, 201, 138, 0.4);
-}
-
-.conn.down {
-  color: var(--red);
-  border-color: rgba(240, 113, 106, 0.4);
-}
-
-/* Connected, but the server has moved to newer code than this page. */
-.conn.stale {
-  color: var(--amber);
-  border-color: rgba(229, 185, 92, 0.5);
-  background: rgba(229, 185, 92, 0.1);
-  cursor: help;
 }
 
 /*
