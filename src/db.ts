@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import Database from 'better-sqlite3';
-import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect } from 'kysely';
+import { CamelCasePlugin, Kysely, PostgresDialect, SqliteDialect, sql } from 'kysely';
 import type { Generated } from 'kysely';
 import { Migrator } from 'kysely/migration';
 import type { Migration, MigrationResultSet } from 'kysely/migration';
@@ -54,12 +54,21 @@ export interface NotificationTable {
   id: string;
   at: string;
   kind: string;
+  level: string;
   message: string;
   read: Flag;
   cronId: string | null;
   cronName: string | null;
   jobKind: string;
   logFile: string | null;
+  nodeId: string | null;
+  nodeName: string | null;
+  groupKey: string | null;
+  count: number;
+  since: string | null;
+  open: Flag;
+  alertValue: number | null;
+  alertRunning: number | null;
 }
 
 export interface SettingTable {
@@ -129,6 +138,52 @@ function jobTable(db: Kysely<unknown>, name: string) {
     .addColumn('lifetime_runs', 'integer')
     .addColumn('lifetime_cost_usd', 'double precision')
     .addColumn('lifetime_runtime_seconds', 'double precision');
+}
+
+interface LegacyNotification {
+  id: string;
+  kind: string;
+  message: string;
+  cronName: string | null;
+}
+
+/**
+ * What a notification's wording says after the job name it was written with:
+ * `"Nightly" failed in 4s` is `failed in 4s`. Read off the name rather than
+ * searched for, so a job called "Restart stopped services" is not a stop.
+ */
+function afterJobName({ message, cronName }: LegacyNotification): string | null {
+  if (cronName === null) return null;
+  for (const prefix of [`"${cronName}" `, `one-time "${cronName}" `]) {
+    if (message.startsWith(prefix)) return message.slice(prefix.length);
+  }
+  return null;
+}
+
+/** The level a notification written before there were levels is worth. */
+function legacyLevel(row: LegacyNotification): 'action' | 'worth' | 'routine' {
+  const { kind, message } = row;
+  const rest = afterJobName(row);
+  switch (kind) {
+    case 'worktree-failed':
+    case 'cron-broken':
+      return 'action';
+    // Everything that did not succeed was written as this kind. Only a run the
+    // user stopped is routine; a wording that cannot be read stays a failure.
+    case 'run-failed':
+      return rest !== null && /^stopped\b/.test(rest) ? 'routine' : 'action';
+    case 'retrospective':
+      return 'worth';
+    case 'system':
+      return message.startsWith('Low disk space') ? 'action' : 'worth';
+    case 'update':
+      if (message.startsWith('Update script failed') || message.startsWith('Update gave up')) return 'action';
+      return message.startsWith('Update started') ? 'worth' : 'routine';
+    case 'delayed':
+      return rest !== null && (rest.startsWith('is waiting on ') || rest.startsWith('missed its trigger by ')) ? 'worth' : 'routine';
+    default:
+      return 'routine';
+  }
 }
 
 // Kept in code rather than read from a folder, so the compiled build carries
@@ -217,6 +272,53 @@ const MIGRATIONS: Record<string, Migration> = {
       }
     },
   },
+  // The machine a notification is about. Rows written before this have none,
+  // and are left without one rather than credited to a node that is a guess.
+  '20260930_002_notification_nodes': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('node_id', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('node_name', 'text').execute();
+    },
+  },
+  // How much each notification asks of its reader. The rows already written
+  // are sorted by what they say, which is all they have to go on; the ones
+  // that would not be written at all now become routine, and routine is read.
+  '20260930_003_notification_levels': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('level', 'text', (col) => col.notNull().defaultTo('routine')).execute();
+      const { rows } = await sql<LegacyNotification>`select id, kind, message, cron_name as "cronName" from notifications`.execute(db);
+      const raised: Record<'action' | 'worth', string[]> = { action: [], worth: [] };
+      for (const row of rows) {
+        const level = legacyLevel(row);
+        if (level !== 'routine') raised[level].push(row.id);
+      }
+      for (const [level, ids] of Object.entries(raised)) {
+        for (let start = 0; start < ids.length; start += 500) {
+          const batch = ids.slice(start, start + 500);
+          await sql`update notifications set level = ${level} where id in (${sql.join(batch)})`.execute(db);
+        }
+      }
+      await sql`update notifications set ${sql.ref('read')} = 1 where level = 'routine'`.execute(db);
+    },
+  },
+  // Repeats of one thing — an alert, an update, a held trigger — land on one
+  // row. The rows already written each stand alone, and none is left open.
+  '20260930_004_notification_groups': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('group_key', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('count', 'integer', (col) => col.notNull().defaultTo(1)).execute();
+      await db.schema.alterTable('notifications').addColumn('since', 'text').execute();
+      await db.schema.alterTable('notifications').addColumn('open', 'integer', (col) => col.notNull().defaultTo(0)).execute();
+    },
+  },
+  // What a machine alert's row last announced, so a node that restarts into a
+  // worse reading than that is not taken for one repeating itself.
+  '20260930_005_notification_alert_readings': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema.alterTable('notifications').addColumn('alert_value', 'double precision').execute();
+      await db.schema.alterTable('notifications').addColumn('alert_running', 'integer').execute();
+    },
+  },
 };
 
 export interface DatabaseTarget {
@@ -262,12 +364,13 @@ export function databaseTarget(): DatabaseTarget {
   return target;
 }
 
-export async function migrate(): Promise<MigrationResultSet> {
+/** Brings the schema up to date, or only as far as `to` — which is how a test sets up an older store. */
+export async function migrate(to: string | null = null): Promise<MigrationResultSet> {
   const migrator = new Migrator({
     db: db(),
     provider: { getMigrations: async () => MIGRATIONS },
   });
-  const result = await migrator.migrateToLatest();
+  const result = to ? await migrator.migrateTo(to) : await migrator.migrateToLatest();
   for (const step of result.results ?? []) {
     console.log(`[db] migration ${step.migrationName}: ${step.status}`);
   }

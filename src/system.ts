@@ -27,6 +27,21 @@ export interface SystemAlertReading {
   summary: string;
 }
 
+/** What the last announcement of an alert said, which a later reading is judged worse against. */
+export interface AlertAnnouncement {
+  value: number;
+  running: number;
+}
+
+/** One alert's state between samples. */
+export interface AlertState {
+  firing: boolean;
+  lastSentAt: number;
+  sent: AlertAnnouncement | null;
+  /** Whether the first full window since this process started has been read. */
+  seeded: boolean;
+}
+
 export interface RunningJobSummary {
   name: string;
   kind: JobKind;
@@ -161,6 +176,15 @@ export const SYSTEM_METRICS: SystemMetric[] = [
  *
  * The clear level sits below the threshold on purpose: a metric hovering at the
  * line would otherwise alternate between firing and clearing.
+ *
+ * Rule 2 has one exception: an episode that gets markedly worse says so again,
+ * on the same notification. What "worse" means is up to each alert, and most
+ * have no such rule.
+ *
+ * Rule 2 also has to survive a restart, which forgets every episode. So the
+ * first full window after a start only seeds the state: an alert already over
+ * its line is reported as `seeded`, and the hub adds it to the drawer only when
+ * no notification is open for that episode already.
  */
 export const ALERT_COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -198,6 +222,10 @@ export const SYSTEM_ALERTS = [
         cleared: value < this.clear,
         summary: `${Math.round(value)}% of all cores, averaged over the last minute`,
       };
+    },
+    /** A busy machine with nothing of ours on it is someone else's; the same with crons running is ours to know about. */
+    worsened(sent: AlertAnnouncement, _reading: SystemAlertReading, running: number): boolean {
+      return sent.running === 0 && running > 0;
     },
   },
   {
@@ -273,8 +301,31 @@ export const SYSTEM_ALERTS = [
         summary: `${round1(100 - value)}% of the volume is free`,
       };
     },
+    /**
+     * Half the free space it had when it last said so is gone. Strictly more in
+     * use, too: a full disk read again at 100% has lost nothing, although
+     * nothing is half of nothing.
+     */
+    worsened(sent: AlertAnnouncement, reading: SystemAlertReading): boolean {
+      return reading.value > sent.value && 100 - reading.value <= (100 - sent.value) / 2;
+    },
   },
 ];
+
+type SystemAlert = (typeof SYSTEM_ALERTS)[number] & {
+  worsened?(sent: AlertAnnouncement, reading: SystemAlertReading, running: number): boolean;
+};
+
+/**
+ * Whether a reading is markedly worse than what an alert last announced, by
+ * that alert's own rule. The hub asks this of an alert a node found still
+ * firing after a restart, against what the open notification last said.
+ */
+export function alertWorsened(metric: string, sent: AlertAnnouncement, value: number, running: number): boolean {
+  const alert = (SYSTEM_ALERTS as SystemAlert[]).find((candidate) => candidate.id === metric);
+  if (!alert?.worsened) return false;
+  return alert.worsened(sent, { value, breached: true, cleared: false, summary: '' }, running);
+}
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
 const round2 = (value: number): number => Math.round(value * 100) / 100;
@@ -543,7 +594,7 @@ class SystemMonitor {
   public cpuBaseline: { idle: number; total: number } | null;
   public ioBaseline: { bytes: number; transfers: number; at: number } | null;
   public iostat: IostatReader | null;
-  public alerts: Map<string, { firing: boolean; lastSentAt: number }>;
+  public alerts: Map<string, AlertState>;
   public runningCrons: () => RunningJobSummary[];
 
   public constructor() {
@@ -697,15 +748,30 @@ class SystemMonitor {
    */
   public checkAlerts(): void {
     const now = Date.now();
-    for (const alert of SYSTEM_ALERTS) {
-      const state = this.alerts.get(alert.id) ?? { firing: false, lastSentAt: 0 };
+    for (const alert of SYSTEM_ALERTS as SystemAlert[]) {
+      const state = this.alerts.get(alert.id) ?? { firing: false, lastSentAt: 0, sent: null, seeded: false };
       this.alerts.set(alert.id, state);
       const reading = alert.read(this.samples, SAMPLE_INTERVAL_MS);
       if (!reading) continue;
 
+      if (!state.seeded) {
+        state.seeded = true;
+        this.seed(alert, reading, state, now);
+        continue;
+      }
+
       if (state.firing) {
         // Still over the line is the same episode, not a new one.
-        if (reading.cleared) state.firing = false;
+        if (reading.cleared) {
+          state.firing = false;
+          state.sent = null;
+          // The episode's notification can take no more; the next one starts afresh.
+          emit('system:cleared', { metric: alert.id, label: alert.label });
+          continue;
+        }
+        if (!state.sent || !alert.worsened || now - state.lastSentAt < ALERT_COOLDOWN_MS) continue;
+        const running = this.runningCrons();
+        if (alert.worsened(state.sent, reading, running.length)) this.announce(alert, reading, state, running, now, 'worse');
         continue;
       }
       if (!reading.breached) continue;
@@ -714,18 +780,44 @@ class SystemMonitor {
       // a cooldown expiring mid-episode does not produce a late one.
       state.firing = true;
       if (now - state.lastSentAt < ALERT_COOLDOWN_MS) continue;
-      state.lastSentAt = now;
-      const running = this.runningCrons();
-      console.warn(`[system] ${alert.label}: ${reading.summary}`);
-      emit('system:alert', {
-        metric: alert.id,
-        label: alert.label,
-        summary: reading.summary,
-        value: round1(reading.value),
-        threshold: alert.threshold ?? null,
-        running,
-      });
+      this.announce(alert, reading, state, this.runningCrons(), now, 'new');
     }
+  }
+
+  /**
+   * What this process finds on its first full window. Over the line is an
+   * episode that may have started before the restart; well under it means any
+   * episode left open by the last process has ended while nobody was looking.
+   */
+  private seed(alert: SystemAlert, reading: SystemAlertReading, state: AlertState, now: number): void {
+    if (reading.breached) {
+      state.firing = true;
+      this.announce(alert, reading, state, this.runningCrons(), now, 'seeded');
+    } else if (reading.cleared) {
+      emit('system:cleared', { metric: alert.id, label: alert.label });
+    }
+  }
+
+  private announce(
+    alert: SystemAlert,
+    reading: SystemAlertReading,
+    state: AlertState,
+    running: RunningJobSummary[],
+    now: number,
+    how: 'new' | 'seeded' | 'worse',
+  ): void {
+    state.lastSentAt = now;
+    state.sent = { value: reading.value, running: running.length };
+    console.warn(`[system] ${alert.label}${how === 'worse' ? ', and worse' : how === 'seeded' ? ', since before the start' : ''}: ${reading.summary}`);
+    emit('system:alert', {
+      metric: alert.id,
+      label: alert.label,
+      summary: reading.summary,
+      value: round1(reading.value),
+      threshold: alert.threshold ?? null,
+      running,
+      ...(how === 'worse' ? { worse: true } : how === 'seeded' ? { seeded: true } : {}),
+    });
   }
 
   /** Drops anything older than the window, by time rather than by count. */

@@ -14,7 +14,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.
 - Machine stats in the header — CPU, memory, storage throughput and disk space, sampled every 5 seconds, with a 15-minute chart on hover.
-- A notification centre behind the bell: everything the server announces, kept on disk, with an unread count and a drawer that marks what you have actually read.
+- A notification centre behind the bell: everything the server announces, kept on disk, sorted by whether it needs you, named by the machine it happened on, with repeats kept to one row and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
 ![The Crons tab: five scheduled prompts with their status, last run and next run](docs/images/crons.png)

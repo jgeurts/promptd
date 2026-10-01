@@ -230,24 +230,31 @@ a {
 }
 
 /*
- * The bell, and the count of what has not been read. The badge sits on the
- * button's corner, so it has to escape the button's box.
+ * The bell. What needs action is a count, `!2`; what is worth knowing is a
+ * hollow dot beside it with no number. Both sit on the button's corner, so they
+ * have to escape the button's box.
  */
 .btn.bell {
   position: relative;
   overflow: visible;
 }
 
-.bell-badge {
+.bell-marks {
   position: absolute;
   top: -5px;
   right: -5px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.bell-badge {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--red);
+  color: #1b1207;
   font-size: 10px;
   font-weight: 700;
   line-height: 16px;
@@ -255,8 +262,30 @@ a {
   font-variant-numeric: tabular-nums;
 }
 
-.bell-badge[hidden] {
+.bell-dot {
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--amber);
+  border-radius: 50%;
+  background: var(--panel);
+}
+
+.bell-badge[hidden],
+.bell-dot[hidden] {
   display: none;
+}
+
+/* Heard, not seen: the one place a new count is announced. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /*
@@ -307,6 +336,52 @@ a {
   padding: 10px 18px 0;
 }
 
+/* One chip per machine, when there is more than one. They wrap rather than scroll. */
+.drawer-nodes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 18px 0;
+}
+
+.drawer-nodes[hidden] {
+  display: none;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 3px 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: #3a4152;
+}
+
+.chip[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.chip-count {
+  color: var(--red);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip-count[hidden] {
+  display: none;
+}
+
 .drawer-sub {
   margin: 6px 18px 12px;
   font-size: 11.5px;
@@ -319,6 +394,58 @@ a {
   overflow-y: auto;
   border-top: 1px solid var(--border);
   outline: none;
+}
+
+/*
+ * A heading per level. Each stays at the top while its rows scroll under it,
+ * and folds its list away; routine starts folded.
+ */
+.note-section-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin: 0;
+  font-size: inherit;
+}
+
+.note-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 18px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-section-toggle:hover {
+  color: var(--text);
+}
+
+.note-section-chevron {
+  display: inline-flex;
+  transition: transform 150ms ease;
+}
+
+.note-section-toggle[aria-expanded='true'] .note-section-chevron {
+  transform: rotate(90deg);
+}
+
+.note-section-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.note-section-list[hidden] {
+  display: none;
 }
 
 .drawer-empty {
@@ -382,6 +509,9 @@ a {
   .note.arriving {
     animation: none;
   }
+  .note-section-chevron {
+    transition: none;
+  }
 }
 
 .note.linked {
@@ -398,21 +528,23 @@ a {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.note-dot {
+/* `!` needs action, `~` worth knowing, `·` routine: a shape as well as a colour. */
+.note-glyph {
   flex: none;
-  width: 7px;
-  height: 7px;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: var(--muted);
+  width: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--muted);
 }
 
-.note-dot.warn {
-  background: var(--amber);
+.note-glyph.action {
+  color: var(--red);
 }
 
-.note-dot.bad {
-  background: var(--red);
+.note-glyph.worth {
+  color: var(--amber);
 }
 
 .note-body {
@@ -427,6 +559,11 @@ a {
 
 .note.unread .note-message {
   font-weight: 600;
+}
+
+/* Which machine, when there is more than one: read first, but quieter than the news. */
+.note-node {
+  color: var(--muted);
 }
 
 .note-meta {

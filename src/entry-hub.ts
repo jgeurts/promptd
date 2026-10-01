@@ -28,7 +28,7 @@ import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './sett
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
 import { normalizeUsageDelay, usageDelayOptions } from './usage.js';
 import { lifetimeStats } from './stats.js';
-import { MAX_NOTIFICATIONS, PAGE_SIZE, notificationCenter } from './notifications.js';
+import { MAX_NOTIFICATIONS, PAGE_SIZE, isLevel, notificationCenter } from './notifications.js';
 import {
   MAX_LOGS_PER_CRON,
   createCron,
@@ -267,7 +267,10 @@ app.get('/api/notifications', async (req, res, next) => {
     const before = String(req.query.before ?? '').trim() || null;
     // `?unread=1` is the drawer's filter: the same pages with the read ones left out.
     const unreadOnly = ['1', 'true', 'yes'].includes(String(req.query.unread ?? '').toLowerCase());
-    res.json(await notificationCenter.page({ before, limit: req.query.limit ?? PAGE_SIZE, unreadOnly }));
+    // `?level=` is one of the drawer's sections, and `?node=` one machine's records.
+    const level = isLevel(req.query.level) ? req.query.level : null;
+    const node = String(req.query.node ?? '').trim() || null;
+    res.json(await notificationCenter.page({ before, limit: req.query.limit ?? PAGE_SIZE, unreadOnly, level, node, nodes: hub.listNodes() }));
   } catch (err) {
     next(err);
   }
@@ -282,7 +285,13 @@ app.post('/api/notifications/read', async (req: JsonRequest, res, next) => {
     if (req.body?.all === true) return res.json(await notificationCenter.markAllRead());
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
     if (!ids.length) return res.status(400).json({ error: 'ids must be a non-empty array' });
-    res.json(await notificationCenter.markRead(ids));
+    // What each row's count was when it was seen. Without it nothing is marked:
+    // the row may have changed since, and only Mark all read reads it regardless.
+    const revisions = req.body?.revisions;
+    if (!revisions || typeof revisions !== 'object' || Array.isArray(revisions)) {
+      return res.status(400).json({ error: 'revisions must give the count each id had when it was seen' });
+    }
+    res.json(await notificationCenter.markRead(ids, revisions as Record<string, unknown>));
   } catch (err) {
     next(err);
   }
@@ -913,6 +922,7 @@ app.get('/api/health', async (_req, res) => {
     // this rather than against "unlimited", which no bar can draw.
     defaultConcurrencyLimit: DEFAULT_MAX_CONCURRENT_JOBS,
     unreadNotifications: notificationCenter.unreadCount(),
+    notificationCounts: notificationCenter.counts(),
     ...selfUpdater.availability(),
   });
 });
