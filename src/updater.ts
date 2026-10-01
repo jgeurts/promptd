@@ -420,7 +420,8 @@ class SelfUpdater {
 
   /**
    * A binary's update: the new build replaces the file, then launchd restarts the
-   * hub into it. Each node follows once it sees the hub's new build.
+   * hub into it, or the hub keeps serving on the build it runs when that fails.
+   * Each node follows once it sees the hub's new build.
    */
   public installBuild(): void {
     const target = this.target;
@@ -436,7 +437,7 @@ class SelfUpdater {
     if (!target) return giveUp('no build to update to');
     this.installing = true;
     log(`installing build ${target} over ${BINARY_VERSION}`);
-    // A hub left outside launchd already has the build on disk from the last try.
+    // A hub that did not restart on the last try already has the build on disk.
     versionOnDisk()
       .then((onDisk) => (onDisk === target ? undefined : installVersion(target)))
       .then(
@@ -447,7 +448,11 @@ class SelfUpdater {
           return giveUp('no restart is coming');
         }
         log(`build ${target} installed; asking launchd to restart into it`);
-        return restartService({ log });
+        return restartService().then((outcome) => {
+          if (outcome.restarting) return;
+          log(`could not restart into build ${target}: ${outcome.reason}`);
+          giveUp(`could not restart into build ${target}`);
+        });
       },
       (err: Error) => {
         log(`could not install build ${target}: ${err.message}`);

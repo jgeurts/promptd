@@ -4,6 +4,7 @@ import {
   GIVE_UP_AFTER_MS,
   HOLD_AFTER_MS,
   checksumFor,
+  handOff,
   kickstartArgs,
   nextUpdateStep,
   releaseTag,
@@ -11,6 +12,7 @@ import {
   underLaunchd,
   versionOfTag,
 } from '../src/binaryUpdate.js';
+import type { RestartOutcome } from '../src/binaryUpdate.js';
 
 describe('release tags', () => {
   it('name a build after its commit, and read it back', () => {
@@ -57,9 +59,8 @@ describe('restartService', () => {
 
   function restart(env: NodeJS.ProcessEnv, launchctl: (args: string[]) => Promise<unknown>, ppid = 1) {
     const exit = vi.fn();
-    const lines: string[] = [];
-    const done = restartService({ env, ppid, uid: 501, launchctl, exit, waitMs: 1000, log: (line) => lines.push(line) });
-    return { exit, lines, done };
+    const done = restartService({ env, ppid, uid: 501, launchctl, exit, waitMs: 1000 });
+    return { exit, done };
   }
 
   afterEach(() => {
@@ -70,22 +71,26 @@ describe('restartService', () => {
     expect(kickstartArgs('local.promptd.node', 501)).toEqual(['kickstart', '-k', 'gui/501/local.promptd.node']);
   });
 
-  it('kickstarts its own job under launchd, and exits only once no restart has come', async () => {
+  it('kickstarts its own job under launchd, and keeps running once no restart has come', async () => {
     vi.useFakeTimers();
     const launchctl = vi.fn(async () => {});
-    const { exit, lines, done } = restart(NODE_JOB, launchctl);
+    let settled = false;
+    const { exit, done } = restart(NODE_JOB, launchctl);
+    void done.then(() => {
+      settled = true;
+    });
     expect(launchctl).toHaveBeenCalledWith(['kickstart', '-k', 'gui/501/local.promptd.node']);
     await vi.advanceTimersByTimeAsync(999);
-    expect(exit).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
-    await done;
-    expect(exit).toHaveBeenCalledWith(0);
-    expect(lines).toEqual(['launchd did not restart local.promptd.node; exiting for it to start the new build']);
+    expect(await done).toEqual({ restarting: false, reason: 'launchd did not restart local.promptd.node within 1s of being asked' });
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('waits for launchctl to return before the wait begins, since launchd may stop it first', async () => {
     vi.useFakeTimers();
     let finish: () => void = () => {};
+    let settled = false;
     const launchctl = vi.fn(
       () =>
         new Promise<void>((resolve) => {
@@ -93,21 +98,25 @@ describe('restartService', () => {
         }),
     );
     const { exit, done } = restart(NODE_JOB, launchctl);
+    void done.then(() => {
+      settled = true;
+    });
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(exit).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
     finish();
-    await vi.advanceTimersByTimeAsync(1000);
-    await done;
-    expect(exit).toHaveBeenCalledWith(0);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await done).restarting).toBe(false);
+    expect(exit).not.toHaveBeenCalled();
   });
 
-  it('exits straight away when launchctl fails', async () => {
-    const { exit, lines, done } = restart(NODE_JOB, async () => {
+  it('keeps running, and says why, when launchctl fails', async () => {
+    const { exit, done } = restart(NODE_JOB, async () => {
       throw new Error('Could not find service');
     });
-    await done;
-    expect(exit).toHaveBeenCalledWith(0);
-    expect(lines[0]).toContain('launchctl could not restart local.promptd.node: Could not find service');
+    expect(await done).toEqual({ restarting: false, reason: 'launchctl could not restart local.promptd.node: Could not find service' });
+    expect(exit).not.toHaveBeenCalled();
   });
 
   it('only exits outside launchd, never restarting a job it is not', async () => {
@@ -119,10 +128,61 @@ describe('restartService', () => {
     for (const [env, ppid] of outside) {
       const launchctl = vi.fn(async () => {});
       const { exit, done } = restart(env, launchctl, ppid);
-      await done;
+      expect(await done).toEqual({ restarting: true });
       expect(launchctl).not.toHaveBeenCalled();
       expect(exit).toHaveBeenCalledWith(0);
     }
+  });
+});
+
+describe('handOff', () => {
+  function steps(outcome: RestartOutcome, { stopDuring }: { stopDuring?: 'signOff' | 'restart' } = {}) {
+    let stopped = false;
+    const calls: string[] = [];
+    return {
+      calls,
+      signOff: vi.fn(async () => {
+        calls.push('signOff');
+        if (stopDuring === 'signOff') stopped = true;
+      }),
+      stopAsked: () => stopped,
+      restart: vi.fn(async () => {
+        calls.push('restart');
+        if (stopDuring === 'restart') stopped = true;
+        return outcome;
+      }),
+      carryOn: vi.fn(async (reason: string) => {
+        calls.push(`carryOn: ${reason}`);
+      }),
+    };
+  }
+
+  it('signs off, then restarts, and goes no further once a restart is coming', async () => {
+    const handoff = steps({ restarting: true });
+    await handOff(handoff);
+    expect(handoff.calls).toEqual(['signOff', 'restart']);
+  });
+
+  it('carries on with the running build, giving the reason, when no restart comes', async () => {
+    const handoff = steps({ restarting: false, reason: 'launchd did not restart local.promptd.node within 5s of being asked' });
+    await handOff(handoff);
+    expect(handoff.calls).toEqual([
+      'signOff',
+      'restart',
+      'carryOn: launchd did not restart local.promptd.node within 5s of being asked',
+    ]);
+  });
+
+  it('stops for good on a signal during the sign-off, without restarting', async () => {
+    const handoff = steps({ restarting: false, reason: 'unused' }, { stopDuring: 'signOff' });
+    await handOff(handoff);
+    expect(handoff.calls).toEqual(['signOff']);
+  });
+
+  it('stops for good on a signal during the wait for the restart, rather than carrying on', async () => {
+    const handoff = steps({ restarting: false, reason: 'launchd did not restart' }, { stopDuring: 'restart' });
+    await handOff(handoff);
+    expect(handoff.carryOn).not.toHaveBeenCalled();
   });
 });
 

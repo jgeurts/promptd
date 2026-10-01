@@ -55,7 +55,6 @@ export function kickstartArgs(label: string, uid: number): string[] {
 export const RESTART_WAIT_MS = 5000;
 
 export interface RestartOptions {
-  log?: (line: string) => void;
   env?: NodeJS.ProcessEnv;
   ppid?: number;
   uid?: number;
@@ -65,32 +64,58 @@ export interface RestartOptions {
   waitMs?: number;
 }
 
+/** Whether the process is on its way out to the new build, and why not when it stays. */
+export type RestartOutcome = { restarting: true } | { restarting: false; reason: string };
+
 /**
- * Restarts this process into the build now on disk. Exiting would do where
- * launchd's KeepAlive starts the job again, but on some Macs macOS never does,
- * so under launchd this asks launchd to restart the job outright, and exits
- * only when that fails or no restart comes.
+ * Restarts this process into the build now on disk by asking launchd to restart
+ * the job. When launchctl fails or no restart comes, the process keeps running
+ * and the reason comes back: exiting would leave the Mac without promptd where
+ * macOS never starts it by itself. Outside launchd it exits, but callers check
+ * underLaunchd first and keep running there.
  */
 export async function restartService({
-  log = (line) => console.log(line),
   env = process.env,
   ppid = process.ppid,
   uid = process.getuid?.() ?? 0,
   launchctl = (args) => execFileAsync('/bin/launchctl', args, { timeout: 10_000 }),
   exit = (code) => process.exit(code),
   waitMs = RESTART_WAIT_MS,
-}: RestartOptions = {}): Promise<void> {
+}: RestartOptions = {}): Promise<RestartOutcome> {
   const label = env.XPC_SERVICE_NAME;
-  if (label && underLaunchd(env, ppid)) {
-    try {
-      await launchctl(kickstartArgs(label, uid));
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-      log(`launchd did not restart ${label}; exiting for it to start the new build`);
-    } catch (err) {
-      log(`launchctl could not restart ${label}: ${(err as Error).message}; exiting for launchd to start the new build`);
-    }
+  if (!label || !underLaunchd(env, ppid)) {
+    exit(0);
+    return { restarting: true };
   }
-  exit(0);
+  try {
+    await launchctl(kickstartArgs(label, uid));
+  } catch (err) {
+    return { restarting: false, reason: `launchctl could not restart ${label}: ${(err as Error).message}` };
+  }
+  await new Promise((resolve) => setTimeout(resolve, waitMs));
+  return { restarting: false, reason: `launchd did not restart ${label} within ${waitMs / 1000}s of being asked` };
+}
+
+export interface Handoff {
+  /** Saves state and signs off, so the new process starts from where this one left off. */
+  signOff: () => Promise<void>;
+  /** Whether a signal asked the process to stop for good, whose handler then exits. */
+  stopAsked: () => boolean;
+  restart: () => Promise<RestartOutcome>;
+  /** Undoes the sign-off and carries on with the build that is running. */
+  carryOn: (reason: string) => Promise<void>;
+}
+
+/**
+ * Hands the process over to the new build. A handoff that fails leaves this
+ * process running, since nothing else may start promptd on this Mac.
+ */
+export async function handOff({ signOff, stopAsked, restart, carryOn }: Handoff): Promise<void> {
+  await signOff();
+  if (stopAsked()) return;
+  const outcome = await restart();
+  if (outcome.restarting || stopAsked()) return;
+  await carryOn(outcome.reason);
 }
 
 async function github<T>(route: string): Promise<T> {
