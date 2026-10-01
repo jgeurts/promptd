@@ -1,5 +1,5 @@
 import { parseScheduledAt } from './executions.js';
-import { effectiveJobSettings, readFlagOverride, readTextOverride, readUsageDelayOverride } from './jobDefaults.js';
+import { effectiveJobSettings, parsePrePromptCommands, readFlagOverride, readTextOverride, readUsageDelayOverride } from './jobDefaults.js';
 import { MAX_NAME_LENGTH, nameFromPrompt } from './naming.js';
 import { EFFORT_LEVELS, isEffortLevel, isTimeZone, validateCronExpression } from './schedule.js';
 import type { CronInput, ExecutionInput, JobDefaults, JobSettingOverrides, JobSettings } from './types.js';
@@ -33,7 +33,17 @@ function readSettings(body: FormBody, errors: string[]): JobSettingOverrides {
     model: readTextOverride(body?.model),
     effort,
     usageDelay: readUsageDelayOverride(body?.usageDelay),
+    prePromptCommands: readCommands(body?.prePromptCommands, errors),
   };
+}
+
+/** Null or missing follows the defaults; a list, empty or not, is the job's own. */
+function readCommands(input: unknown, errors: string[]): string[] | null {
+  if (input === null || input === undefined) return null;
+  const parsed = parsePrePromptCommands(input);
+  if ('commands' in parsed) return parsed.commands;
+  errors.push(`Commands before the prompt ${parsed.error}.`);
+  return null;
 }
 
 /**

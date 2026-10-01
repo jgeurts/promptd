@@ -21,6 +21,16 @@ describe('node config', () => {
     expect(patchNodeConfig(config, { jobDefaults: null })).toEqual({});
   });
 
+  it('keeps a node\'s empty list of commands as its own, apart from following the cluster\'s', () => {
+    const cluster = { ...BUILT_IN_JOB_DEFAULTS, prePromptCommands: ['pnpm install'] };
+    expect(effectiveNodeConfig({}, 4, cluster).jobDefaults.prePromptCommands).toEqual(['pnpm install']);
+    const none = patchNodeConfig({}, { jobDefaults: { prePromptCommands: [] } });
+    expect(readNodeConfig(JSON.stringify(none))).toEqual({ jobDefaults: { prePromptCommands: [] } });
+    expect(effectiveNodeConfig(none, 4, cluster).jobDefaults.prePromptCommands).toEqual([]);
+    expect(patchNodeConfig(none, { jobDefaults: { prePromptCommands: null } })).toEqual({});
+    expect(() => patchNodeConfig({}, { jobDefaults: { prePromptCommands: ['a\nb'] } })).toThrow(NodeConfigError);
+  });
+
   it('refuses a job default that is not one', () => {
     expect(() => patchNodeConfig({}, { jobDefaults: { useWorktree: 'yes' } })).toThrow(NodeConfigError);
     expect(() => patchNodeConfig({}, { jobDefaults: { effort: 'enormous' } })).toThrow(NodeConfigError);

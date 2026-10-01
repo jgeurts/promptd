@@ -80,6 +80,7 @@ describe('the work a node is sent', () => {
       model: null,
       effort: 'low',
       usageDelay: { session: null, weekly: null, fable: null, credits: false },
+      prePromptCommands: null,
       prompt: 'Tidy up.',
       isActive: true,
       nodeId: '',

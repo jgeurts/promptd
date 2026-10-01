@@ -42,6 +42,7 @@ function cronWithCounters(overrides: Partial<Cron> = {}): Cron {
     model: '',
     effort: '',
     usageDelay: { credits: false, fable: false, session: false, weekly: false },
+    prePromptCommands: null,
     prompt: 'hi',
     isActive: true,
     projectId: null,
