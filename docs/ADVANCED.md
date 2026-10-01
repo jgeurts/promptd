@@ -67,7 +67,7 @@ macOS starts per-user background processes with **launchd**. Run this once:
 ./scripts/register-app-mac-os.sh
 ```
 
-It finds your `node` and `claude`, runs `npm install` if `node_modules` is missing, writes both LaunchAgent plists with absolute paths, registers them, and waits until the hub answers and the node has connected before reporting success. An install registered before nodes existed gets its node agent from the hub itself, the first time it boots on the new code. Output ends with the commands for restarting, stopping and removing it.
+It finds your `node` and `claude`, runs `npm install` if `node_modules` is missing, writes both LaunchAgent plists with absolute paths, registers them, and waits until the hub answers and the node has connected before reporting success. It then stops each new agent once and waits for launchd to start it again by itself, which is what brings promptd back after a restart or login; on a Mac where it does not, it starts the agent by hand and fails, naming the setting to turn on: **Allow in the Background** under System Settings → General → Login Items & Extensions. An install registered before nodes existed gets its node agent from the hub itself, the first time it boots on the new code. Output ends with the commands for restarting, stopping and removing it.
 
 Overrides, if you need them:
 
@@ -447,7 +447,7 @@ The checker refuses rather than guesses, and says why in the server log and in `
 
 promptd installed with `install.sh` is one file, `~/.local/bin/promptd`, with no checkout to pull. The hub updates from GitHub releases and its nodes update from the hub, so the hub is the only machine that talks to GitHub. Every commit on `main` is published as a `build-<commit>` GitHub release, and a binary hub checks for the latest one every hour instead of fetching `origin/main`.
 
-A hub restart interrupts no run: runs belong to the nodes, which keep going while the hub is down and catch it up afterwards. So a binary hub holds nothing. It downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and exits for launchd to start it again, a gap of a few seconds.
+A hub restart interrupts no run: runs belong to the nodes, which keep going while the hub is down and catch it up afterwards. So a binary hub holds nothing. It downloads the build for this Mac, checks it against the release's `sha256sums.txt`, puts it in place of its own file, and has launchd restart it with `launchctl kickstart -k`, a gap of a few seconds. It asks rather than exiting for `KeepAlive` to bring it back, since on some Macs launchd never starts promptd by itself; if no restart comes within a few seconds, it exits as a last resort. A node restarts into its new build the same way.
 
 Each node follows the hub: the hub sends its build with every node's work, and a node on a different one downloads it from the hub's `/api/node/build` with its node token while its runs carry on. It keeps the download only if it is the build the hub named and matches the sha256 the hub sent, then restarts into it the moment nothing is running. A node still busy an hour later holds new runs until the running ones finish, and gives up after four hours. Outside launchd, a new build is left on disk for the next restart, and the log says so.
 

@@ -6,7 +6,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { GIVE_UP_AFTER_MS, HOLD_AFTER_MS, HubHasNoBuildError, installHubBuild, nextUpdateStep, underLaunchd, versionOnDisk } from './binaryUpdate.js';
+import {
+  GIVE_UP_AFTER_MS,
+  HOLD_AFTER_MS,
+  HubHasNoBuildError,
+  installHubBuild,
+  nextUpdateStep,
+  restartService,
+  underLaunchd,
+  versionOnDisk,
+} from './binaryUpdate.js';
 import { bus } from './events.js';
 import { NODE_HOME, NODE_LOGS_DIR, NODE_TOKEN_FILE } from './paths.js';
 import { cronService } from './cronService.js';
@@ -104,6 +113,10 @@ let download: Download | null = null;
 /** Builds the hub runs but cannot serve, which are not asked for again. */
 const unservedBuilds = new Set<string>();
 let lastError: string | null = null;
+/** Saving state and signing off from the hub, which happens once however the node is stopped. */
+let leaving: Promise<void> | null = null;
+/** A signal asked the node to stop, so an update under way exits rather than restarting. */
+let stopAsked = false;
 
 bus.on('event', (event) => {
   if (event.type === 'run:started' && event.logFile) {
@@ -182,8 +195,24 @@ async function readToken(): Promise<{ token: string; paired: boolean }> {
   );
 }
 
+/** Requests on their way to the hub, which signing off waits for so that none lands after it. */
+const pending = new Set<Promise<unknown>>();
+
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
+  const sent = send<T>(method, route, body);
+  pending.add(sent);
+  try {
+    return await sent;
+  } finally {
+    pending.delete(sent);
+  }
+}
+
+async function send<T>(method: string, route: string, body?: unknown): Promise<T> {
   const { token, paired } = await readToken();
+  // Anything sent after signing off would sign the node back in, and the hub would
+  // turn its next process away as a second one syncing under the same name.
+  if (leaving && route !== '/api/node/leave') throw new Error('the node has signed off from the hub');
   const res = await fetch(`${HUB_URL}${route}`, {
     method,
     headers: {
@@ -529,8 +558,10 @@ async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promi
     }
     if (updateDrainTimer) clearInterval(updateDrainTimer);
     updateDrainTimer = null;
-    console.log(`[update] nothing running; exiting for launchd to start build ${update.version}`);
-    await shutdown('update');
+    console.log(`[update] nothing running; restarting into build ${update.version}`);
+    await leave('update');
+    if (stopAsked) return;
+    await restartService({ log: (line) => console.log(`[update] ${line}`) });
   } else if (step === 'hold') {
     update.holding = true;
     console.log(`[update] ${running} run(s) still going after ${HOLD_AFTER_MS / 3600000}h; holding new runs until they finish`);
@@ -541,6 +572,7 @@ async function stepTowardsRestart(update: NonNullable<typeof updatingTo>): Promi
 }
 
 async function cycle(): Promise<void> {
+  if (leaving) return;
   try {
     await report();
     await fetchWork();
@@ -549,6 +581,7 @@ async function cycle(): Promise<void> {
     if (lastError) console.log(`[node] reconnected to ${HUB_URL}`);
     lastError = null;
   } catch (err) {
+    if (leaving) return;
     const failure = err as SyncFailure;
     const message = failure.name === 'TimeoutError' ? 'request timed out' : failure.cause?.code ?? failure.message;
     if (message !== lastError) console.error(`[node] cannot sync with ${HUB_URL}: ${message}`);
@@ -567,10 +600,21 @@ function readCommit(): Promise<string | null> {
   });
 }
 
+function leave(why: string): Promise<void> {
+  leaving ??= (async () => {
+    console.log(`[node] ${why}; saving state`);
+    await flushJobCache().catch((err) => console.error(`[node] could not save state: ${(err as Error).message}`));
+    // A report already on its way would land after the sign-off and undo it.
+    await Promise.allSettled(pending);
+    await request('POST', '/api/node/leave', {}).catch(() => {});
+  })();
+  return leaving;
+}
+
+/** Stops for good. The SIGTERM an update's restart brings finds the state already saved, and exits straight away. */
 async function shutdown(signal: string): Promise<void> {
-  console.log(`[node] ${signal}; saving state`);
-  await flushJobCache().catch((err) => console.error(`[node] could not save state: ${(err as Error).message}`));
-  await request('POST', '/api/node/leave', {}).catch(() => {});
+  stopAsked = true;
+  await leave(signal);
   process.exit(0);
 }
 
