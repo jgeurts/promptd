@@ -62,6 +62,13 @@ export interface AccountLimit extends UsageWindow {
 export interface UsageSummary {
   windows: AccountLimit[];
   status: AccountStatus;
+  /**
+   * Session and the tightest other window, and the tightest alone, by key: what
+   * the chip header drew. Nothing here reads them; a tab still open on that
+   * header does until it reloads, and fails without them.
+   */
+  headline: string[];
+  tightest: string | null;
   /** The worst severity the API gives any of the windows. */
   severity: UsageWindow['severity'];
   checkedAt: string | null;
@@ -181,6 +188,16 @@ export function tightestWindow(windows: UsageWindow[]): UsageWindow | null {
   return [...windows].sort(tighter)[0] ?? null;
 }
 
+/**
+ * Session, because it is the one that moves by the hour, and whichever other
+ * window is tightest, because that is the one that stops work for days.
+ */
+export function headlineWindows(windows: UsageWindow[]): UsageWindow[] {
+  const session = windows.find((window) => kindOf(window) === 'session') ?? null;
+  const other = tightestWindow(windows.filter((window) => window !== session));
+  return [session, other].filter((window): window is UsageWindow => window !== null);
+}
+
 /** A limit by what it is, in the words Claude's own usage page uses, whatever label the reading came with. */
 export function limitName(window: UsageWindow): string {
   switch (kindOf(window)) {
@@ -241,10 +258,13 @@ function usageSummary(reading: UsageReading | null, thresholds: UsageThresholds[
     const line = waitsAt(window, thresholds);
     return { ...window, name: limitName(window), status: limitStatus(window, line), waitsAt: line };
   });
+  const tightest = tightestWindow(windows);
   return {
     windows,
     status: accountStatus(windows),
-    severity: tightestWindow(windows)?.severity ?? 'normal',
+    headline: headlineWindows(windows).map((window) => window.key),
+    tightest: tightest?.key ?? null,
+    severity: tightest?.severity ?? 'normal',
     checkedAt: reading?.checkedAt ?? null,
     stale: Boolean(reading?.stale),
     reason: reading?.reason ?? null,

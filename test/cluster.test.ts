@@ -5,6 +5,7 @@ import {
   accountSummaries,
   clusterLimit,
   clusterSummary,
+  headlineWindows,
   limitName,
   limitStatus,
   machineExceptions,
@@ -84,6 +85,13 @@ describe('tightestWindow', () => {
   });
 });
 
+describe('headlineWindows', () => {
+  it('is Session and the tightest other window, in that order, for a tab still on the chip header', () => {
+    const windows = [usageWindow('weekly_all', 40), usageWindow('session', 95), usageWindow('weekly_scoped', 70, 'normal', 'Fable')];
+    expect(headlineWindows(windows).map((window) => window.label)).toEqual(['Session', 'Weekly · Fable']);
+  });
+});
+
 describe('accountSummaries', () => {
   it('gives two nodes on one account one entry, named by the email', () => {
     const accounts = accountSummaries([
@@ -122,6 +130,8 @@ describe('accountSummaries', () => {
     ]);
     expect(account?.severity).toBe('warning');
     expect(account?.status).toBe('near');
+    expect(account?.headline).toEqual(['session:0', 'weekly_all:0']);
+    expect(account?.tightest).toBe('weekly_all:0');
     expect(account?.windows.map((window) => [window.name, window.status])).toEqual([
       ['5-hour session', 'ok'],
       ['Weekly, all models', 'near'],
