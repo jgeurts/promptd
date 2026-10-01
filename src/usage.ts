@@ -1,9 +1,13 @@
 import fsp from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { accountMonitor } from './account.js';
+import type { IdentityRead } from './account.js';
+import { claudeConfig } from './claudeConfig.js';
+import type { ClaudeConfigLocation } from './claudeConfig.js';
 import { ROOT } from './paths.js';
 import type {
+  ClaudeAccount,
   UsageBlocker,
   UsageDelay,
   UsageDelayCategoryId,
@@ -64,13 +68,15 @@ interface ApiUsageResponse {
   spend?: ApiSpend | null;
 }
 
-type UsageLookup =
+export type UsageLookup =
   | { ok: true; reason: null; windows: UsageWindow[] }
   | { ok: false; reason: string | null; windows?: UsageWindow[]; retryMs?: number };
 
 interface KeptReading {
   windows: UsageWindow[];
   checkedAt: string;
+  /** The account signed in when the login that fetched these was read; null when the config named none. */
+  accountId: string | null;
 }
 
 /**
@@ -83,9 +89,6 @@ interface KeptReading {
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 // OAuth tokens are only accepted on this endpoint with the beta opt-in header.
 const OAUTH_BETA = 'oauth-2025-04-20';
-
-const KEYCHAIN_SERVICE = 'Claude Code-credentials';
-const CREDENTIALS_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
 
 // Usage moves slowly and every open tab polls /api/health, so the endpoint is
 // asked once per window at most and every request is answered from the cache.
@@ -123,30 +126,46 @@ function humanize(kind: unknown): string {
   return text ? text[0]!.toUpperCase() + text.slice(1) : 'Limit';
 }
 
-/** The CLI keeps its credentials in the login keychain on macOS. */
-function keychainCredentials(): Promise<string | null> {
+/** The CLI keeps its credentials in the login keychain on macOS, under a service named for its config directory. */
+function keychainCredentials(service: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       'security',
-      ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+      ['find-generic-password', '-s', service, '-w'],
       { timeout: 10000 },
       (err, stdout) => resolve(err ? null : String(stdout).trim() || null),
     );
   });
 }
 
+export interface TokenSources {
+  location?: ClaudeConfigLocation;
+  keychain?: (service: string) => Promise<string | null>;
+  platform?: NodeJS.Platform;
+}
+
 /**
  * The access token the CLI is using, or null when it is not signed in.
+ *
+ * Read from the same config directory the node's account is read from, and
+ * only from there: with CLAUDE_CONFIG_DIR set, the default directory's login is
+ * another account's, and its numbers would be drawn under this one's name.
  *
  * Deliberately read fresh each time rather than held in memory: the CLI rotates
  * this token, and a copy we kept would go stale. It is never logged, never
  * cached, and never leaves this module.
  */
-async function accessToken(): Promise<{ token: string | null; reason: string | null }> {
+export async function accessToken({
+  location = claudeConfig(),
+  keychain = keychainCredentials,
+  platform = process.platform,
+}: TokenSources = {}): Promise<{ token: string | null; reason: string | null }> {
   let raw: string | null = null;
-  if (process.platform === 'darwin') raw = await keychainCredentials();
-  if (!raw) raw = await fsp.readFile(CREDENTIALS_FILE, 'utf8').catch(() => null);
-  if (!raw) return { token: null, reason: 'the Claude CLI is not signed in on this machine' };
+  if (platform === 'darwin') raw = await keychain(location.keychainService);
+  if (!raw) raw = await fsp.readFile(location.credentialsFile, 'utf8').catch(() => null);
+  if (!raw) {
+    return { token: null, reason: location.custom ? `the Claude CLI is not signed in for ${location.dir}` : 'the Claude CLI is not signed in on this machine' };
+  }
 
   let parsed: StoredCredentials | null;
   try {
@@ -251,7 +270,7 @@ function readSpend(spend: ApiSpend | null | undefined): UsageWindow | null {
  * the `kind` field, so the key — which has always started with the kind — is the
  * fallback rather than letting a restored cache match nothing.
  */
-function kindOf(window: UsageWindow | null | undefined): string | undefined {
+export function kindOf(window: UsageWindow | null | undefined): string | undefined {
   return window?.kind ?? String(window?.key ?? '').split(':')[0];
 }
 
@@ -432,40 +451,75 @@ async function fetchUsage(): Promise<UsageLookup> {
 }
 
 /** Writes the last good reading so a restart does not start from nothing. */
-async function persist(reading: KeptReading): Promise<void> {
+async function persist(file: string, reading: KeptReading): Promise<void> {
   try {
-    await fsp.mkdir(path.dirname(CACHE_FILE), { recursive: true });
-    const tmp = `${CACHE_FILE}.${process.pid}.tmp`;
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
     await fsp.writeFile(tmp, `${JSON.stringify(reading, null, 2)}\n`, 'utf8');
-    await fsp.rename(tmp, CACHE_FILE);
+    await fsp.rename(tmp, file);
   } catch {
     // A cache that cannot be written is not worth failing a health check over.
   }
 }
 
-/** The kept reading, or null when there is none, it is unreadable, or it is stale. */
-async function readCache(): Promise<KeptReading | null> {
+/**
+ * The kept reading, or null when there is none, it is unreadable, or it is
+ * stale. One written before readings named their account has no account id,
+ * so it matches no signed-in account and is fetched afresh.
+ */
+async function readCache(file: string): Promise<KeptReading | null> {
   try {
-    const kept = JSON.parse(await fsp.readFile(CACHE_FILE, 'utf8')) as Partial<KeptReading> | null;
+    const kept = JSON.parse(await fsp.readFile(file, 'utf8')) as Partial<KeptReading> | null;
     const at = Date.parse(kept?.checkedAt as string);
     if (!Array.isArray(kept?.windows) || !kept.windows.length) return null;
     if (!Number.isFinite(at) || Date.now() - at > CACHE_MAX_AGE_MS) return null;
-    return { windows: kept.windows, checkedAt: new Date(at).toISOString() };
+    return { windows: kept.windows, checkedAt: new Date(at).toISOString(), accountId: typeof kept.accountId === 'string' ? kept.accountId : null };
   } catch {
     return null;
   }
 }
 
-class UsageMonitor {
+/**
+ * A reading goes out beside an account only when it is that account's. The
+ * two are read at different moments, so across a sign-in they can disagree;
+ * then the reading goes out empty rather than under the wrong name.
+ */
+export function readingFor(account: ClaudeAccount | null, reading: UsageReading): UsageReading {
+  const accountId = account?.id ?? null;
+  if ((reading.accountId ?? null) === accountId) return reading;
+  return { ok: false, reason: 'reading usage for the account now signed in', windows: [], checkedAt: null, stale: false, accountId };
+}
+
+export interface UsageMonitorOptions {
+  lookup?: () => Promise<UsageLookup>;
+  /** The account signed in now, as last read. */
+  account?: () => Promise<ClaudeAccount | null>;
+  /** The config read afresh, on both sides of a lookup, to prove whose login the lookup used. */
+  identity?: () => Promise<IdentityRead>;
+  cacheFile?: string;
+}
+
+export class UsageMonitor {
   public lastGood: KeptReading | null;
   public reason: string | null;
   public nextFetchAt: number;
   public failures: number;
   public inFlight: Promise<void> | null;
   public restoring: Promise<void> | null;
+  public accountId: string | null | undefined;
+  public unverified: boolean;
+  private lookup: () => Promise<UsageLookup>;
+  private account: () => Promise<ClaudeAccount | null>;
+  private identity: () => Promise<IdentityRead>;
+  private cacheFile: string;
 
-  public constructor() {
-    /** The last reading that carried windows, however old it now is. */
+  public constructor({
+    lookup = fetchUsage,
+    account = () => accountMonitor.state(),
+    identity = () => accountMonitor.reread(),
+    cacheFile = CACHE_FILE,
+  }: UsageMonitorOptions = {}) {
+    /** The last reading that carried windows, however old it now is, and whose account it is. */
     this.lastGood = null;
     /** Why the most recent refresh failed, or null when it succeeded. */
     this.reason = null;
@@ -477,6 +531,14 @@ class UsageMonitor {
     this.inFlight = null;
     /** The disk read, done once. @type {Promise|null} */
     this.restoring = null;
+    /** The account signed in now, which the held reading must belong to; undefined until first read. */
+    this.accountId = undefined;
+    /** The last refresh could not prove whose login it used, so the held reading is last-known. */
+    this.unverified = false;
+    this.lookup = lookup;
+    this.account = account;
+    this.identity = identity;
+    this.cacheFile = cacheFile;
   }
 
   /**
@@ -493,8 +555,25 @@ class UsageMonitor {
    */
   public async state(): Promise<UsageReading> {
     await this.restore();
+    this.follow((await this.account())?.id ?? null);
     if (Date.now() >= this.nextFetchAt) this.refresh();
     return this.reading();
+  }
+
+  /**
+   * Keeps the held reading to the account signed in now. Someone else's
+   * numbers are dropped, never relabelled, and the new account is asked for its
+   * own at once rather than a refresh window later.
+   */
+  public follow(accountId: string | null): void {
+    if (accountId === this.accountId) return;
+    this.accountId = accountId;
+    if (this.lastGood?.accountId === accountId) return;
+    this.lastGood = null;
+    this.reason = null;
+    this.failures = 0;
+    this.unverified = false;
+    this.nextFetchAt = 0;
   }
 
   /**
@@ -521,8 +600,10 @@ class UsageMonitor {
       windows,
       checkedAt: this.lastGood?.checkedAt ?? null,
       // Older than a refresh window means these are last-known numbers, either
-      // because a refresh failed or because they came off disk at startup.
-      stale: windows.length > 0 && age > TTL_MS,
+      // because a refresh failed or because they came off disk at startup. So
+      // are they when the last refresh could not tell whose login it would use.
+      stale: windows.length > 0 && (age > TTL_MS || this.unverified),
+      accountId: this.lastGood ? this.lastGood.accountId : this.accountId ?? null,
     };
   }
 
@@ -532,11 +613,28 @@ class UsageMonitor {
     // Claim the window before the request goes out, so a slow one cannot let
     // the next poll start a second.
     this.nextFetchAt = Date.now() + TTL_MS;
-    this.inFlight = fetchUsage()
-      .then((result) => this.record(result))
-      // fetchUsage answers rather than throws, so this is only ever a bug here;
+    this.inFlight = (async () => {
+      // A reading is bound to an account only when the config itself said
+      // whose login it is, on both sides of the lookup: read before, it names
+      // the account; read again once the login has been used, it proves the
+      // login did not change hands in between.
+      const before = await this.identity();
+      if (!before.verified) return this.unverifiable();
+      const accountId = before.account?.id ?? null;
+      this.follow(accountId);
+      const result = await this.lookup();
+      const after = await this.identity();
+      if (!after.verified) return this.unverifiable();
+      // Signed in as someone else while the login was read or the request was
+      // out: these may be either account's numbers, so they are nobody's, and
+      // the account signed in now is asked for its own.
+      if ((after.account?.id ?? null) !== accountId) return this.follow(after.account?.id ?? null);
+      if (this.accountId !== accountId) return;
+      this.record(result, accountId);
+    })()
+      // The lookup answers rather than throws, so this is only ever a bug here;
       // it still must not surface as an unhandled rejection or blank the meters.
-      .catch((err: Error) => this.record({ ok: false, reason: `usage lookup failed: ${err.message}` }))
+      .catch((err: Error) => this.record({ ok: false, reason: `usage lookup failed: ${err.message}` }, this.accountId ?? null))
       .finally(() => {
         this.inFlight = null;
       });
@@ -548,28 +646,44 @@ class UsageMonitor {
    * windows — it only records why they stopped moving and pushes the next
    * attempt further out.
    */
-  public record(result: UsageLookup): void {
+  public record(result: UsageLookup, accountId: string | null): void {
     if (result.ok) {
-      this.lastGood = { windows: result.windows, checkedAt: new Date().toISOString() };
+      this.lastGood = { windows: result.windows, checkedAt: new Date().toISOString(), accountId };
       this.reason = null;
       this.failures = 0;
+      this.unverified = false;
       this.nextFetchAt = Date.now() + TTL_MS;
-      void persist(this.lastGood);
+      void persist(this.cacheFile, this.lastGood);
       return;
     }
-    this.reason = result.reason;
+    this.failed(result.reason, result.retryMs);
+  }
+
+  private failed(reason: string | null, retryMs = 0): void {
+    this.reason = reason;
     this.failures += 1;
     const backoff = Math.min(ERROR_BACKOFF_MS * 2 ** (this.failures - 1), MAX_BACKOFF_MS);
-    this.nextFetchAt = Date.now() + Math.max(backoff, result.retryMs ?? 0);
+    this.nextFetchAt = Date.now() + Math.max(backoff, retryMs);
+  }
+
+  /**
+   * The config could not be read, so nothing proves whose login a lookup would
+   * use. No new reading is published; the last verified one stays, marked
+   * stale, and the next attempt backs off like any failed lookup.
+   */
+  private unverifiable(): void {
+    this.unverified = true;
+    this.failed('could not read which Claude account is signed in');
   }
 
   /**
    * The reading kept from a previous run, read once. Its age also sets the next
-   * fetch, so a server that restarts repeatedly does not ask on every boot.
+   * fetch, so a server that restarts repeatedly does not ask on every boot. It
+   * is only served once `follow` has checked it belongs to the account signed in.
    */
   public restore(): Promise<void> {
     if (this.restoring) return this.restoring;
-    this.restoring = readCache().then((kept) => {
+    this.restoring = readCache(this.cacheFile).then((kept) => {
       if (!kept || this.lastGood) return;
       this.lastGood = kept;
       this.nextFetchAt = Date.parse(kept.checkedAt) + TTL_MS;

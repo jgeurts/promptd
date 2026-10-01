@@ -2,8 +2,6 @@ const view = document.getElementById('view');
 const connEl = document.getElementById('conn');
 const toastsEl = document.getElementById('toasts');
 const updateBadgeEl = document.getElementById('update-badge');
-const usageEl = document.getElementById('usage');
-const systemEl = document.getElementById('system');
 const brandNameEl = document.getElementById('brand-name');
 
 let logStream = null; // EventSource tailing one log file
@@ -2930,6 +2928,7 @@ async function renderNode(id) {
         }),
         ...(actions.length ? [el('span', { class: 'preset-sep' }), ...actions] : []),
       ]),
+      readOnlyField('Claude account', current.account?.email ?? 'unknown: signed out, or on a build that does not say'),
       readOnlyField('Version', versionText(current, current.hubCommit)),
       readOnlyField('Started', current.startedAt ? `${fmtDateTime(current.startedAt)} (${fmtRelative(current.startedAt)})` : 'unknown'),
       readOnlyField('Machine', [current.hostname, current.platform, current.processors ? `${current.processors} processors` : null].filter(Boolean).join(' · ')),
@@ -2947,6 +2946,7 @@ async function renderNode(id) {
       ]),
     ]),
     el('div', { class: 'card' }, [el('h2', { text: 'Node' }), statusBody]),
+    machineCard(node.id, node.system),
     el('div', { class: 'card' }, [el('h2', { text: 'Jobs' }), ...parts.limit, el('div', { class: 'card-divider' }), ...parts.queue]),
     el('div', { class: 'card' }, [
       el('h2', { text: 'Job defaults' }),
@@ -3304,6 +3304,7 @@ async function route() {
   closeLogStream();
   clearTimeout(logsState.searchTimer);
   repaintQueue = null;
+  nodeMachine = null;
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);
   clearTimeout(updateWatchTimer);
@@ -3349,12 +3350,15 @@ function connectEvents() {
   events.addEventListener('hello', () => {
     setConnState();
     checkHealth();
-    // Also the reconnect path: a page that dropped missed samples, and this is
-    // what fills the chart back in.
-    loadSystem();
+    // Also the reconnect path: a node page that dropped samples fills its charts back in.
+    nodeMachine?.reload();
   });
 
-  events.addEventListener('system:sample', (event) => pushSystemSample(JSON.parse(event.data)));
+  // Every node's samples arrive; only the open node page wants them, and only its own.
+  events.addEventListener('system:sample', (event) => {
+    const payload = JSON.parse(event.data);
+    if (nodeMachine && payload.nodeId === nodeMachine.id) nodeMachine.push(payload);
+  });
 
   events.addEventListener('notification:new', (event) => {
     const { notification, counts } = JSON.parse(event.data);
@@ -4084,92 +4088,241 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeDrawer();
 });
 
-// ---- running jobs -----------------------------------------------------
+// ---- cluster header ---------------------------------------------------
 
 /**
- * The leftmost meter: how much of the concurrent job limit is in use right now.
+ * The header's middle: the nodes, the jobs running across them, one chip per
+ * Claude account, and a machine reading only when one is out of line. Every
+ * chip is a button onto the one panel that has the rest.
  *
- * It reads like the machine meters next to it on purpose — the limit is a
- * resource the same way the CPU is, and a header that says "4/16" answers the
- * question people open the page to ask before any of the lists do.
+ * All of it comes from the cluster summary /api/health carries, so what is
+ * worth a chip is decided on the server, where it is tested, not here.
  */
-const jobsEl = document.getElementById('jobs');
-let jobsNodes = null; // built once, written to in place
+const clusterEl = document.getElementById('cluster');
+const clusterPanelEl = document.getElementById('cluster-panel');
+const clusterPanelBodyEl = document.getElementById('cluster-panel-body');
+const clusterPanelFootEl = document.getElementById('cluster-panel-foot');
+const clusterPanelCloseEl = document.getElementById('cluster-panel-close');
+let clusterState = null; // the summary from the last health poll
+let jobsState = null; // running and queued counts, from health polls and queue events
 let jobsRefreshTimer = null;
+let panelOpener = null; // the chip that opened the panel, which focus returns to
+let panelTimer = null; // re-reads the panel while it is open
+let panelPaint = 0; // the newest panel request; an older one landing late is dropped
 
 /**
- * What the bar fills against. A limit of 0 is unlimited, which no bar can draw,
- * so it fills against the processor count the limit would have defaulted to —
- * the same number the Settings page calls the default.
+ * What the Limit figure means when it is 0: no limit, which the panel spells
+ * out against the processor count it would otherwise have defaulted to.
  */
 function jobsScale({ limit, defaultLimit }) {
   const ceiling = Number(limit) > 0 ? Number(limit) : Number(defaultLimit);
   return Number.isFinite(ceiling) && ceiling > 0 ? ceiling : 1;
 }
 
-/** One "label   number" line in the panel under the meter. */
-function jobsPopRow(label) {
-  const value = el('span', { class: 'jobs-pop-value', text: '0' });
-  return { row: el('div', { class: 'jobs-pop-row' }, [el('span', { text: label }), value]), value };
+/** "41m", "2h", "3d": the one largest unit, for text that has to stay short. */
+function fmtSpanShort(ms) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  if (minutes < 60) return `${Math.max(1, minutes)}m`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `${hours}h` : `${Math.round(hours / 24)}d`;
 }
 
-function buildJobsMeter() {
-  const value = el('span', { class: 'usage-pct', text: '0' });
-  const fill = el('div', { class: 'usage-fill' });
-  // A panel rather than the text tooltip the other meters use: the rule under
-  // Usage Delay separates what is happening now from what is merely armed, and
-  // a tooltip made of one string cannot draw a line.
-  const running = jobsPopRow('Running');
-  const limit = jobsPopRow('Limit');
-  const queued = jobsPopRow('Queued');
-  const usageDelayed = jobsPopRow('Usage Delay');
-  const crons = jobsPopRow('Crons Armed');
-  const executions = jobsPopRow('OTE Scheduled');
-  const pop = el('div', { class: 'jobs-pop' }, [
-    running.row,
-    limit.row,
-    queued.row,
-    usageDelayed.row,
-    el('div', { class: 'jobs-pop-rule' }),
-    crons.row,
-    executions.row,
-  ]);
-  const root = el('div', { class: 'usage-meter jobs-meter' }, [
-    el('div', { class: 'usage-head' }, [el('span', { text: 'Running Jobs' }), value]),
-    el('div', { class: 'usage-track' }, [fill]),
-    pop,
-  ]);
-  jobsEl.replaceChildren(root);
-  jobsNodes = { root, value, fill, running, limit, queued, usageDelayed, crons, executions };
-  return jobsNodes;
+/** "just now", "3 min ago", or the two-unit form past the hour. */
+function fmtAgo(iso) {
+  const minutes = Math.floor((Date.now() - Date.parse(iso)) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  return fmtRelative(iso);
+}
+
+/** A reset time written out: "Thu, Oct 2, 3:00 PM (in 2d 4h)". */
+function fmtReset(iso) {
+  const at = new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return `${at} (${fmtRelative(iso)})`;
+}
+
+function localPart(email) {
+  return String(email ?? '').split('@')[0];
 }
 
 /**
- * Draws one reading. `limit` 0 means unlimited: the count stands on its own
- * rather than being shown over a ceiling that does not exist.
+ * The glyph a warning carries, plus the word for a screen reader, so severity
+ * is never told by colour alone.
+ */
+function severityMark(severity) {
+  if (severity !== 'warning' && severity !== 'critical') return [];
+  return [el('span', { class: 'glyph', 'aria-hidden': 'true', text: '▲' }), el('span', { class: 'sr-only', text: `${severity}: ` })];
+}
+
+/** Items with a separator between them, as children for `el`. */
+function joined(items, separator = ' · ') {
+  return items.flatMap((item, index) => (index ? [separator, item] : [item]));
+}
+
+/** The summary names an account's headline windows by key rather than repeating them. */
+function windowByKey(account, key) {
+  return account.windows.find((window) => window.key === key) ?? null;
+}
+
+/** "▲ Weekly · Fable 100% · resets 2h": a critical window says when it clears. */
+function windowText(window) {
+  const critical = window.severity === 'critical' && window.resetsAt;
+  return el('span', { class: `win ${window.severity}` }, [
+    ...severityMark(window.severity),
+    `${window.label} `,
+    el('span', { class: 'num', text: `${Math.round(window.usedPercent)}%` }),
+    critical ? ` · resets ${fmtSpanShort(Date.parse(window.resetsAt) - Date.now())}` : null,
+  ]);
+}
+
+function chip(key, children, className = '') {
+  return el(
+    'button',
+    {
+      type: 'button',
+      class: `chip ${className}`.trim(),
+      'data-chip': key,
+      'aria-haspopup': 'dialog',
+      'aria-controls': 'cluster-panel',
+      'aria-expanded': String(!clusterPanelEl.hidden),
+      onclick: () => toggleClusterPanel(key),
+    },
+    children,
+  );
+}
+
+function runningText() {
+  const running = Number(jobsState?.runningCount) || 0;
+  const limit = Number(jobsState?.limit) || 0;
+  return limit > 0 ? `${running}/${limit}` : String(running);
+}
+
+/** Shown with two or more nodes, or when the only one is down. */
+function nodesChip({ total, online, offline }) {
+  if (total === 1 && online === 1) return null;
+  const down = offline.length === 1 ? `${offline[0].name} offline` : offline.length ? `${offline.length} offline` : null;
+  const warn = Boolean(down) || total === 0;
+  return chip(
+    'nodes',
+    [...severityMark(warn ? 'warning' : 'normal'), el('span', { class: 'chip-label', text: 'Nodes ' }), el('span', { class: 'num', text: `${online}/${total}` }), down ? ` · ${down}` : null],
+    warn ? 'warning' : '',
+  );
+}
+
+/**
+ * One account. The wide form is Session and the tightest other window; below
+ * 1160px the email shortens and only the tightest window stays. Both are in
+ * the button and the stylesheet picks one, so a resize needs no redraw.
+ */
+function usageChip({ key, full, short, labelled, usage }) {
+  const stale = usage.stale && usage.checkedAt;
+  const tightest = windowByKey(usage, usage.tightest);
+  return chip(
+    key,
+    [
+      el('span', { class: `chip-email${labelled ? ' chip-label' : ''}` }, [
+        el('span', { class: 'email-full', text: full }),
+        el('span', { class: 'email-short', text: short }),
+        labelled ? ' ·' : null,
+      ]),
+      el('span', { class: 'chip-wide' }, joined(usage.headline.map((headline) => windowByKey(usage, headline)).filter(Boolean).map(windowText))),
+      el('span', { class: 'chip-narrow' }, tightest ? [windowText(tightest)] : []),
+      stale ? el('span', { class: 'chip-stale', text: ` · read ${fmtSpanShort(Date.now() - Date.parse(usage.checkedAt))} ago` }) : null,
+    ],
+    `account${stale ? ' stale' : ''}`,
+  );
+}
+
+/**
+ * What goes in the header for usage: one entry per account, then one per node
+ * that reports usage without naming its account, typically on an older build.
+ * Those are never merged, since they may be on different accounts, and name
+ * their node once there is more than one to tell apart.
+ */
+function usageEntries({ accounts, unknownAccountUsage = [], nodes }) {
+  const several = nodes.total > 1;
+  return [
+    ...accounts
+      .filter((account) => account.windows.length)
+      .map((account) => ({ key: `account:${account.id}`, full: account.email, short: localPart(account.email), folded: `${localPart(account.email)}@…`, labelled: false, usage: account })),
+    ...unknownAccountUsage.map((entry) => {
+      const where = several ? ` (${entry.nodeName})` : '';
+      return { key: `unknown:${entry.nodeId}`, full: `Account unknown${where}`, short: `unknown${where}`, folded: `unknown${where}`, labelled: true, usage: entry };
+    }),
+  ];
+}
+
+/** Below 900px the usage chips fold into one button that names only those at warning or worse. */
+function usageSummaryChip(entries) {
+  const flagged = entries
+    .map((entry) => ({ entry, tightest: windowByKey(entry.usage, entry.usage.tightest) }))
+    .filter(({ entry, tightest }) => entry.usage.severity !== 'normal' && tightest);
+  const children = flagged.length
+    ? joined(
+        flagged.map(({ entry, tightest }) =>
+          el('span', { class: `win ${entry.usage.severity}` }, [
+            ...severityMark(entry.usage.severity),
+            `${entry.folded} `,
+            el('span', { class: 'num', text: `${Math.round(tightest.usedPercent)}%` }),
+          ]),
+        ),
+      )
+    : ['usage ok'];
+  return chip('usage', children, 'usage-summary');
+}
+
+/** The worst machine reading over its alert line, and how many more there are. */
+function exceptionChip(exceptions) {
+  const [worst] = exceptions;
+  return chip(
+    'machine',
+    [
+      el('span', { class: `win ${worst.severity}` }, [
+        ...severityMark(worst.severity),
+        `${worst.label} `,
+        el('span', { class: 'num', text: fmtMetricValue(worst, worst.value) }),
+        ` · ${worst.nodeName}`,
+      ]),
+      exceptions.length > 1 ? el('span', { class: 'chip-more' }, [`+${exceptions.length - 1}`, el('span', { class: 'sr-only', text: ' more' })]) : null,
+    ],
+    'machine',
+  );
+}
+
+/**
+ * Redraws the chips from the last summary. They are rebuilt rather than
+ * patched, so the one holding focus is found again by its key afterwards.
+ */
+function paintHeader() {
+  if (!clusterEl || !clusterState) return;
+  const focused = document.activeElement?.closest?.('[data-chip]')?.dataset.chip ?? null;
+  const { nodes, builds, exceptions } = clusterState;
+  const behind = builds?.differing?.length ?? 0;
+  const usage = usageEntries(clusterState);
+  clusterEl.replaceChildren(
+    ...[
+      nodesChip(nodes),
+      behind ? chip('builds', `${behind} old build${behind === 1 ? '' : 's'}`, 'muted') : null,
+      chip('running', [el('span', { class: 'chip-label', text: 'Running ' }), el('span', { class: 'num running-count', text: runningText() })]),
+      ...usage.map(usageChip),
+      usage.length ? usageSummaryChip(usage) : null,
+      exceptions.length ? exceptionChip(exceptions) : null,
+    ].filter(Boolean),
+  );
+  clusterEl.hidden = false;
+  if (focused) clusterEl.querySelector(`[data-chip="${CSS.escape(focused)}"]`)?.focus();
+}
+
+/**
+ * The job counts, from a health poll or straight off the queue. Only the
+ * Running figure is in the header, so that is written in place.
  */
 function setJobs(state) {
-  if (!jobsEl || !state) return;
-  const running = Number(state.runningCount) || 0;
-  const queued = Number(state.queuedCount) || 0;
-  const limit = Number(state.limit) || 0;
-  const scale = jobsScale(state);
-  const nodes = jobsNodes ?? buildJobsMeter();
-  jobsEl.hidden = false;
-
-  nodes.value.textContent = limit > 0 ? `${running}/${limit}` : String(running);
-  nodes.fill.style.width = `${Math.max(0, Math.min(100, (running / scale) * 100))}%`;
-  // Only a real limit can be full; unlimited never colours, however busy it is.
-  const severity = limit > 0 && running >= limit ? 'critical' : limit > 0 && running >= scale * 0.75 ? 'warning' : '';
-  nodes.root.className = `usage-meter jobs-meter ${severity}`.trim();
-  nodes.running.value.textContent = String(running);
-  // No limit is still a label and a number: the bar has to fill against
-  // something, and that something is the processor count.
-  nodes.limit.value.textContent = limit > 0 ? String(limit) : `none (of ${scale})`;
-  nodes.queued.value.textContent = String(queued);
-  nodes.usageDelayed.value.textContent = String(Number(state.usageDelayedCount) || 0);
-  nodes.crons.value.textContent = String(Number(state.armedCrons) || 0);
-  nodes.executions.value.textContent = String(Number(state.armedExecutions) || 0);
+  if (!state) return;
+  jobsState = state;
+  const count = clusterEl?.querySelector('.running-count');
+  if (count) count.textContent = runningText();
+  if (!clusterPanelEl.hidden) paintPanelFoot();
 }
 
 /**
@@ -4180,29 +4333,239 @@ function refreshJobs() {
   clearTimeout(jobsRefreshTimer);
   jobsRefreshTimer = setTimeout(async () => {
     try {
-      setJobs(await api('/api/queue'));
+      setJobs({ ...jobsState, ...(await api('/api/queue')) });
     } catch {
       /* the next health poll draws it instead */
     }
   }, 250);
 }
 
-// ---- machine stats ----------------------------------------------------
+// ---- cluster panel ----------------------------------------------------
+
+function syncExpanded() {
+  for (const node of clusterEl.querySelectorAll('[data-chip]')) node.setAttribute('aria-expanded', String(!clusterPanelEl.hidden));
+}
+
+/** Where a chip points inside the panel: its account's group, or the node a machine reading is from. */
+function panelAnchor(key) {
+  if (key?.startsWith('account:')) return key;
+  if (key?.startsWith('unknown:')) return `node:${key.slice('unknown:'.length)}`;
+  if (key === 'machine' && clusterState?.exceptions?.[0]) return `node:${clusterState.exceptions[0].nodeId}`;
+  return null;
+}
+
+function toggleClusterPanel(key) {
+  if (!clusterPanelEl.hidden) closeClusterPanel();
+  else openClusterPanel(key);
+}
+
+function openClusterPanel(key) {
+  panelOpener = key;
+  clusterPanelEl.hidden = false;
+  syncExpanded();
+  clusterPanelBodyEl.replaceChildren(el('p', { class: 'hint', text: 'Loading nodes…' }));
+  paintPanelFoot();
+  clusterPanelEl.focus();
+  paintClusterPanel(panelAnchor(key));
+  clearInterval(panelTimer);
+  panelTimer = setInterval(() => paintClusterPanel(null), 5000);
+}
+
+function closeClusterPanel({ restoreFocus = true } = {}) {
+  if (clusterPanelEl.hidden) return;
+  clusterPanelEl.hidden = true;
+  clearInterval(panelTimer);
+  panelTimer = null;
+  syncExpanded();
+  // Found by key: the chip that opened the panel may have been redrawn since.
+  if (restoreFocus && panelOpener) clusterEl.querySelector(`[data-chip="${CSS.escape(panelOpener)}"]`)?.focus();
+  panelOpener = null;
+}
+
+/** "online", or when an offline node was last heard from. */
+function nodeStatusText(node) {
+  return node.online ? 'online' : `offline · seen ${fmtRelative(node.lastSeenAt)}`;
+}
+
+/** One machine reading, marked when it is over its alert line. */
+function metricCell(metric, node) {
+  const value = node.latestSample?.[metric.id];
+  const exception = node.exceptions?.find((entry) => entry.metric === metric.id);
+  const severity = exception?.severity ?? 'normal';
+  return el('td', { class: `n ${exception ? `win ${severity}` : ''}`.trim(), 'data-label': metric.label }, [
+    ...severityMark(severity),
+    Number.isFinite(value) ? fmtMetricValue(metric, value) : '—',
+  ]);
+}
+
+/** A node's build, or that it is behind the hub's. Muted, not amber: it is worth knowing, not alarming. */
+function buildCell(node, hubCommit) {
+  if (!node.commit) return el('td', { class: 'muted', 'data-label': 'Build', text: 'unknown' });
+  if (hubCommit && node.commit !== hubCommit) {
+    return el('td', { class: 'muted', 'data-label': 'Build', title: versionText(node, hubCommit), text: 'behind hub' });
+  }
+  return el('td', { class: 'mono', 'data-label': 'Build', text: node.commit });
+}
 
 /**
- * The meters left of the subscription ones: how busy this machine is while it
- * runs your crons — CPU, memory, storage throughput, and how full the disk is.
- *
- * The server samples on its own timer and pushes each sample down /api/events,
- * so the page keeps its own copy of the window and appends to it. Nothing here
- * polls.
+ * The windows a node with no account named reports, in a row under its own.
+ * They are its numbers alone: the next such node may be on another account.
  */
-let systemConfig = null; // metric metadata and the window length, from the server
-let systemSamples = []; // the retained window, oldest first
-let systemDetail = {}; // byte counts behind the latest percentages
-let systemNotes = {}; // why a metric is reporting nothing, by id
-/** Nodes are built once and written to in place: rebuilding under the cursor would close an open chart. */
-const systemNodes = new Map();
+function nodeUsageRow(node, span) {
+  const usage = node.usage;
+  if (!node.online || !usage?.windows?.length) return null;
+  return el('tr', { class: 'node-usage' }, [
+    el('td', { colspan: String(span) }, [
+      el('div', { class: `acct-read${usage.stale ? ' stale' : ''}`, text: `${node.name}'s usage, ${readLine(usage)}` }),
+      el('div', { class: 'acct-windows' }, usage.windows.map(windowRow)),
+    ]),
+  ]);
+}
+
+function nodeTable(nodes, metrics, hubCommit, { usageUnderNodes = false } = {}) {
+  const count = (node, key) => (node.online ? String(node[key]) : '—');
+  const limit = (node) => {
+    const value = node.concurrencyLimit ?? node.config?.maxConcurrentJobs ?? 0;
+    return value > 0 ? String(value) : 'none';
+  };
+  const columns = ['Node', 'Status', 'Running', 'Queued', 'Scheduled', 'Limit', ...metrics.map((metric) => metric.label), 'Build'];
+  const numeric = new Set(['Running', 'Queued', 'Scheduled', 'Limit', ...metrics.map((metric) => metric.label)]);
+  // Fixed widths, so the tables under each account line up column for column.
+  const widths = { Node: 14, Status: 17, Running: 8, Queued: 7, Scheduled: 9, Limit: 6, 'I/O': 9, Build: 11 };
+  return el('table', { class: 'node-table' }, [
+    el('colgroup', {}, columns.map((column) => el('col', { style: `width: ${widths[column] ?? 6}%` }))),
+    el('thead', {}, [el('tr', {}, columns.map((column) => el('th', { scope: 'col', class: numeric.has(column) ? 'n' : '', text: column })))]),
+    el(
+      'tbody',
+      {},
+      nodes.flatMap((node) => [
+        el('tr', { 'data-anchor': `node:${node.id}`, class: node.online ? '' : 'offline' }, [
+          el('td', { class: 'node-name', 'data-label': 'Node' }, [
+            el('a', { class: 'link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-key': `node:${node.id}`, title: node.name, text: node.name }),
+            node.isDefault ? el('span', { class: 'node-default', text: ' default' }) : null,
+          ]),
+          el('td', { class: node.online ? '' : 'muted', 'data-label': 'Status', text: nodeStatusText(node) }),
+          el('td', { class: 'n', 'data-label': 'Running', text: count(node, 'running') }),
+          el('td', { class: 'n', 'data-label': 'Queued', text: count(node, 'queued') }),
+          el('td', { class: 'n', 'data-label': 'Scheduled', text: count(node, 'scheduled') }),
+          el('td', { class: 'n', 'data-label': 'Limit', text: limit(node) }),
+          ...metrics.map((metric) => metricCell(metric, node)),
+          buildCell(node, hubCommit),
+        ]),
+        usageUnderNodes ? nodeUsageRow(node, columns.length) : null,
+      ].filter(Boolean)),
+    ),
+  ]);
+}
+
+/** One usage window with its bar, percentage and reset time, all as text as well as drawn. */
+function windowRow(window) {
+  const used = Math.max(0, Math.min(100, Number(window.usedPercent) || 0));
+  const reset = window.resetsAt ? `resets ${fmtReset(window.resetsAt)}` : 'no reset time reported';
+  return el('div', { class: `win-row ${window.severity}` }, [
+    el('span', { class: 'win-label' }, [...severityMark(window.severity), window.label]),
+    el('span', { class: 'usage-track', 'aria-hidden': 'true' }, [el('span', { class: 'usage-fill', style: `width: ${used}%` })]),
+    el('span', { class: 'win-pct num', text: `${Math.round(used)}%` }),
+    el('span', { class: 'win-reset', text: window.note ? `${reset}. ${window.note}` : reset }),
+  ]);
+}
+
+/** When a reading was taken, and why it has not moved since if it is stale. */
+function readLine(usage) {
+  if (!usage) return 'Signed out, or on a build that does not say which account it uses.';
+  if (!usage.checkedAt) return usage.reason ? `No usage reading: ${usage.reason}` : 'No usage reading yet';
+  const read = `read ${fmtAgo(usage.checkedAt)}`;
+  return usage.stale && usage.reason ? `${read}; not refreshed since: ${usage.reason}` : read;
+}
+
+/** One account: its windows, then a row per node signed in to it. Null is the nodes that have not said. */
+function accountGroup(account, nodes, metrics, hubCommit) {
+  const anchor = account ? `account:${account.id}` : 'account:unknown';
+  const headingId = `cluster-group-${anchor.replace(/[^a-z0-9-]/gi, '-')}`;
+  return el('section', { class: 'acct-group', 'data-anchor': anchor, 'aria-labelledby': headingId }, [
+    el('div', { class: 'acct-head' }, [
+      el('h3', { id: headingId, text: account ? account.email : 'Account unknown' }),
+      el('span', { class: `acct-read${account?.stale ? ' stale' : ''}`, text: readLine(account) }),
+    ]),
+    account?.windows.length ? el('div', { class: 'acct-windows' }, account.windows.map(windowRow)) : null,
+    // With no account to group them under, each node's own numbers sit under its row.
+    nodeTable(nodes, metrics, hubCommit, { usageUnderNodes: !account }),
+  ]);
+}
+
+/** The footer: the job counts the Running chip sums up, now against merely armed. */
+function paintPanelFoot() {
+  const state = jobsState ?? {};
+  const limit = Number(state.limit) || 0;
+  const item = (label, value) => el('div', { class: 'foot-item' }, [el('dt', { text: label }), el('dd', { class: 'num', text: String(value) })]);
+  clusterPanelFootEl.replaceChildren(
+    el('dl', { class: 'foot-group' }, [
+      item('Running', Number(state.runningCount) || 0),
+      item('Limit', limit > 0 ? limit : `none (of ${jobsScale(state)})`),
+      item('Queued', Number(state.queuedCount) || 0),
+      item('Usage Delay', Number(state.usageDelayedCount) || 0),
+    ]),
+    el('dl', { class: 'foot-group' }, [item('Crons Armed', Number(state.armedCrons) || 0), item('OTE Scheduled', Number(state.armedExecutions) || 0)]),
+  );
+}
+
+/**
+ * Reads the nodes and redraws the groups, keeping focus on whatever link held
+ * it. `anchor` scrolls a chip's own group or node into view on opening.
+ */
+async function paintClusterPanel(anchor) {
+  const paint = ++panelPaint;
+  let state;
+  try {
+    state = await api('/api/nodes');
+  } catch (err) {
+    if (paint === panelPaint && !clusterPanelEl.hidden) {
+      clusterPanelBodyEl.replaceChildren(el('div', { class: 'hint warn', text: `Could not load the nodes: ${err.message}` }));
+    }
+    return;
+  }
+  if (paint !== panelPaint || clusterPanelEl.hidden) return;
+  const focusedKey = clusterPanelBodyEl.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+  const byId = new Map(state.nodes.map((node) => [node.id, node]));
+  const pick = (ids) => ids.map((id) => byId.get(id)).filter(Boolean);
+  const metrics = state.metrics ?? [];
+  const groups = state.cluster.accounts.map((account) => accountGroup(account, pick(account.nodeIds), metrics, state.hubCommit));
+  const unknown = pick(state.cluster.unknownAccountNodeIds);
+  if (unknown.length) groups.push(accountGroup(null, unknown, metrics, state.hubCommit));
+  clusterPanelBodyEl.replaceChildren(...(groups.length ? groups : [el('p', { class: 'hint warn', text: 'No node has connected yet, so nothing runs.' })]));
+  if (focusedKey) clusterPanelBodyEl.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`)?.focus();
+  if (anchor) clusterPanelBodyEl.querySelector(`[data-anchor="${CSS.escape(anchor)}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+
+clusterPanelCloseEl?.addEventListener('click', () => closeClusterPanel());
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !clusterPanelEl.hidden) {
+    event.preventDefault();
+    closeClusterPanel();
+  }
+});
+// A click anywhere else closes it. A chip is left to its own click, which toggles.
+document.addEventListener('pointerdown', (event) => {
+  if (clusterPanelEl.hidden || clusterPanelEl.contains(event.target) || event.target.closest?.('[data-chip]')) return;
+  closeClusterPanel({ restoreFocus: false });
+});
+// So does tabbing out of it: left open, it would cover whatever focus moved to.
+clusterPanelEl?.addEventListener('focusout', (event) => {
+  const next = event.relatedTarget;
+  if (!next || clusterPanelEl.contains(next) || next.closest?.('[data-chip]')) return;
+  closeClusterPanel({ restoreFocus: false });
+});
+window.addEventListener('hashchange', () => closeClusterPanel({ restoreFocus: false }));
+
+// ---- machine charts ---------------------------------------------------
+
+/**
+ * A node's machine over the last fifteen minutes, one chart per reading, on
+ * the node's own page. The hub pushes every node's samples down /api/events
+ * tagged with the node, so the open page appends to its own copy of the window
+ * rather than polling.
+ */
+let nodeMachine = null; // the charts on the open node page: { id, push, reload }
 
 const SPARK_WIDTH = 228;
 const SPARK_HEIGHT = 52;
@@ -4210,15 +4573,15 @@ const SPARK_TOP = 3;
 const SPARK_BOTTOM = SPARK_HEIGHT - 3;
 
 /**
- * What the bar is full of. A percentage fills against 100. A rate has no
+ * What the chart is full of. A percentage fills against 100. A rate has no
  * ceiling, so it fills against the busiest moment still in the window — never
- * less than the metric's floor, or an idle disk would draw a full bar off a
+ * less than the metric's floor, or an idle disk would draw a full chart off a
  * 0.2 MB/s blip.
  */
-function metricScale(metric) {
+function metricScale(metric, samples) {
   if (metric.kind !== 'rate') return 100;
   let peak = metric.minScale ?? 1;
-  for (const sample of systemSamples) {
+  for (const sample of samples) {
     const value = sample[metric.id];
     if (Number.isFinite(value) && value > peak) peak = value;
   }
@@ -4244,11 +4607,11 @@ function metricSeverity(metric, value) {
  * newest sample rather than the newest reading: if the last sample could not
  * read this metric, the chart says so instead of repeating an older number.
  */
-function metricSummary(metric) {
-  const values = systemSamples.map((sample) => sample[metric.id]).filter((value) => Number.isFinite(value));
+function metricSummary(metric, samples) {
+  const values = samples.map((sample) => sample[metric.id]).filter((value) => Number.isFinite(value));
   if (!values.length) return { now: null, average: null, peak: null };
   return {
-    now: systemSamples.at(-1)?.[metric.id] ?? null,
+    now: samples.at(-1)?.[metric.id] ?? null,
     average: values.reduce((sum, value) => sum + value, 0) / values.length,
     peak: Math.max(...values),
   };
@@ -4262,9 +4625,8 @@ function metricSummary(metric) {
  * shows as a gap rather than being drawn through. Each run of readings is its
  * own subpath for the same reason.
  */
-function sparkPaths(metric) {
-  const scale = metricScale(metric);
-  const windowMs = systemConfig?.windowMs ?? 15 * 60 * 1000;
+function sparkPaths(metric, samples, windowMs) {
+  const scale = metricScale(metric, samples);
   const endsAt = Date.now();
   const x = (iso) => {
     const at = Date.parse(iso);
@@ -4275,7 +4637,7 @@ function sparkPaths(metric) {
 
   const runs = [];
   let run = [];
-  for (const sample of systemSamples) {
+  for (const sample of samples) {
     const value = sample[metric.id];
     if (!Number.isFinite(value)) {
       if (run.length) runs.push(run);
@@ -4303,25 +4665,23 @@ function sparkPaths(metric) {
 }
 
 /** The line under the chart: what is actually behind the percentage. */
-function metricDetailText(metric) {
-  const detail = systemDetail?.[metric.id];
-  if (!detail) return null;
+function metricDetailText(metric, detail) {
+  const reading = detail?.[metric.id];
+  if (!reading) return null;
   if (metric.id === 'cpu') {
-    const load = Number.isFinite(detail.loadAverage) ? ` · load ${detail.loadAverage}` : '';
-    return `${detail.cores} cores${load}`;
+    const load = Number.isFinite(reading.loadAverage) ? ` · load ${reading.loadAverage}` : '';
+    return `${reading.cores} cores${load}`;
   }
-  if (metric.id === 'memory') return `${fmtBytes(detail.usedBytes)} of ${fmtBytes(detail.totalBytes)} in use`;
+  if (metric.id === 'memory') return `${fmtBytes(reading.usedBytes)} of ${fmtBytes(reading.totalBytes)} in use`;
   if (metric.id === 'io') {
-    return Number.isFinite(detail.transfersPerSecond) ? `${detail.transfersPerSecond} transfers/s` : null;
+    return Number.isFinite(reading.transfersPerSecond) ? `${reading.transfersPerSecond} transfers/s` : null;
   }
-  if (metric.id === 'disk') return `${fmtBytes(detail.usedBytes)} used · ${fmtBytes(detail.freeBytes)} free`;
+  if (metric.id === 'disk') return `${fmtBytes(reading.usedBytes)} used · ${fmtBytes(reading.freeBytes)} free`;
   return null;
 }
 
-/** One meter, plus the chart that opens under it on hover. */
-function buildSystemMeter(metric) {
-  const fill = el('div', { class: 'usage-fill' });
-  const pct = el('span', { class: 'usage-pct', text: '—' });
+/** One chart and the numbers under it; `update` redraws it from the window. */
+function metricTile(metric, windowMs) {
   const area = document.createElementNS('http://www.w3.org/2000/svg', 'path');
   area.setAttribute('class', 'spark-area');
   const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -4330,20 +4690,23 @@ function buildSystemMeter(metric) {
   svg.setAttribute('class', 'spark');
   svg.setAttribute('viewBox', `0 0 ${SPARK_WIDTH} ${SPARK_HEIGHT}`);
   svg.setAttribute('preserveAspectRatio', 'none');
+  svg.setAttribute('role', 'img');
   svg.append(area, line);
 
-  const top = el('span', { class: 'spark-top', text: '' });
+  const value = el('span', { class: 'tile-value' });
+  const top = el('span', { class: 'spark-top' });
   const now = el('dd', { text: '—' });
   const average = el('dd', { text: '—' });
   const peak = el('dd', { text: '—' });
-  const detail = el('div', { class: 'pop-detail', text: '' });
-  const note = el('div', { class: 'pop-note', text: '' });
+  const detail = el('div', { class: 'pop-detail' });
+  const note = el('div', { class: 'pop-note' });
+  const minutes = Math.round(windowMs / 60000);
 
-  const pop = el('div', { class: 'metric-pop' }, [
-    el('div', { class: 'pop-title' }, [el('span', { text: metric.title }), top]),
+  const root = el('div', { class: 'metric-tile' }, [
+    el('div', { class: 'pop-title' }, [el('span', { text: metric.title }), value]),
     el('div', { class: 'pop-sub', text: metric.detail }),
     svg,
-    el('div', { class: 'pop-axis' }, [el('span', { class: 'pop-span' }), el('span', { text: 'now' })]),
+    el('div', { class: 'pop-axis' }, [el('span', { text: `${minutes}m ago` }), top, el('span', { text: 'now' })]),
     el('dl', { class: 'pop-stats' }, [
       el('div', {}, [el('dt', { text: 'Now' }), now]),
       el('div', {}, [el('dt', { text: 'Avg' }), average]),
@@ -4353,151 +4716,80 @@ function buildSystemMeter(metric) {
     note,
   ]);
 
-  const root = el('div', { class: 'usage-meter system-meter' }, [
-    el('div', { class: 'usage-head' }, [el('span', { text: metric.label }), pct]),
-    el('div', { class: 'usage-track' }, [fill]),
-    pop,
-  ]);
-
-  pop.querySelector('.pop-span').textContent = `${Math.round((systemConfig?.windowMs ?? 900000) / 60000)}m ago`;
-  systemNodes.set(metric.id, { root, fill, pct, area, line, top, now, average, peak, detail, note });
-  return root;
-}
-
-/** Writes the current reading into nodes that already exist. */
-function updateSystemMeters() {
-  if (!systemConfig) return;
-  const latest = systemSamples.at(-1) ?? null;
-  systemEl.hidden = !latest;
-  if (!latest) return;
-
-  for (const metric of systemConfig.metrics) {
-    const nodes = systemNodes.get(metric.id);
-    if (!nodes) continue;
-    const value = latest[metric.id];
-    const summary = metricSummary(metric);
-    const { line, area, scale } = sparkPaths(metric);
-
-    nodes.root.className = `usage-meter system-meter ${metricSeverity(metric, value)}`;
-    nodes.pct.textContent = fmtMetricValue(metric, value);
-    nodes.fill.style.width = `${Number.isFinite(value) ? Math.max(0, Math.min(100, (value / scale) * 100)) : 0}%`;
-    nodes.line.setAttribute('d', line);
-    nodes.area.setAttribute('d', area);
-    // A rate's chart is only readable if it says what the top of it means.
-    nodes.top.textContent = metric.kind === 'rate' ? `top ${fmtMetricValue(metric, scale)}` : '100%';
-    nodes.now.textContent = fmtMetricValue(metric, summary.now);
-    nodes.average.textContent = fmtMetricValue(metric, summary.average);
-    nodes.peak.textContent = fmtMetricValue(metric, summary.peak);
-
-    const detailText = metricDetailText(metric);
-    nodes.detail.textContent = detailText ?? '';
-    nodes.detail.hidden = !detailText;
-    const note = systemNotes?.[metric.id] ?? null;
-    nodes.note.textContent = note ?? '';
-    nodes.note.hidden = !note;
-  }
+  const update = ({ samples, detail: details, notes }) => {
+    const latest = samples.at(-1)?.[metric.id];
+    const severity = metricSeverity(metric, latest);
+    const summary = metricSummary(metric, samples);
+    const paths = sparkPaths(metric, samples, windowMs);
+    root.className = `metric-tile ${severity}`;
+    value.replaceChildren(...severityMark(severity), fmtMetricValue(metric, latest));
+    line.setAttribute('d', paths.line);
+    area.setAttribute('d', paths.area);
+    // A rate's chart is only readable if it says what the top of it means; a percentage's top is 100.
+    top.textContent = metric.kind === 'rate' ? `top ${fmtMetricValue(metric, paths.scale)}` : '';
+    now.textContent = fmtMetricValue(metric, summary.now);
+    average.textContent = fmtMetricValue(metric, summary.average);
+    peak.textContent = fmtMetricValue(metric, summary.peak);
+    svg.setAttribute(
+      'aria-label',
+      `${metric.title}, last ${minutes} minutes: now ${now.textContent}, average ${average.textContent}, peak ${peak.textContent}`,
+    );
+    const detailText = metricDetailText(metric, details);
+    detail.textContent = detailText ?? '';
+    detail.hidden = !detailText;
+    const why = notes?.[metric.id] ?? null;
+    note.textContent = why ?? '';
+    note.hidden = !why;
+  };
+  return { root, update };
 }
 
 /**
- * Loads the window from the server and builds the meters.
- *
- * Called on every SSE hello, which covers both the first connection and every
- * reconnection after one — a page that was disconnected missed samples, and
- * this is what fills them back in rather than leaving a hole in the chart.
+ * The Machine card on a node's page. `system` is what /api/nodes/:id answers:
+ * the metric definitions and the window the hub has kept for this node.
  */
-async function loadSystem() {
-  if (!systemEl) return;
-  try {
-    const state = await api('/api/system');
-    if (!state.enabled) {
-      systemEl.hidden = true;
+function machineCard(nodeId, system) {
+  const body = el('div', {});
+  const card = el('div', { class: 'card' }, [el('h2', { text: 'Machine' }), body]);
+  let state = null;
+  let tiles = [];
+
+  const draw = (next) => {
+    if (!next?.enabled || !next.metrics?.length) {
+      state = null;
+      tiles = [];
+      body.replaceChildren(el('p', { class: 'hint', text: 'Machine readings show here while the node is online and sampling.' }));
       return;
     }
-    const firstLoad = !systemConfig;
-    systemConfig = state;
-    systemSamples = state.samples ?? [];
-    systemDetail = state.detail ?? {};
-    systemNotes = state.notes ?? {};
-    if (firstLoad) {
-      systemEl.replaceChildren(...state.metrics.map(buildSystemMeter));
-    }
-    updateSystemMeters();
-  } catch {
-    /* the header simply carries no machine meters */
-  }
-}
+    state = { windowMs: next.windowMs, samples: next.samples ?? [], detail: next.detail ?? {}, notes: next.notes ?? {} };
+    tiles = next.metrics.map((metric) => metricTile(metric, state.windowMs));
+    body.replaceChildren(el('div', { class: 'metric-grid' }, tiles.map((tile) => tile.root)));
+    for (const tile of tiles) tile.update(state);
+  };
+  draw(system);
 
-/** One sample off the event stream, appended and trimmed to the window. */
-function pushSystemSample(payload) {
-  if (!systemConfig || !payload?.sample) return;
-  systemSamples.push(payload.sample);
-  systemDetail = payload.detail ?? systemDetail;
-  systemNotes = payload.notes ?? systemNotes;
-  const cutoff = Date.now() - systemConfig.windowMs;
-  while (systemSamples.length && Date.parse(systemSamples[0].at) < cutoff) systemSamples.shift();
-  updateSystemMeters();
-}
-
-/** A clock, small enough to sit level with the meter labels. */
-const CLOCK_ICON =
-  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" ' +
-  'stroke-linecap="round"><circle cx="8" cy="8" r="6.2" /><path d="M8 4.6V8l2.4 1.6" /></svg>';
-
-/**
- * The clock to the left of the meters: when these numbers were pulled. The
- * server answers from its last lookup, so without this the header gives no way
- * to tell a reading taken a minute ago from one taken an hour ago.
- */
-function readStamp(usage) {
-  const tip = usage?.checkedAt
-    ? [
-        `Usage last read ${fmtRelative(usage.checkedAt)}`,
-        fmtDateTime(usage.checkedAt),
-        usage.reason ? `Refresh is waiting: ${usage.reason}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n')
-    : 'Usage has not been read yet';
-  return el('span', { class: `usage-stamp${usage?.stale ? ' stale' : ''}`, 'data-tip': tip, html: CLOCK_ICON });
-}
-
-/**
- * Subscription usage, one meter per limit window the account reports. The
- * windows are whatever the server passes through, so a limit added to the plan
- * later shows up here without a change.
- *
- * The server answers every poll from its last lookup, so these are last-known
- * numbers whenever a refresh fails or the reading came off disk at startup. In
- * that case the meters dim and say when they were read rather than vanishing.
- */
-function setUsage(usage) {
-  if (!usageEl) return;
-  const windows = usage?.windows ?? [];
-  // Nothing to report is not worth a red header; the meters simply go away.
-  usageEl.hidden = !windows.length;
-  usageEl.replaceChildren();
-
-  const asOf = usage?.stale && usage.checkedAt ? `Last read ${fmtRelative(usage.checkedAt)}` : null;
-  const why = usage?.stale && usage.reason ? `Refresh is waiting: ${usage.reason}` : null;
-  if (windows.length) usageEl.append(readStamp(usage));
-
-  for (const window of windows) {
-    const resets = window.resetsAt ? `Resets ${fmtRelative(window.resetsAt)} (${fmtDateTime(window.resetsAt)})` : null;
-    // Credits are a spending cap rather than a rolling window, so they carry a
-    // note saying which kind of limit the reset date belongs to.
-    const tip = [`${window.detail}`, `${window.usedPercent}% used`, resets, window.note, asOf, why]
-      .filter(Boolean)
-      .join('\n');
-    usageEl.append(
-      el('div', { class: `usage-meter ${window.severity}${usage?.stale ? ' stale' : ''}`, 'data-tip': tip }, [
-        el('div', { class: 'usage-head' }, [
-          el('span', { text: window.label }),
-          el('span', { class: 'usage-pct', text: `${Math.round(window.usedPercent)}%` }),
-        ]),
-        el('div', { class: 'usage-track' }, [el('div', { class: 'usage-fill', style: `width: ${window.usedPercent}%` })]),
-      ]),
-    );
-  }
+  nodeMachine = {
+    id: nodeId,
+    /** One sample off the event stream, appended and trimmed to the window. */
+    push(payload) {
+      if (!state || !payload?.sample) return;
+      state.samples.push(payload.sample);
+      state.detail = payload.detail ?? state.detail;
+      state.notes = payload.notes ?? state.notes;
+      const cutoff = Date.now() - state.windowMs;
+      while (state.samples.length && Date.parse(state.samples[0].at) < cutoff) state.samples.shift();
+      for (const tile of tiles) tile.update(state);
+    },
+    /** After a reconnect: the page missed samples, and this fills the gap back in. */
+    async reload() {
+      try {
+        draw((await api(`/api/nodes/${encodeURIComponent(nodeId)}`)).system);
+      } catch {
+        /* the next sample draws what it can */
+      }
+    },
+  };
+  return card;
 }
 
 /** Live, or live-but-out-of-date once the server has moved to another commit. */
@@ -4523,16 +4815,18 @@ async function checkHealth() {
     }
     setUpdateBadge(Boolean(health.updateAvailable), health.updateBehind);
     setBellBadge(health.notificationCounts);
-    setUsage(health.usage);
+    // The cluster's own figures when there are any: its limit counts online nodes only.
+    clusterState = health.cluster ?? null;
     setJobs({
-      runningCount: health.running,
+      runningCount: health.cluster?.running ?? health.running,
       queuedCount: health.queued,
       usageDelayedCount: health.usageDelayed,
-      limit: health.concurrencyLimit,
+      limit: health.cluster?.concurrencyLimit ?? health.concurrencyLimit,
       defaultLimit: health.defaultConcurrencyLimit,
       armedCrons: health.armedCrons,
       armedExecutions: health.armedExecutions,
     });
+    paintHeader();
     if (!health.commit) return; // not a git checkout, nothing to compare
     if (!loadedCommit) loadedCommit = health.commit;
     else if (health.commit !== loadedCommit) staleBuild = true;

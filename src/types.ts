@@ -108,6 +108,14 @@ export interface UsageReading {
   windows: UsageWindow[];
   checkedAt: string | null;
   stale: boolean;
+  /** The account these numbers are for; absent from a node older than the field. */
+  accountId?: string | null;
+}
+
+/** The Claude account a node's CLI is signed in as: its account id, and the email the header names it by. */
+export interface ClaudeAccount {
+  id: string;
+  email: string;
 }
 
 export interface UsageBlocker {
@@ -295,6 +303,8 @@ export interface NodeStatus {
   jobs: Record<string, JobView>;
   activeLogs: Array<{ jobId: string; file: string }>;
   usage: UsageReading;
+  /** Null when the CLI is signed out or its config cannot be read; absent from a node older than the field. */
+  account?: ClaudeAccount | null;
   models: ModelCatalogState;
   system: Record<string, unknown> & { latest?: SystemSample | null };
 }

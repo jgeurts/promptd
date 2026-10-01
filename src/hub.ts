@@ -14,8 +14,12 @@ import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
 import type { BrowseResult } from './browse.js';
 import { HISTORY_WINDOW_MS, SAMPLE_INTERVAL_MS, SYSTEM_METRICS } from './system.js';
+import { reportedAccount } from './account.js';
+import { clusterLimit, clusterSummary, machineExceptions } from './cluster.js';
+import type { ClusterNode, ClusterSummary, MachineException } from './cluster.js';
 import type {
   BusEvent,
+  ClaudeAccount,
   CommandResult,
   ConcurrencyInfo,
   Cron,
@@ -72,6 +76,8 @@ export interface HubNode {
   lastSeenAt: string;
   instance: string | null;
   status: NodeStatus | null;
+  /** Kept apart from the status so a node that signs off is still listed under its account. */
+  account: ClaudeAccount | null;
   samples: SystemSample[];
   commands: NodeCommand[];
 }
@@ -97,11 +103,19 @@ export interface NodeListing {
   clockTimezone: string | null;
   config: EffectiveNodeConfig;
   customized: Array<keyof NodeConfig>;
+  /** The limit the node is enforcing now, as it reports it; null while it is offline. 0 is no limit. */
+  concurrencyLimit: number | null;
+  account: ClaudeAccount | null;
+  usage: UsageReading;
+  /** The newest machine sample, while the node is online. */
+  latestSample: SystemSample | null;
+  /** This node's metrics over their alert line. */
+  exceptions: MachineException[];
 }
 
 export interface NodeDetail extends NodeListing {
   concurrency: ConcurrencyInfo | null;
-  usage: UsageReading;
+  system: Record<string, unknown>;
 }
 
 export interface NodeSummary {
@@ -207,7 +221,7 @@ class Hub {
 
   private async loadNodes(): Promise<void> {
     for (const saved of await db().selectFrom('nodes').selectAll().execute()) {
-      this.nodes.set(saved.id, { ...saved, config: readNodeConfig(saved.settings), instance: null, status: null, samples: [], commands: [] });
+      this.nodes.set(saved.id, { ...saved, config: readNodeConfig(saved.settings), instance: null, status: null, account: null, samples: [], commands: [] });
     }
   }
 
@@ -319,6 +333,38 @@ class Hub {
     return { id: id || null, name: node?.name ?? id ?? null, online: this.isOnline(node) };
   }
 
+  /** How often a node samples its machine, which the alert rules count their windows in. */
+  private sampleIntervalMs(node: HubNode): number {
+    return Number(node.status?.system?.intervalMs) || SAMPLE_INTERVAL_MS || 5000;
+  }
+
+  private clusterNode(node: HubNode): ClusterNode {
+    const online = this.isOnline(node);
+    return {
+      id: node.id,
+      name: node.name,
+      online,
+      commit: node.commit,
+      account: node.account,
+      usage: online ? node.status.usage ?? null : null,
+      running: online ? node.status.counts?.running ?? 0 : 0,
+      concurrencyLimit: online ? Number(node.status.counts?.concurrencyLimit) || 0 : 0,
+      samples: node.samples,
+      intervalMs: this.sampleIntervalMs(node),
+    };
+  }
+
+  /** The default node first, then by name: the order every list of nodes is shown in. */
+  private orderedNodes(): HubNode[] {
+    const defaultId = this.defaultNodeId();
+    return [...this.nodes.values()].sort((a, b) => Number(b.id === defaultId) - Number(a.id === defaultId) || a.name.localeCompare(b.name));
+  }
+
+  /** What the header draws: nodes, jobs, one entry per account, and what is out of line. */
+  public cluster(hubCommit: string | null): ClusterSummary {
+    return clusterSummary(this.orderedNodes().map((node) => this.clusterNode(node)), hubCommit);
+  }
+
   private listing(node: HubNode): NodeListing {
     const online = this.isOnline(node);
     return {
@@ -340,13 +386,16 @@ class Hub {
       clockTimezone: node.timezone ?? null,
       config: this.nodeConfig(node.id),
       customized: Object.keys(node.config) as Array<keyof NodeConfig>,
+      concurrencyLimit: online ? Number(node.status.counts?.concurrencyLimit) || 0 : null,
+      account: node.account,
+      usage: online ? node.status.usage ?? NO_USAGE : { ...NO_USAGE, reason: 'this node is offline' },
+      latestSample: online ? node.samples.at(-1) ?? node.status.system?.latest ?? null : null,
+      exceptions: machineExceptions([this.clusterNode(node)]),
     };
   }
 
   public listNodes(): NodeListing[] {
-    return [...this.nodes.values()]
-      .map((node) => this.listing(node))
-      .sort((a, b) => Number(b.isDefault) - Number(a.isDefault) || a.name.localeCompare(b.name));
+    return this.orderedNodes().map((node) => this.listing(node));
   }
 
   public nodeDetail(id: string): NodeDetail | null {
@@ -356,7 +405,7 @@ class Hub {
     return {
       ...this.listing(node),
       concurrency: online ? this.concurrencyInfo(id) : null,
-      usage: online ? node.status.usage ?? NO_USAGE : { ...NO_USAGE, reason: 'this node is offline' },
+      system: this.systemOf(online ? node : null),
     };
   }
 
@@ -466,7 +515,7 @@ class Hub {
       throw new HubError(`another process is already syncing as node "${id}"; give this one its own PROMPTD_NODE_ID`, 409);
     }
     if (!node) {
-      node = { id, firstSeenAt: now, config: {}, instance: null, status: null, samples: [], commands: [] } as unknown as HubNode;
+      node = { id, firstSeenAt: now, config: {}, instance: null, status: null, account: null, samples: [], commands: [] } as unknown as HubNode;
       this.nodes.set(id, node);
       console.log(`[hub] new node "${identity!.name ?? id}" (${id})`);
     }
@@ -510,6 +559,9 @@ class Hub {
 
     const previous = node.status;
     node.status = (body.status as NodeStatus | null | undefined) ?? node.status;
+    // A node older than the field says nothing, which is not the same as saying it is signed out.
+    const reported = asRecord(body.status);
+    if (reported && 'account' in reported) node.account = reportedAccount(reported.account);
     await this.applyPatches(node, Array.isArray(body.patches) ? body.patches : [], previous);
 
     const answered = new Set(((Array.isArray(body.commandResults) ? body.commandResults : []) as CommandResult[]).map((result) => result.id));
@@ -530,11 +582,11 @@ class Hub {
         queueChanged = true;
         continue;
       }
+      // Every node's samples go out, tagged with the node below: its own page charts them live.
       if (event?.type === 'system:sample') {
         node.samples.push(event.sample as SystemSample);
         const oldest = Date.now() - HISTORY_WINDOW_MS;
         while (node.samples.length && Date.parse(node.samples[0]!.at) < oldest) node.samples.shift();
-        if (node.id !== this.defaultNodeId()) continue;
       }
       if (event?.type === 'run:finished' && event.cronId) {
         pruneLogs(event.cronId).catch((err: unknown) => console.error(`[hub] log cleanup failed for ${event.cronId}: ${errorMessage(err)}`));
@@ -723,11 +775,10 @@ class Hub {
   /** Each node enforces its own limit, so the fleet's is their total, or none when any node has none. */
   private concurrencyLimit(nodes: OnlineHubNode[] = this.onlineNodes()): number {
     if (!nodes.length) return DEFAULT_MAX_CONCURRENT_JOBS;
-    const limits = nodes.map((node) => Number(node.status.counts?.concurrencyLimit) || 0);
-    return limits.includes(0) ? 0 : limits.reduce((a, b) => a + b, 0);
+    return clusterLimit(nodes.map((node) => Number(node.status.counts?.concurrencyLimit) || 0));
   }
 
-  public health(): {
+  public health(hubCommit: string | null = null): {
     scheduled: number;
     running: number;
     paused: boolean;
@@ -739,6 +790,7 @@ class Hub {
     armedExecutions: number;
     usage: UsageReading;
     nodes: { total: number; online: number };
+    cluster: ClusterSummary;
   } {
     const nodes = this.onlineNodes();
     const count = (key: keyof NodeCounts): number => sum(nodes, (node) => node.status.counts?.[key]);
@@ -754,6 +806,7 @@ class Hub {
       armedExecutions: count('armedExecutions'),
       usage: this.defaultNode()?.status.usage ?? NO_USAGE,
       nodes: { total: this.nodes.size, online: nodes.length },
+      cluster: this.cluster(hubCommit),
     };
   }
 
@@ -778,8 +831,13 @@ class Hub {
     };
   }
 
+  /** The default node's machine stats, which /api/system has always answered with. */
   public systemState(): Record<string, unknown> {
-    const node = this.defaultNode();
+    return this.systemOf(this.defaultNode());
+  }
+
+  /** One node's machine stats and the window the hub has kept of its samples, for the charts on its page. */
+  private systemOf(node: OnlineHubNode | null): Record<string, unknown> {
     if (!node?.status.system) {
       return {
         enabled: false,

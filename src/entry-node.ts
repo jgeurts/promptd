@@ -21,7 +21,8 @@ import {
 } from './jobCache.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, normalizeMaxConcurrentJobs } from './settings.js';
 import { browseDirectories } from './browse.js';
-import { setUsageThresholds, usageMonitor } from './usage.js';
+import { readingFor, setUsageThresholds, usageMonitor } from './usage.js';
+import { accountMonitor } from './account.js';
 import { modelCatalog } from './models.js';
 import { systemMonitor } from './system.js';
 import type {
@@ -233,6 +234,8 @@ async function jobViews(): Promise<Record<string, JobView>> {
 
 async function status(): Promise<NodeStatus> {
   const { samples, ...system } = systemMonitor.state();
+  const usage = await usageMonitor.state();
+  const account = await accountMonitor.state();
   return {
     pause: cronService.pauseInfo(),
     concurrency: cronService.concurrencyInfo(),
@@ -248,7 +251,9 @@ async function status(): Promise<NodeStatus> {
     },
     jobs: await jobViews(),
     activeLogs: [...uploads.values()].map(({ jobId, file }) => ({ jobId, file })),
-    usage: await usageMonitor.state(),
+    // Sent together only when they are about the same account.
+    usage: readingFor(account, usage),
+    account,
     models: modelCatalog.state(),
     system,
   };

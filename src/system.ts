@@ -22,6 +22,8 @@ export interface SystemMetric {
 
 export interface SystemAlertReading {
   value: number;
+  /** The line `value` was judged against, in the metric's own unit. */
+  threshold: number;
   breached: boolean;
   cleared: boolean;
   summary: string;
@@ -218,6 +220,7 @@ export const SYSTEM_ALERTS = [
       if (value === null) return null;
       return {
         value,
+        threshold: this.threshold,
         breached: value >= this.threshold,
         cleared: value < this.clear,
         summary: `${Math.round(value)}% of all cores, averaged over the last minute`,
@@ -239,6 +242,7 @@ export const SYSTEM_ALERTS = [
       if (value === null) return null;
       return {
         value,
+        threshold: this.threshold,
         breached: value >= this.threshold,
         cleared: value < this.clear,
         summary: `${Math.round(value)}% of memory in use, averaged over the last minute`,
@@ -275,6 +279,7 @@ export const SYSTEM_ALERTS = [
       const bar = Math.max(this.floorMbPerSecond, usual * this.multiple);
       return {
         value,
+        threshold: bar,
         breached: value >= bar,
         cleared: value < bar * 0.6,
         summary: `${round1(value)} MB/s over the last minute, against a usual ${round1(usual)} MB/s`,
@@ -296,6 +301,7 @@ export const SYSTEM_ALERTS = [
       if (typeof value !== 'number' || !Number.isFinite(value)) return null;
       return {
         value,
+        threshold: this.threshold,
         breached: value >= this.threshold,
         cleared: value < this.clear,
         summary: `${round1(100 - value)}% of the volume is free`,
@@ -324,7 +330,7 @@ type SystemAlert = (typeof SYSTEM_ALERTS)[number] & {
 export function alertWorsened(metric: string, sent: AlertAnnouncement, value: number, running: number): boolean {
   const alert = (SYSTEM_ALERTS as SystemAlert[]).find((candidate) => candidate.id === metric);
   if (!alert?.worsened) return false;
-  return alert.worsened(sent, { value, breached: true, cleared: false, summary: '' }, running);
+  return alert.worsened(sent, { value, threshold: alert.threshold ?? 0, breached: true, cleared: false, summary: '' }, running);
 }
 
 const round1 = (value: number): number => Math.round(value * 10) / 10;
