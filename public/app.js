@@ -29,7 +29,7 @@ async function api(url, options) {
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const body = isJson ? await res.json() : await res.text();
   if (res.status === 401 && url !== '/api/auth/logout') location.assign('/login');
-  if (!res.ok) throw new Error(body?.error || `request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(body?.error || `request failed (${res.status})`), { status: res.status });
   return body;
 }
 
@@ -1098,7 +1098,15 @@ async function paintExecutions(panel, pause, sub, unread) {
   if (sort === 'activity' && holding('executions')) {
     const fetched = new Set(items.map((execution) => execution.id));
     const missing = listOrder.ids.filter((id) => !fetched.has(id));
-    const found = await Promise.all(missing.map((id) => api(`/api/executions/${id}`).catch(() => null)));
+    // Only one that is gone leaves. Any other failure draws nothing, and the list stays as it is.
+    const found = await Promise.all(
+      missing.map((id) =>
+        api(`/api/executions/${id}`).catch((err) => {
+          if (err.status === 404) return null;
+          throw err;
+        }),
+      ),
+    );
     items = [...items, ...found.filter(Boolean)];
   }
   const { jobs: executions, order } =
@@ -3826,10 +3834,12 @@ async function renderLogs(id, kind = 'cron') {
   // Read once the run is on screen, by the render on screen: a log that never
   // loads reads nothing, nor does one whose page has been left or redrawn.
   const newest = query ? null : (logs[0]?.file ?? null);
+  // The run this render streams, which a click on another changes in logsState before it is drawn.
+  const displayed = logsState.selected;
   const shown = () => {
-    if (seq === logsState.paintedSeq && body.isConnected) acknowledgeJob(cron, logsState.selected, newest);
+    if (seq === logsState.paintedSeq && body.isConnected) acknowledgeJob(cron, displayed, newest);
   };
-  if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base, shown);
+  if (displayed) openLogStream(id, displayed, body, liveBadge, runtimeEl, base, shown);
   else shown();
 }
 
