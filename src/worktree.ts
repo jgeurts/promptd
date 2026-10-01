@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-type GitError = Error & { stderr?: string };
+type GitError = Error & { stderr?: string; code?: number | string };
 
 export type WorktreeCleanup = { cleaned: string } | { skipped: string };
 
@@ -13,11 +14,29 @@ export type WorktreeIncludeWrite = { written: string; text: string } | { skipped
 
 export const WORKTREE_INCLUDE_FILE = '.worktreeinclude';
 
+interface GitOptions {
+  timeout?: number;
+  /** Stops git when the run it is for is stopped. */
+  signal?: AbortSignal;
+  /** Untrimmed, for output that is NUL separated. */
+  raw?: boolean;
+  input?: string;
+}
+
 /** Runs git in `dir` and returns its trimmed stdout; a failure throws with git's own message. */
-async function git(dir: string, args: string[], timeout = 60_000): Promise<string> {
+async function git(dir: string, args: string[], timeout: number | GitOptions = 60_000): Promise<string> {
+  const options: GitOptions = typeof timeout === 'number' ? { timeout } : timeout;
   try {
-    const { stdout } = await execFileAsync('git', ['-C', dir, ...args], { timeout });
-    return stdout.trim();
+    const running = execFileAsync('git', ['-C', dir, ...args], {
+      timeout: options.timeout ?? 60_000,
+      signal: options.signal,
+      maxBuffer: 256 * 1024 * 1024,
+      // A fetch that wants a password would otherwise wait for one forever.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    if (options.input !== undefined) running.child.stdin?.end(options.input);
+    const { stdout } = await running;
+    return options.raw ? stdout : stdout.trim();
   } catch (err) {
     throw new Error((err as GitError).stderr?.trim() || (err as GitError).message, { cause: err });
   }
@@ -131,4 +150,194 @@ export async function writeWorktreeInclude(dir: string, text: string): Promise<W
   const content = text.endsWith('\n') ? text : `${text}\n`;
   await fsp.writeFile(target, content, 'utf8');
   return { written: target, text: content };
+}
+
+/** The folder Claude Code makes `--worktree <name>` in, under the main checkout, with `name` spelled as it spells it. */
+export function worktreePath(mainRoot: string, name: string): string {
+  return path.join(mainRoot, '.claude', 'worktrees', name.replaceAll('/', '+'));
+}
+
+/** The branch Claude Code gives that worktree. */
+export function worktreeBranch(name: string): string {
+  return `worktree-${name.replaceAll('/', '+')}`;
+}
+
+export interface PreparedWorktree {
+  path: string;
+  branch: string;
+  /** The main checkout it belongs to, where `.worktreeinclude` is read and its files are copied from. */
+  root: string;
+  /** False when an existing worktree was reused, which keeps the files it has. */
+  created: boolean;
+  /** What happened, a line each, for the run's log. */
+  notes: string[];
+}
+
+async function lstat(target: string): Promise<fs.Stats | null> {
+  return fsp.lstat(target).catch((err: NodeJS.ErrnoException) => {
+    if (err.code === 'ENOENT') return null;
+    throw err;
+  });
+}
+
+function short(commit: string): string {
+  return commit.slice(0, 10);
+}
+
+/**
+ * The branch a fresh worktree starts from, picked as Claude Code picks it: the
+ * one `origin/HEAD` names, or else a `main` or `master` the remote has. Null
+ * when this checkout knows of none.
+ */
+async function defaultBranch(root: string): Promise<string | null> {
+  const known = async (branch: string): Promise<boolean> =>
+    Boolean(await git(root, ['rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}^{commit}`]).catch(() => ''));
+  const named = (await git(root, ['symbolic-ref', '--short', '--quiet', 'refs/remotes/origin/HEAD']).catch(() => '')).replace(/^origin\//, '');
+  if (named && (await known(named))) return named;
+  for (const branch of ['main', 'master']) if (await known(branch)) return branch;
+  return null;
+}
+
+interface Base {
+  commit: string;
+  label: string;
+  fromRemote: boolean;
+}
+
+/**
+ * Where a new worktree starts, as `claude --worktree` picks it: the remote's
+ * default branch, fetched first so the tree has its newest commit, or this
+ * checkout's own HEAD when there is no `origin/HEAD` to go on. A fetch that
+ * fails is noted, and the branch as last fetched is used.
+ */
+async function freshBase(root: string, checkout: string, signal: AbortSignal | undefined, notes: string[]): Promise<Base> {
+  const branch = await defaultBranch(root);
+  if (!branch) {
+    notes.push(`no origin/HEAD, so it starts from the HEAD of ${checkout}`);
+    return { commit: await git(checkout, ['rev-parse', '--verify', 'HEAD^{commit}']), label: 'HEAD', fromRemote: false };
+  }
+  const failure = await git(root, ['fetch', '--quiet', 'origin', branch], { timeout: 60_000, signal }).then(
+    () => null,
+    (err: Error) => err.message.replace(/\s+/g, ' '),
+  );
+  signal?.throwIfAborted();
+  notes.push(failure === null ? `fetched origin ${branch}` : `could not fetch origin ${branch}, so it starts from origin/${branch} as last fetched: ${failure}`);
+  return { commit: await git(root, ['rev-parse', '--verify', `refs/remotes/origin/${branch}^{commit}`]), label: `origin/${branch}`, fromRemote: true };
+}
+
+/** git's common directory for a checkout, resolved, which is the same for a repository and each of its worktrees. */
+async function commonDir(dir: string): Promise<string | null> {
+  return git(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir'])
+    .then((found) => fsp.realpath(found))
+    .catch(() => null);
+}
+
+/**
+ * Makes, or finds again, the worktree `claude --worktree <name>` would use for
+ * a job in `dir`, so promptd can set it up before Claude starts in it: the
+ * same folder under the main checkout's `.claude/worktrees`, on the same
+ * `worktree-<name>` branch, from the same base. `removeWorktree` cleans it up
+ * as it does one Claude Code made, and a later run left to Claude Code
+ * reopens it.
+ *
+ * An existing worktree is reused as it is, the way Claude Code reopens one,
+ * except that one with no work of its own (clean, still on its branch, every
+ * commit already on the base) is moved up to the newest base. A folder there
+ * that is not a worktree of this repository, or a symlink on the way to it, is
+ * refused, since either could put the checkout somewhere else.
+ */
+export async function prepareWorktree(dir: string, name: string, { signal }: { signal?: AbortSignal } = {}): Promise<PreparedWorktree> {
+  const checkout = await repoRoot(dir);
+  const root = checkout ? await mainCheckoutRoot(checkout) : null;
+  if (!checkout || !root) throw new Error(`${dir} is not in a git repository`);
+  const tree = worktreePath(root, name);
+  const branch = worktreeBranch(name);
+  const notes: string[] = [];
+
+  for (const step of [path.join(root, '.claude'), path.dirname(tree), tree]) {
+    if ((await lstat(step))?.isSymbolicLink()) throw new Error(`${step} is a symlink, which could put the worktree outside the repository; remove it and run again`);
+  }
+
+  const base = await freshBase(root, checkout, signal, notes);
+  const existing = await lstat(tree);
+  if (existing) {
+    const top = existing.isDirectory() ? await git(tree, ['rev-parse', '--show-toplevel']).then((found) => fsp.realpath(found), () => null) : null;
+    if (top !== (await fsp.realpath(tree)) || (await commonDir(tree)) !== (await commonDir(root))) {
+      throw new Error(`${tree} already exists but is not a worktree of ${root}; move it aside and run again`);
+    }
+    const head = await git(tree, ['rev-parse', 'HEAD']);
+    const onBranch = (await git(tree, ['symbolic-ref', '--short', '--quiet', 'HEAD']).catch(() => '')) === branch;
+    const clean = onBranch && !(await git(tree, ['status', '--porcelain']));
+    const upstream = clean && (await git(tree, ['merge-base', '--is-ancestor', head, base.commit]).then(() => true, () => false));
+    if (base.fromRemote && upstream && head !== base.commit) {
+      await git(tree, ['reset', '--quiet', '--hard', base.commit], { signal });
+      notes.push(`reused ${tree} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`);
+    } else {
+      notes.push(`reused ${tree} at ${short(head)}${onBranch ? ` on ${branch}` : ''}, as the last run left it`);
+    }
+    return { path: tree, branch, root, created: false, notes };
+  }
+
+  // A worktree whose folder was deleted by hand is still registered, and git
+  // refuses its path until it is forgotten.
+  await git(root, ['worktree', 'prune']);
+  await fsp.mkdir(path.dirname(tree), { recursive: true });
+  await git(root, ['worktree', 'add', '--quiet', '--no-track', '-B', branch, tree, base.commit], { timeout: 10 * 60_000, signal });
+  notes.push(`created ${tree} on ${branch} from ${base.label} (${short(base.commit)})`);
+  return { path: tree, branch, root, created: true, notes };
+}
+
+export interface IncludeCopy {
+  copied: string[];
+  skipped: string[];
+}
+
+/** True when a folder on the way from `tree` down to `target` is a symlink, which could carry a copy outside the tree. */
+async function crossesSymlink(tree: string, target: string): Promise<boolean> {
+  let at = tree;
+  for (const part of path.relative(tree, path.dirname(target)).split(path.sep).filter(Boolean)) {
+    at = path.join(at, part);
+    const stat = await lstat(at);
+    if (!stat) return false;
+    if (stat.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+/**
+ * Copies into a new worktree what `.worktreeinclude` in the main checkout
+ * names, as Claude Code does when it makes one: each file that matches a
+ * pattern and that git ignores, so a tracked file is never copied over it. A
+ * symlink is left out, and so is a file whose place in the tree is reached
+ * through a committed symlink.
+ */
+export async function copyWorktreeIncludes(sourceRoot: string, tree: string, { signal }: { signal?: AbortSignal } = {}): Promise<IncludeCopy> {
+  const result: IncludeCopy = { copied: [], skipped: [] };
+  const list = path.join(sourceRoot, WORKTREE_INCLUDE_FILE);
+  const text = await fsp.readFile(list, 'utf8').catch(() => '');
+  if (!text.split(/\r?\n/).some((line) => line.trim() && !line.trim().startsWith('#'))) return result;
+  const names = (out: string): string[] => out.split('\0').filter(Boolean);
+  // Untracked files the list matches, then the ones of those git ignores.
+  const matching = names(await git(sourceRoot, ['ls-files', '-z', '--others', '--ignored', `--exclude-from=${list}`], { raw: true, signal }));
+  if (!matching.length) return result;
+  const ignored = names(
+    await git(sourceRoot, ['check-ignore', '-z', '--stdin'], { raw: true, signal, input: `${matching.join('\0')}\0` }).catch((err: Error) => {
+      // It exits 1 when it ignores none of them.
+      if ((err.cause as GitError | undefined)?.code === 1) return '';
+      throw err;
+    }),
+  );
+  for (const file of ignored) {
+    signal?.throwIfAborted();
+    const from = path.join(sourceRoot, file);
+    const to = path.join(tree, file);
+    if ((await lstat(from))?.isSymbolicLink() || (await crossesSymlink(tree, to))) {
+      result.skipped.push(file);
+      continue;
+    }
+    await fsp.mkdir(path.dirname(to), { recursive: true });
+    await fsp.copyFile(from, to, fs.constants.COPYFILE_FICLONE);
+    result.copied.push(file);
+  }
+  return result;
 }

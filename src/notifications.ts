@@ -151,10 +151,9 @@ function describe(event: DescribableEvent): NotificationDraft | NotificationDraf
         // A run that did not succeed is the one run event worth finding later.
         read: succeeded,
         // An interrupted run never wrote a footer, so it has no duration to
-        // report and must not claim one.
-        message: Number.isFinite(event.seconds)
-          ? `${name} ${event.status} in ${event.seconds}s`
-          : `${name} ${event.status}`,
+        // report and must not claim one. A run that never reached claude says
+        // what stopped it, such as the command before the prompt that failed.
+        message: `${Number.isFinite(event.seconds) ? `${name} ${event.status} in ${event.seconds}s` : `${name} ${event.status}`}${event.reason ? `: ${event.reason}` : ''}`,
         ...cron,
       };
     }

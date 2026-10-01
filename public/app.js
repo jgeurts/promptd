@@ -3649,11 +3649,9 @@ function connectEvents() {
       const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
       // Matches the drawer: a run with no footer has no duration to report.
       if (type === 'run:finished') {
-        toast(
-          Number.isFinite(payload.seconds)
-            ? `${named} ${payload.status} in ${payload.seconds}s`
-            : `${named} ${payload.status}`,
-        );
+        const ended = Number.isFinite(payload.seconds) ? `${named} ${payload.status} in ${payload.seconds}s` : `${named} ${payload.status}`;
+        // A run that never reached claude says what stopped it, as the drawer does.
+        toast(payload.reason ? `${ended}: ${payload.reason}` : ended);
       }
       if (type === 'run:delayed') {
         if (payload.hold === 'concurrency') {

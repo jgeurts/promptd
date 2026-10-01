@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { removeWorktree, writeWorktreeInclude } from '../src/worktree.js';
+import { copyWorktreeIncludes, prepareWorktree, removeWorktree, worktreeBranch, worktreePath, writeWorktreeInclude } from '../src/worktree.js';
 
 function git(dir: string, ...args: string[]): string {
   return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8' }).trim();
@@ -88,5 +88,152 @@ describe('writeWorktreeInclude', () => {
     fs.mkdirSync(sub, { recursive: true });
     await writeWorktreeInclude(sub, '.env.local');
     expect(fs.readFileSync(path.join(mainRepo, '.worktreeinclude'), 'utf8')).toBe('.env.local\n');
+  });
+});
+
+function commit(dir: string, message: string): string {
+  git(dir, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', message);
+  return git(dir, 'rev-parse', 'HEAD');
+}
+
+/**
+ * A bare origin, a checkout cloned from it, and a second clone that has since
+ * pushed one more commit, so the checkout's origin/main is a commit behind.
+ */
+function behindOrigin(): { app: string; pusher: string; newest: string; cached: string } {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-origin-'));
+  const origin = path.join(base, 'origin.git');
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin]);
+  const pusher = path.join(base, 'pusher');
+  execFileSync('git', ['clone', '-q', origin, pusher], { stdio: 'ignore' });
+  const cached = commit(pusher, 'one');
+  git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+  const app = path.join(base, 'app');
+  execFileSync('git', ['clone', '-q', origin, app]);
+  const newest = commit(pusher, 'two');
+  git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+  return { app, pusher, newest, cached };
+}
+
+describe('prepareWorktree', () => {
+  it('makes the tree claude --worktree would, at the newest commit on origin', async () => {
+    const { app, newest, cached } = behindOrigin();
+    expect(git(app, 'rev-parse', 'origin/main')).toBe(cached);
+
+    const tree = await prepareWorktree(app, 'job-1');
+    expect(tree).toMatchObject({ path: worktreePath(fs.realpathSync(app), 'job-1'), branch: 'worktree-job-1', created: true });
+    expect(tree.path).toBe(path.join(fs.realpathSync(app), '.claude', 'worktrees', 'job-1'));
+    expect(git(tree.path, 'rev-parse', 'HEAD')).toBe(newest);
+    expect(git(tree.path, 'symbolic-ref', '--short', 'HEAD')).toBe(worktreeBranch('job-1'));
+    expect(tree.notes.join('\n')).toContain('fetched origin main');
+  });
+
+  it('notes a fetch that fails and starts from origin/main as last fetched', async () => {
+    const { app, cached } = behindOrigin();
+    git(app, 'remote', 'set-url', 'origin', path.join(os.tmpdir(), 'no-such-origin.git'));
+    const tree = await prepareWorktree(app, 'job-2');
+    expect(git(tree.path, 'rev-parse', 'HEAD')).toBe(cached);
+    expect(tree.notes.join('\n')).toContain('could not fetch origin main');
+  });
+
+  it('starts from the checkout\'s own HEAD when there is no origin', async () => {
+    const head = commit(mainRepo, 'local');
+    const tree = await prepareWorktree(mainRepo, 'job-3');
+    expect(git(tree.path, 'rev-parse', 'HEAD')).toBe(head);
+    expect(tree.notes.join('\n')).toContain('no origin/HEAD');
+  });
+
+  it('puts the tree under the main checkout for a job in a linked worktree, as claude does', async () => {
+    const linked = path.join(path.dirname(mainRepo), 'platform-linked');
+    git(mainRepo, 'worktree', 'add', '-q', '-b', 'linked', linked);
+    const sub = path.join(linked, 'apps');
+    fs.mkdirSync(sub);
+    const tree = await prepareWorktree(sub, 'job-4');
+    expect(tree.path).toBe(path.join(fs.realpathSync(mainRepo), '.claude', 'worktrees', 'job-4'));
+    expect(tree.root).toBe(fs.realpathSync(mainRepo));
+  });
+
+  it('reuses a tree as the last run left it, and moves one with no work of its own up to origin', async () => {
+    const { app, pusher, newest } = behindOrigin();
+    const first = await prepareWorktree(app, 'job-5');
+    fs.writeFileSync(path.join(first.path, 'scratch.txt'), 'left behind');
+
+    // Untracked work: reused as it is, not moved.
+    const third = commit(pusher, 'three');
+    git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+    const dirty = await prepareWorktree(app, 'job-5');
+    expect(dirty).toMatchObject({ path: first.path, created: false });
+    expect(git(dirty.path, 'rev-parse', 'HEAD')).toBe(newest);
+    expect(fs.readFileSync(path.join(dirty.path, 'scratch.txt'), 'utf8')).toBe('left behind');
+
+    // Clean, with nothing of its own: moved to the newest commit on origin.
+    fs.rmSync(path.join(first.path, 'scratch.txt'));
+    const clean = await prepareWorktree(app, 'job-5');
+    expect(git(clean.path, 'rev-parse', 'HEAD')).toBe(third);
+    expect(clean.notes.join('\n')).toContain('moved it to origin/main');
+
+    // A commit of its own: kept where it is.
+    const own = commit(clean.path, 'mine');
+    commit(pusher, 'four');
+    git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+    expect(git((await prepareWorktree(app, 'job-5')).path, 'rev-parse', 'HEAD')).toBe(own);
+  });
+
+  it('is cleaned up by removeWorktree like one claude made', async () => {
+    const tree = await prepareWorktree(mainRepo, 'job-6');
+    expect(await removeWorktree(mainRepo, 'job-6')).toHaveProperty('cleaned');
+    expect(fs.existsSync(tree.path)).toBe(false);
+    expect(branchExists(mainRepo, 'worktree-job-6')).toBe(false);
+  });
+
+  it('refuses a folder in its place that is not a worktree, and a symlink on the way to it', async () => {
+    const stray = worktreePath(mainRepo, 'job-7');
+    fs.mkdirSync(stray, { recursive: true });
+    await expect(prepareWorktree(mainRepo, 'job-7')).rejects.toThrow('is not a worktree of');
+
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-elsewhere-'));
+    fs.rmSync(path.join(mainRepo, '.claude'), { recursive: true });
+    fs.mkdirSync(path.join(mainRepo, '.claude'));
+    fs.symlinkSync(elsewhere, path.join(mainRepo, '.claude', 'worktrees'));
+    await expect(prepareWorktree(mainRepo, 'job-8')).rejects.toThrow('is a symlink');
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it('stops when asked, before making anything', async () => {
+    const { app } = behindOrigin();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(prepareWorktree(app, 'job-9', { signal: controller.signal })).rejects.toThrow();
+    expect(fs.existsSync(worktreePath(app, 'job-9'))).toBe(false);
+  });
+});
+
+describe('copyWorktreeIncludes', () => {
+  it('copies the ignored files .worktreeinclude names, and nothing tracked, unlisted or linked', async () => {
+    fs.writeFileSync(path.join(mainRepo, '.gitignore'), 'node_modules/\n.env*\nsecret.txt\n');
+    fs.writeFileSync(path.join(mainRepo, 'tracked.env.example'), 'tracked\n');
+    git(mainRepo, 'add', '.gitignore', 'tracked.env.example');
+    commit(mainRepo, 'ignore');
+    fs.writeFileSync(path.join(mainRepo, '.env'), 'A=1\n');
+    fs.writeFileSync(path.join(mainRepo, 'secret.txt'), 'not listed\n');
+    fs.writeFileSync(path.join(mainRepo, 'untracked.txt'), 'listed but not ignored\n');
+    fs.mkdirSync(path.join(mainRepo, 'node_modules', 'pkg'), { recursive: true });
+    fs.writeFileSync(path.join(mainRepo, 'node_modules', 'pkg', 'index.js'), 'module.exports = 1;\n');
+    fs.symlinkSync('.env', path.join(mainRepo, '.env.link'));
+    fs.writeFileSync(path.join(mainRepo, '.worktreeinclude'), '# copied into new worktrees\n.env*\nnode_modules/\nuntracked.txt\ntracked.env.example\n');
+
+    const tree = await prepareWorktree(mainRepo, 'job-10');
+    const copy = await copyWorktreeIncludes(tree.root, tree.path);
+    expect(copy.copied.sort()).toEqual(['.env', 'node_modules/pkg/index.js']);
+    expect(copy.skipped).toEqual(['.env.link']);
+    expect(fs.readFileSync(path.join(tree.path, '.env'), 'utf8')).toBe('A=1\n');
+    expect(fs.existsSync(path.join(tree.path, 'secret.txt'))).toBe(false);
+    expect(fs.existsSync(path.join(tree.path, 'untracked.txt'))).toBe(false);
+    expect(fs.readFileSync(path.join(tree.path, 'tracked.env.example'), 'utf8')).toBe('tracked\n');
+  });
+
+  it('copies nothing without a .worktreeinclude', async () => {
+    const tree = await prepareWorktree(mainRepo, 'job-11');
+    expect(await copyWorktreeIncludes(tree.root, tree.path)).toEqual({ copied: [], skipped: [] });
   });
 });
