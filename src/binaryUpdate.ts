@@ -35,12 +35,62 @@ export function checksumFor(sums: string, file: string): string | null {
 }
 
 /**
- * Whether exiting brings this process straight back: launchd names the job it
- * runs in XPC_SERVICE_NAME, and a terminal sets it to 0.
+ * Whether this process is a launchd job, which launchd can start again: launchd
+ * names the job in XPC_SERVICE_NAME and starts it itself, so is its parent. A
+ * terminal sets the name to 0, but an app launchd started can hand its own name
+ * to a shell, whose processes it is not the parent of.
  */
-export function underLaunchd(env: NodeJS.ProcessEnv = process.env): boolean {
+export function underLaunchd(env: NodeJS.ProcessEnv = process.env, ppid: number = process.ppid): boolean {
   const name = env.XPC_SERVICE_NAME;
-  return Boolean(name && name !== '0');
+  return Boolean(name && name !== '0') && ppid === 1;
+}
+
+/** The launchctl arguments that have launchd stop the job `label` and start it again. */
+export function kickstartArgs(label: string, uid: number): string[] {
+  return ['kickstart', '-k', `gui/${uid}/${label}`];
+}
+
+// launchd stops this process with SIGTERM before it starts the new one, so still
+// being here this long after asking means no restart is coming.
+export const RESTART_WAIT_MS = 5000;
+
+export interface RestartOptions {
+  log?: (line: string) => void;
+  env?: NodeJS.ProcessEnv;
+  ppid?: number;
+  uid?: number;
+  /** Runs launchctl with these arguments, settling when it exits. */
+  launchctl?: (args: string[]) => Promise<unknown>;
+  exit?: (code: number) => void;
+  waitMs?: number;
+}
+
+/**
+ * Restarts this process into the build now on disk. Exiting would do where
+ * launchd's KeepAlive starts the job again, but on some Macs macOS never does,
+ * so under launchd this asks launchd to restart the job outright, and exits
+ * only when that fails or no restart comes.
+ */
+export async function restartService({
+  log = (line) => console.log(line),
+  env = process.env,
+  ppid = process.ppid,
+  uid = process.getuid?.() ?? 0,
+  launchctl = (args) => execFileAsync('/bin/launchctl', args, { timeout: 10_000 }),
+  exit = (code) => process.exit(code),
+  waitMs = RESTART_WAIT_MS,
+}: RestartOptions = {}): Promise<void> {
+  const label = env.XPC_SERVICE_NAME;
+  if (label && underLaunchd(env, ppid)) {
+    try {
+      await launchctl(kickstartArgs(label, uid));
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      log(`launchd did not restart ${label}; exiting for it to start the new build`);
+    } catch (err) {
+      log(`launchctl could not restart ${label}: ${(err as Error).message}; exiting for launchd to start the new build`);
+    }
+  }
+  exit(0);
 }
 
 async function github<T>(route: string): Promise<T> {

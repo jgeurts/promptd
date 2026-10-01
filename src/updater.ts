@@ -3,7 +3,7 @@ import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { BINARY_VERSION } from './binary.js';
-import { compareBuilds, installVersion, latestVersion, underLaunchd, versionOnDisk } from './binaryUpdate.js';
+import { compareBuilds, installVersion, latestVersion, restartService, underLaunchd, versionOnDisk } from './binaryUpdate.js';
 import { emit } from './events.js';
 import { LOGS_DIR } from './paths.js';
 import { loadSettings, patchSettings } from './settings.js';
@@ -411,8 +411,8 @@ class SelfUpdater {
   }
 
   /**
-   * A binary's update: the new build replaces the file, then the hub exits for
-   * launchd to start it again. Each node follows once it sees the hub's new build.
+   * A binary's update: the new build replaces the file, then launchd restarts the
+   * hub into it. Each node follows once it sees the hub's new build.
    */
   public installBuild(): void {
     const target = this.target;
@@ -438,8 +438,8 @@ class SelfUpdater {
           log(`build ${target} is on disk, but launchd is not running this hub, so it keeps running ${BINARY_VERSION} until you restart it`);
           return giveUp('no restart is coming');
         }
-        log(`build ${target} installed; exiting for launchd to start it`);
-        process.exit(0);
+        log(`build ${target} installed; asking launchd to restart into it`);
+        return restartService({ log });
       },
       (err: Error) => {
         log(`could not install build ${target}: ${err.message}`);
