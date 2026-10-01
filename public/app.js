@@ -1087,15 +1087,22 @@ function nextRunCell(cron, pause) {
  */
 async function paintExecutions(panel, pause, sub, unread) {
   const sort = readSort('executions');
-  // A held list keeps rows that a rise from further down has pushed out of
-  // the first page, so it asks for a page more to find them in.
-  const limit = executionsState.limit + (sort === 'activity' && holding('executions') ? executionsState.pageSize : 0);
   const [page, projects] = await Promise.all([
-    api(`/api/executions?limit=${limit}${sort === 'activity' ? '&sort=activity' : ''}`),
+    api(`/api/executions?limit=${executionsState.limit}${sort === 'activity' ? '&sort=activity' : ''}`),
     api('/api/projects'),
   ]);
+  let items = page.items;
+  // Held, no row the list showed may leave it, so one that a rise has pushed
+  // off the page is read on its own. Asked once the answer is in, since the
+  // pointer may have come into the list while the page was on its way.
+  if (sort === 'activity' && holding('executions')) {
+    const fetched = new Set(items.map((execution) => execution.id));
+    const missing = listOrder.ids.filter((id) => !fetched.has(id));
+    const found = await Promise.all(missing.map((id) => api(`/api/executions/${id}`).catch(() => null)));
+    items = [...items, ...found.filter(Boolean)];
+  }
   const { jobs: executions, order } =
-    sort === 'activity' ? heldOrder('executions', page.items, executionsState.limit) : { jobs: page.items, order: null };
+    sort === 'activity' ? heldOrder('executions', items, executionsState.limit) : { jobs: items, order: null };
 
   let line;
   if (!page.total) line = 'Nothing scheduled yet';
@@ -3583,6 +3590,7 @@ const logsState = {
   query: '', // the run list shows only logs containing this, ignoring case
   searchTimer: null,
   renderSeq: 0, // a slow search response must not overwrite a newer one
+  paintedSeq: 0, // the render on screen, which alone may mark its job read
   toRetrospective: false, // scroll the selected log to its retrospective once it has loaded
 };
 
@@ -3665,6 +3673,9 @@ async function renderLogs(id, kind = 'cron') {
   const logsUrl = `/api/${base}/${id}/logs${query ? `?q=${encodeURIComponent(query)}` : ''}`;
   const [{ cron, logs, stats, total }, pause] = await Promise.all([api(logsUrl), api('/api/pause')]);
   if (seq !== logsState.renderSeq) return;
+  // A move to another page landed while this one waited.
+  const open = parseHash();
+  if (open.section !== 'logs' || open.id !== id || open.kind !== kind) return;
 
   // Default to the live run if there is one, else the newest run.
   if (!logsState.selected || !logs.some((log) => log.file === logsState.selected)) {
@@ -3772,6 +3783,7 @@ async function renderLogs(id, kind = 'cron') {
       ? `Scheduled for ${fmtDateTime(cron.scheduledAt) ?? 'an unreadable date'}.`
       : '';
 
+  logsState.paintedSeq = seq;
   view.replaceChildren(
     el('div', { class: 'breadcrumb' }, [
       kind === 'execution'
@@ -3811,10 +3823,11 @@ async function renderLogs(id, kind = 'cron') {
     search.setSelectionRange(...typing);
   }
 
-  // Read once the run is on screen, by this render: a log that never loads reads nothing.
+  // Read once the run is on screen, by the render on screen: a log that never
+  // loads reads nothing, nor does one whose page has been left or redrawn.
   const newest = query ? null : (logs[0]?.file ?? null);
   const shown = () => {
-    if (seq === logsState.renderSeq) acknowledgeJob(cron, logsState.selected, newest);
+    if (seq === logsState.paintedSeq && body.isConnected) acknowledgeJob(cron, logsState.selected, newest);
   };
   if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base, shown);
   else shown();
