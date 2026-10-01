@@ -343,6 +343,22 @@ describe('waitingJobs', () => {
     expect(jobs[1]?.limits).toEqual([{ name: 'Weekly, all models', usedPercent: 100, threshold: 95, resetsAt: null }]);
     expect(jobs[2]).toMatchObject({ queueLength: 2, limits: [], since: '2026-09-30T10:00:00.000Z' });
   });
+
+  it("keeps a node's own queue order for two that arrived in the same instant", () => {
+    const at = '2026-09-30T10:00:00.000Z';
+    const jobs = waitingJobs([
+      node({
+        waiting: [
+          held({ cronId: 'a', cronName: 'Alpha', hold: 'concurrency', position: 1, queueLength: 2, arrivedAt: at }),
+          held({ cronId: 'z', cronName: 'Zulu', hold: 'concurrency', position: 0, queueLength: 2, arrivedAt: at }),
+        ],
+      }),
+    ]);
+    expect(jobs.map((job) => [job.name, job.position])).toEqual([
+      ['Zulu', 1],
+      ['Alpha', 2],
+    ]);
+  });
 });
 
 describe('header summary', () => {

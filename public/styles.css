@@ -334,11 +334,19 @@ a {
 
 .sp-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   margin: 8px 0 0;
   padding: 0;
   list-style: none;
   font-size: 13px;
+}
+
+/* A job may be named with 120 characters and no space; it wraps rather than pushing the panel wide. */
+.sp-item,
+.acct-meta,
+.sp-lead {
+  overflow-wrap: anywhere;
 }
 
 .sp-item.warning,

@@ -347,13 +347,20 @@ export function machineExceptions(nodes: ClusterNode[]): MachineException[] {
 }
 
 /**
- * Every trigger the online nodes are holding. Usage holds come first, because
- * they wait on the clock rather than on a job finishing, then in the order the
- * nodes queue them: by when each trigger first had to wait, which a trigger
- * moved from a usage hold into the slot queue keeps.
+ * Usage holds first, because they wait on the clock rather than on a job
+ * finishing, then in the order the nodes queue them: by when each trigger first
+ * had to wait, which a trigger moved from a usage hold into the slot queue
+ * keeps. Two that arrived in the same instant on one node keep that node's own
+ * order, its queue position, rather than falling back to their names.
  */
+function queueOrder(a: WaitingJob, b: WaitingJob): number {
+  const kind = (job: WaitingJob): number => (job.hold === 'usage' ? 0 : 1);
+  const place = a.nodeId === b.nodeId && a.position !== null && b.position !== null ? a.position - b.position : 0;
+  return kind(a) - kind(b) || Date.parse(a.since) - Date.parse(b.since) || place || a.nodeName.localeCompare(b.nodeName) || a.name.localeCompare(b.name);
+}
+
+/** Every trigger the online nodes are holding, in `queueOrder`. */
 export function waitingJobs(nodes: ClusterNode[]): WaitingJob[] {
-  const order = (job: WaitingJob): number => (job.hold === 'usage' ? 0 : 1);
   return nodes
     .filter((node) => node.online)
     .flatMap((node) =>
@@ -381,7 +388,7 @@ export function waitingJobs(nodes: ClusterNode[]): WaitingJob[] {
         }),
       ),
     )
-    .sort((a, b) => order(a) - order(b) || Date.parse(a.since) - Date.parse(b.since) || a.name.localeCompare(b.name));
+    .sort(queueOrder);
 }
 
 /** "1 job", "3 jobs". */

@@ -3305,10 +3305,9 @@ function connectEvents() {
       handler(event);
     });
 
-  // Drawn once fresh health is in, so the header never says "all clear" from what it held through the gap.
   on('hello', () => {
-    stream.state = 'connected';
-    checkHealth().then(paintHeader);
+    stream.awaitingHealth = true;
+    checkHealth();
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
   });
@@ -3431,6 +3430,7 @@ function connectEvents() {
   // The browser retries on its own; until the next hello, the header says the updates are down.
   events.onerror = () => {
     stream.state = 'disconnected';
+    stream.awaitingHealth = false;
     paintHeader();
   };
 }
@@ -3841,11 +3841,20 @@ let headerDrawn = null; // what the rows were last drawn from, so an unchanged p
 let panelDrawn = null; // the same for the panel
 let announced = null; // the facts last announced, so only a change is spoken
 
-/** The page's own event stream: `connecting` until the first hello, then connected or not. */
-const stream = { state: 'connecting', lastAt: null };
+/**
+ * The page's own event stream: `connecting` until the first hello, then
+ * connected or not. A hello counts as connected only once a fresh health
+ * reading has landed after it (`awaitingHealth`), so the header never says the
+ * updates are back over numbers it held through the gap.
+ */
+const stream = { state: 'connecting', lastAt: null, awaitingHealth: false };
 
 // Past this many, the panel's list of waiting jobs says how many more there are.
 const WAITING_SHOWN = 6;
+// A hub that has just started has not heard from its nodes yet, so for this long
+// it reports them offline and their jobs gone. Longer than the node sync and the
+// 15 seconds a node may be silent before it counts as offline.
+const HUB_SETTLE_MS = 20000;
 
 const ACCOUNT_STATUS = { reached: 'Limit reached', near: 'Near limit', ok: 'OK', unknown: 'No usage reading' };
 const LIMIT_FLAG = { reached: 'Reached', near: 'Near' };
@@ -3980,14 +3989,16 @@ function paintHeader() {
 /**
  * One polite message when something meaningful changes: jobs start waiting, a
  * computer goes offline, the updates drop or come back, or it is all clear
- * again. Never a percentage tick, and nothing for the state the page opened in.
+ * again. Never a percentage tick, nothing for the state the page opened in,
+ * and nothing for a hub still hearing back from its nodes after a restart.
  */
 function announce(warnings, attention) {
   const cluster = healthState.cluster;
   const facts = {
     // By identity, so one job starting while another begins to wait is still news.
     waiting: (cluster.waiting ?? []).map((job) => `${job.nodeId}:${job.id}:${job.hold}`),
-    offline: cluster.nodes.offline.length,
+    // By identity too: one computer coming back as another drops out is still news.
+    offline: cluster.nodes.offline.map((node) => node.id),
     disconnected: stream.state === 'disconnected',
     attention,
   };
@@ -3996,11 +4007,13 @@ function announce(warnings, attention) {
   if (!before) return;
   const said = [];
   const text = (id) => warnings.find((warning) => warning.id === id)?.text;
-  if (facts.waiting.some((job) => !before.waiting.includes(job))) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
-  if (facts.offline > before.offline && text('offline')) said.push(text('offline'));
+  // Just after a hub restart its nodes come back one by one; that is not news.
+  const settling = Date.now() - Date.parse(healthState.startedAt ?? '') < HUB_SETTLE_MS;
+  if (!settling && facts.waiting.some((job) => !before.waiting.includes(job))) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
+  if (!settling && facts.offline.some((id) => !before.offline.includes(id)) && text('offline')) said.push(text('offline'));
   if (facts.disconnected && !before.disconnected) said.push('Updates disconnected');
   if (!facts.disconnected && before.disconnected) said.push('Updates reconnected');
-  if (!facts.attention && before.attention) said.push('All clear');
+  if (!settling && !facts.attention && before.attention) said.push('All clear');
   if (!said.length) return;
   // Emptied first, so a message that repeats an earlier one is still spoken.
   announcerEl.textContent = '';
@@ -4568,6 +4581,10 @@ async function checkHealth() {
     if (health.commit && !loadedCommit) loadedCommit = health.commit;
     else if (health.commit && health.commit !== loadedCommit) staleBuild = true;
     healthState = health;
+    if (stream.awaitingHealth) {
+      stream.awaitingHealth = false;
+      stream.state = 'connected';
+    }
     paintHeader();
   } catch {
     /* the stream's error handler already reports a lost connection */
