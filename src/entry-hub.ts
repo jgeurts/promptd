@@ -767,6 +767,9 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     const found = await findRecord(req.params.id);
     if (!found) return res.status(404).json({ error: `${noun(req)} not found` });
     const cron = found.record;
+    // Read before the runs are listed: the page marks this revision read once
+    // it shows them, and a run that starts in between is a later revision.
+    const activity = await jobActivity.row(cron.id);
     const logs = await listLogs(cron.id);
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     const shown = await filterLogs(cron.id, logs, query);
@@ -776,8 +779,7 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     const stats = await lifetimeStats(cron, found.kind === 'execution' ? patchExecution : undefined);
     hub.jobsCache = null;
     res.json({
-      // Its activity is what the page marks read once it has shown the run it is about.
-      cron: found.view(cron, await jobActivity.row(cron.id)),
+      cron: found.view(cron, activity),
       stats,
       total: logs.length,
       logs: shown.map((log) => ({

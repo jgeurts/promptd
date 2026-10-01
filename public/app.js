@@ -699,7 +699,11 @@ const SORTS = {
   ],
 };
 
+/** The order picked on this page, which outlives storage that will not keep it. */
+const pickedSorts = {};
+
 function readSort(tab) {
+  if (pickedSorts[tab]) return pickedSorts[tab];
   try {
     const saved = localStorage.getItem(`promptd.sort.${tab}`);
     if (SORTS[tab].some((option) => option.id === saved)) return saved;
@@ -710,6 +714,7 @@ function readSort(tab) {
 }
 
 function saveSort(tab, sort) {
+  pickedSorts[tab] = sort;
   try {
     localStorage.setItem(`promptd.sort.${tab}`, sort);
   } catch {
@@ -763,25 +768,34 @@ function focusable(node, key) {
  * about to click would put the click on another job; the list catches up once
  * both have left it.
  */
-const listOrder = { key: null, ids: null, behind: false };
+const NO_ORDER = { key: null, ids: null, behind: false };
+const listOrder = { ...NO_ORDER };
 
 function holdingList() {
   const panel = view.querySelector('.tab-panel');
   return Boolean(panel && (panel.matches(':hover') || panel.contains(document.activeElement)));
 }
 
-/** `jobs` in the order last drawn when the list is held, else as ranked; and remembers it. */
-function heldOrder(key, jobs) {
-  let ordered = jobs;
-  if (listOrder.key === key && listOrder.ids && holdingList()) {
-    const place = new Map(listOrder.ids.map((id, index) => [id, index]));
-    const rank = (job) => place.get(job.id) ?? listOrder.ids.length + jobs.indexOf(job);
-    ordered = [...jobs].sort((a, b) => rank(a) - rank(b));
-  }
-  listOrder.behind = ordered.some((job, index) => job.id !== jobs[index].id);
-  listOrder.key = key;
-  listOrder.ids = ordered.map((job) => job.id);
-  return ordered;
+/** Whether the list drawn as `key` is held now. */
+function holding(key) {
+  return listOrder.key === key && Boolean(listOrder.ids) && holdingList();
+}
+
+/**
+ * The rows to draw, ranked and cut to `limit`, or while the list is held, the
+ * rows it was last drawn with in the places they had: none moves and none
+ * leaves, and one that has risen into the list from below joins at the
+ * bottom. Answers the order to remember too, which the caller keeps only if
+ * its render is the one drawn.
+ */
+function heldOrder(key, jobs, limit = jobs.length) {
+  const ranked = jobs.slice(0, limit);
+  if (!holding(key)) return { jobs: ranked, order: { key, ids: ranked.map((job) => job.id), behind: false } };
+  const place = new Map(listOrder.ids.map((id, index) => [id, index]));
+  const rank = (job) => place.get(job.id) ?? listOrder.ids.length + jobs.indexOf(job);
+  const kept = jobs.filter((job, index) => place.has(job.id) || index < limit).sort((a, b) => rank(a) - rank(b));
+  const behind = kept.length !== ranked.length || kept.some((job, index) => job.id !== ranked[index].id);
+  return { jobs: kept, order: { key, ids: kept.map((job) => job.id), behind } };
 }
 
 /** The Sort buttons and Mark all read, above either list. */
@@ -802,7 +816,7 @@ function listTools(tab, sort, unread) {
             if (option.id === sort) return;
             saveSort(tab, option.id);
             // An order asked for is drawn as it is, not held to the last one.
-            listOrder.ids = null;
+            Object.assign(listOrder, NO_ORDER);
             renderHome(tab).catch(() => {});
           },
         }),
@@ -886,11 +900,12 @@ async function renderHome(tab = 'crons') {
     subEl.textContent = text;
   };
 
-  if (tab === 'executions') await paintExecutions(panel, pause, sub, unread);
-  else await paintCrons(panel, pause, sub, unread);
+  const order = tab === 'executions' ? await paintExecutions(panel, pause, sub, unread) : await paintCrons(panel, pause, sub, unread);
 
   // A newer render, or a move to another page, landed while this one waited.
   if (renderId !== homeRenderId || location.hash !== hash) return;
+  // What is on screen is what a held list holds to; Name and Date hold nothing.
+  Object.assign(listOrder, order ?? NO_ORDER);
   // Redraws come with every run event, and must not throw the keyboard back to the top.
   const focused = view.contains(document.activeElement) ? document.activeElement.closest('[data-focus]')?.dataset.focus : null;
   view.replaceChildren(head, tabBar(tab), panel);
@@ -959,7 +974,7 @@ function projectLine(job, projects) {
 async function paintCrons(panel, pause, sub, unread) {
   const sort = readSort('crons');
   const [ranked, projects] = await Promise.all([api(sort === 'activity' ? '/api/crons?sort=activity' : '/api/crons'), api('/api/projects')]);
-  const crons = sort === 'activity' ? heldOrder('crons', ranked) : ranked;
+  const { jobs: crons, order } = sort === 'activity' ? heldOrder('crons', ranked) : { jobs: ranked, order: null };
   const armed = crons.filter((c) => c.isActive).length;
 
   let line;
@@ -983,7 +998,7 @@ async function paintCrons(panel, pause, sub, unread) {
         ]),
       ]),
     );
-    return;
+    return order;
   }
 
   const row = (cron) =>
@@ -1036,6 +1051,7 @@ async function paintCrons(panel, pause, sub, unread) {
       ]),
     ]),
   );
+  return order;
 }
 
 /** The Next run cell: a held trigger, a real schedule, or nothing to say. */
@@ -1071,11 +1087,15 @@ function nextRunCell(cron, pause) {
  */
 async function paintExecutions(panel, pause, sub, unread) {
   const sort = readSort('executions');
+  // A held list keeps rows that a rise from further down has pushed out of
+  // the first page, so it asks for a page more to find them in.
+  const limit = executionsState.limit + (sort === 'activity' && holding('executions') ? executionsState.pageSize : 0);
   const [page, projects] = await Promise.all([
-    api(`/api/executions?limit=${executionsState.limit}${sort === 'activity' ? '&sort=activity' : ''}`),
+    api(`/api/executions?limit=${limit}${sort === 'activity' ? '&sort=activity' : ''}`),
     api('/api/projects'),
   ]);
-  const executions = sort === 'activity' ? heldOrder('executions', page.items) : page.items;
+  const { jobs: executions, order } =
+    sort === 'activity' ? heldOrder('executions', page.items, executionsState.limit) : { jobs: page.items, order: null };
 
   let line;
   if (!page.total) line = 'Nothing scheduled yet';
@@ -1098,7 +1118,7 @@ async function paintExecutions(panel, pause, sub, unread) {
         ]),
       ]),
     );
-    return;
+    return order;
   }
 
   const row = (execution) =>
@@ -1134,7 +1154,7 @@ async function paintExecutions(panel, pause, sub, unread) {
     ]);
   const rows = sort === 'activity' ? executions.map(row) : groupedRows(executions, projects, row);
 
-  const more = page.nextBefore
+  const more = executions.length < page.total
     ? el('div', { class: 'load-more' }, [
         el('button', {
           class: 'btn',
@@ -1173,6 +1193,7 @@ async function paintExecutions(panel, pause, sub, unread) {
       more,
     ]),
   );
+  return order;
 }
 
 /** When a one-time execution goes, or when it went and what became of it. */
@@ -3790,8 +3811,13 @@ async function renderLogs(id, kind = 'cron') {
     search.setSelectionRange(...typing);
   }
 
-  if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base);
-  acknowledgeJob(cron, logsState.selected, query ? null : (logs[0]?.file ?? null));
+  // Read once the run is on screen, by this render: a log that never loads reads nothing.
+  const newest = query ? null : (logs[0]?.file ?? null);
+  const shown = () => {
+    if (seq === logsState.renderSeq) acknowledgeJob(cron, logsState.selected, newest);
+  };
+  if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base, shown);
+  else shown();
 }
 
 /** The revision each job was last reported read at from this page, so a redraw does not say it again. */
@@ -3807,7 +3833,7 @@ function acknowledgeJob(job, selected, newest) {
   const activity = job?.activity;
   if (!activity?.unread || document.visibilityState !== 'visible') return;
   const about = activity.update?.logFile ?? null;
-  if (about && selected !== about && selected !== newest) return;
+  if (about && selected !== about && !(selected && selected === newest)) return;
   if (reportedRead.get(job.id) === activity.revision) return;
   reportedRead.set(job.id, activity.revision);
   // The revision this page was drawn with: an update since leaves the job unread.
@@ -3828,7 +3854,7 @@ function durationFromLog(text) {
 }
 
 /** Streams one log file into the pre element, appending chunks as they arrive. */
-function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons') {
+function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons', onShown = () => {}) {
   closeLogStream();
   body.textContent = '';
   liveBadge.textContent = 'streaming';
@@ -3837,9 +3863,18 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons')
   const stream = new EventSource(`/api/${base}/${cronId}/logs/${encodeURIComponent(file)}/stream`);
   logStream = stream;
 
+  // Called once, when the log is first on screen: its first chunk, or its end.
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    onShown();
+  };
+
   stream.addEventListener('chunk', (event) => {
     body.append(JSON.parse(event.data).text);
     if (logsState.atBottom) body.scrollTop = body.scrollHeight;
+    show();
   });
 
   stream.addEventListener('done', () => {
@@ -3855,6 +3890,7 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons')
     const retro = markRetrospective(body);
     if (retro && logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
     logsState.toRetrospective = false;
+    show();
     closeLogStream();
   });
 
@@ -3964,12 +4000,16 @@ function refreshSoon() {
 
 function connectEvents() {
   const events = new EventSource('/api/events');
+  let connectedBefore = false;
 
   events.addEventListener('hello', () => {
     setConnState();
     checkHealth();
-    // Also the reconnect path: whatever happened while the stream was down is counted.
+    // Also the reconnect path: whatever happened while the stream was down is
+    // counted, and the page drawn again, since none of it was heard.
     refreshActivityCounts();
+    if (connectedBefore) refreshCurrentView();
+    connectedBefore = true;
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
   });
@@ -4046,8 +4086,10 @@ function connectEvents() {
   // A job's updates were written, or read in some browser: the lists show both.
   // The logs page only needs the first, to mark read what it is now showing.
   events.addEventListener('job:activity', (event) => {
-    setActivityCounts(JSON.parse(event.data).counts);
-    refreshSoon();
+    const { id, counts } = JSON.parse(event.data);
+    setActivityCounts(counts);
+    const { section, id: open } = parseHash();
+    if (section === 'list' || (section === 'logs' && open === id)) refreshSoon();
   });
   events.addEventListener('job:read', (event) => {
     setActivityCounts(JSON.parse(event.data).counts);
