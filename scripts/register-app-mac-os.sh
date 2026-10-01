@@ -254,8 +254,15 @@ check_relaunch() {
     fi
   done
   printf '\n'
-  # Running for now, so this Mac is not left without it.
-  launchctl kickstart "$DOMAIN/$label" >/dev/null 2>&1
+  # Started by hand for now, so this Mac is not left without it. -k because the old
+  # process may still be stopping, and a plain kickstart would leave it to exit later.
+  before="$(runs_of "$label")"
+  launchctl kickstart -k "$DOMAIN/$label" >/dev/null 2>&1
+  for _ in $(seq 1 20); do
+    [ "$(runs_of "$label")" -gt "${before:-0}" ] 2>/dev/null && running "$label" && break
+    sleep 0.5
+  done
+  running "$label" || die "launchd will not start $label, even when asked. Allow promptd under System Settings → General → Login Items & Extensions → Allow in the Background, then $RUN_AGAIN."
   die "macOS is not letting promptd start on its own, so this Mac will drop off after a restart or login. Turn promptd on under System Settings → General → Login Items & Extensions → Allow in the Background, then $RUN_AGAIN."
 }
 
