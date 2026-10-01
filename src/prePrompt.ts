@@ -33,7 +33,7 @@ export type SetupOutcome =
   | { ok: true }
   | { ok: false; why: 'exit'; index: number; command: string; code: number | null; signal: NodeJS.Signals | null }
   | { ok: false; why: 'spawn'; index: number; command: string; error: string }
-  | { ok: false; why: 'timeout' | 'stopped'; index: number; command: string };
+  | { ok: false; why: 'stuck' | 'timeout' | 'stopped'; index: number; command: string };
 
 /** Writes a command's output through, up to a point, then keeps only its end. */
 class CappedOutput {
@@ -141,6 +141,11 @@ export class PrePromptSetup {
       if (end.error !== null) {
         write(`${lead}could not start ${PRE_PROMPT_SHELL[0]}: ${end.error}\n`);
         return { ok: false, why: 'spawn', index, command, error: end.error };
+      }
+      // Whatever it started may still be writing, so nothing may start after it.
+      if (end.leftRunning) {
+        write(`${lead}something it started was still running 5s after SIGKILL, so the run stops here\n`);
+        return { ok: false, why: 'stuck', index, command };
       }
       if (end.aborted) {
         write(`${lead}stopped after ${took}\n`);

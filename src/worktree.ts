@@ -24,6 +24,11 @@ interface GitOptions {
   input?: string;
 }
 
+/** True for a git failure that left processes running which would not end, so its folder must be left alone. */
+export function isStuck(err: unknown): boolean {
+  return err instanceof Error && Boolean((err.cause as { stuck?: boolean } | undefined)?.stuck);
+}
+
 // A fetch that wants a password would otherwise wait for one forever.
 const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
 
@@ -43,6 +48,7 @@ async function stoppableGit(dir: string, args: string[], options: GitOptions): P
     timeoutMs: options.timeout ?? 60_000,
     onOutput: (chunk, from) => (from === 'stdout' ? stdout : stderr).push(chunk),
   });
+  if (result.leftRunning) throw new Error(`git ${args[0]} left processes running that would not end`, { cause: { stuck: true } });
   if (result.aborted) throw new Error(`git ${args[0]} was stopped`);
   if (result.error !== null) throw new Error(result.error);
   if (result.timedOut) throw new Error(`git ${args[0]} took longer than ${((options.timeout ?? 60_000) / 1000).toFixed(0)}s`);
@@ -304,7 +310,8 @@ export async function prepareWorktree(dir: string, name: string, { signal }: { s
   try {
     await git(root, add, { timeout: 10 * 60_000, signal });
   } catch (err) {
-    await discardHalfMade(root, tree, kept ? null : branch);
+    // Not while something git started may still be writing there.
+    if (!isStuck(err)) await discardHalfMade(root, tree, kept ? null : branch);
     throw err;
   }
   if (kept) {

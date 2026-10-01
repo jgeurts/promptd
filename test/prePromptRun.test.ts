@@ -236,6 +236,21 @@ describe('commands before the prompt', () => {
     expect(ran.log).toContain('(on for this job, but');
   });
 
+  it('fail without touching a checkout elsewhere that already has the worktree branch', async () => {
+    const { app } = repoBehindOrigin();
+    const job = cron(app, ['true'], { cleanupWorktree: true });
+    const elsewhere = path.join(path.dirname(app), 'elsewhere');
+    git(app, 'worktree', 'add', '-q', '-b', `worktree-${job.id}`, elsewhere);
+    fs.writeFileSync(path.join(elsewhere, 'unsaved.txt'), 'work in progress\n');
+
+    const ran = await run(job);
+    expect(ran.event.status).toBe('failed');
+    expect(ran.claude).toBeNull();
+    expect(ran.log).toContain('Worktree cleanup: not cleaned up: this run did not get a worktree of its own');
+    expect(fs.readFileSync(path.join(elsewhere, 'unsaved.txt'), 'utf8')).toBe('work in progress\n');
+    expect(git(app, 'branch', '--list', `worktree-${job.id}`)).not.toBe('');
+  });
+
   it('copy what .worktreeinclude names into a new worktree before the commands run', async () => {
     const { app } = repoBehindOrigin();
     fs.writeFileSync(path.join(app, '.git', 'info', 'exclude'), '.env\n');

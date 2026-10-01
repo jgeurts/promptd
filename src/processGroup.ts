@@ -9,8 +9,9 @@ import type { ChildProcess } from 'node:child_process';
  *
  * Ending it, by abort or timeout, sends the group SIGTERM, then SIGKILL five
  * seconds later. When the command exits by itself, whatever it left running
- * in the group is ended the same way. A process that leaves the group on
- * purpose (a daemon that calls setsid) is beyond its reach.
+ * in the group is ended the same way. Should anything outlast SIGKILL, the
+ * answer says so in `leftRunning`. A process that leaves the group on purpose
+ * (a daemon that calls setsid) is beyond its reach.
  */
 
 export const KILL_AFTER_MS = 5000;
@@ -35,14 +36,32 @@ export interface GroupResult {
   error: string | null;
   timedOut: boolean;
   aborted: boolean;
+  /**
+   * Something in the group was still there five seconds after SIGKILL, or
+   * could not be signalled at all, so it may still be writing. What comes
+   * next should not touch the folder it was working in.
+   */
+  leftRunning: boolean;
 }
 
-function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
+/**
+ * Whether anything is left in the group. Only ESRCH says nothing is: EPERM
+ * means a member this process may not signal, such as one run through sudo.
+ */
+function groupAlive(pid: number): boolean {
+  try {
+    process.kill(-pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
+}
+
+function send(pid: number, signal: NodeJS.Signals): void {
   try {
     process.kill(-pid, signal);
-    return true;
   } catch {
-    return false;
+    /* gone, or not ours to signal; groupAlive tells which */
   }
 }
 
@@ -51,25 +70,26 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 /** Waits for the group to empty, up to `ms`; true once it has. */
 async function emptied(pid: number, ms: number): Promise<boolean> {
   const until = Date.now() + ms;
-  while (signalGroup(pid, 0)) {
+  while (groupAlive(pid)) {
     if (Date.now() >= until) return false;
     await sleep(POLL_MS);
   }
   return true;
 }
 
-/** SIGTERM to the group, then SIGKILL if anything is left, and back once it is empty. */
-async function endGroup(pid: number): Promise<void> {
-  if (!signalGroup(pid, 'SIGTERM')) return;
-  if (await emptied(pid, KILL_AFTER_MS)) return;
-  signalGroup(pid, 'SIGKILL');
-  await emptied(pid, KILL_AFTER_MS);
+/** SIGTERM to the group, then SIGKILL if anything is left; answers whether it is gone. */
+async function endGroup(pid: number): Promise<boolean> {
+  if (!groupAlive(pid)) return true;
+  send(pid, 'SIGTERM');
+  if (await emptied(pid, KILL_AFTER_MS)) return true;
+  send(pid, 'SIGKILL');
+  return emptied(pid, KILL_AFTER_MS);
 }
 
 export function runInGroup(command: string, args: string[], options: GroupOptions): Promise<GroupResult> {
   const { cwd, env = process.env, input, signal, timeoutMs, onOutput } = options;
   return new Promise((resolve) => {
-    const result: GroupResult = { code: null, signal: null, error: null, timedOut: false, aborted: false };
+    const result: GroupResult = { code: null, signal: null, error: null, timedOut: false, aborted: false, leftRunning: false };
     if (signal?.aborted) {
       resolve({ ...result, aborted: true });
       return;
@@ -82,9 +102,9 @@ export function runInGroup(command: string, args: string[], options: GroupOption
       return;
     }
 
-    let ending: Promise<void> | null = null;
-    const end = (): Promise<void> => {
-      ending ??= child.pid === undefined ? Promise.resolve() : endGroup(child.pid);
+    let ending: Promise<boolean> | null = null;
+    const end = (): Promise<boolean> => {
+      ending ??= child.pid === undefined ? Promise.resolve(true) : endGroup(child.pid);
       return ending;
     };
     const onAbort = (): void => {
@@ -130,7 +150,10 @@ export function runInGroup(command: string, args: string[], options: GroupOption
       // process outside the group can still hold the output open, so that is
       // given up on once the group is empty.
       void end()
-        .then(() => Promise.race([closed, sleep(KILL_AFTER_MS)]))
+        .then((gone) => {
+          result.leftRunning = !gone;
+          return Promise.race([closed, sleep(KILL_AFTER_MS)]);
+        })
         .then(() => {
           child.stdout?.destroy();
           child.stderr?.destroy();

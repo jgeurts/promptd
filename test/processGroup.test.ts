@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { PrePromptSetup } from '../src/prePrompt.js';
 import { runInGroup } from '../src/processGroup.js';
 
 const alive = (pid: number): boolean => {
@@ -52,6 +53,21 @@ describe('runInGroup', () => {
     const result = await runInGroup('/bin/bash', ['-c', 'sleep 30'], { timeoutMs: 200 });
     expect(result.timedOut).toBe(true);
   });
+
+  it('says so when it cannot confirm the group is gone, as when a member may not be signalled', async () => {
+    const realKill = process.kill.bind(process);
+    const kill = vi.spyOn(process, 'kill').mockImplementation((pid: number, signal?: string | number) => {
+      // A member this process may not signal, such as one run through sudo, answers EPERM.
+      if (pid < 0 && signal === 0) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      return realKill(pid, signal);
+    });
+    try {
+      // The setup stops there rather than going on to Claude.
+      expect(await new PrePromptSetup().run(['true', 'echo never'], { cwd: os.tmpdir(), write: () => {} })).toMatchObject({ ok: false, why: 'stuck', index: 0 });
+    } finally {
+      kill.mockRestore();
+    }
+  }, 30_000);
 
   it('says so when the command cannot start', async () => {
     expect((await runInGroup('/no/such/shell', [], {})).error).toMatch(/ENOENT/);

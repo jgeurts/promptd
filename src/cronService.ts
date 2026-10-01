@@ -28,12 +28,14 @@ import { RetrospectiveSplitter, retrospectiveAddendum, retrospectivePrompt, retr
 import {
   WORKTREE_INCLUDE_FILE,
   copyWorktreeIncludes,
+  isStuck,
   pathInRepo,
   prepareWorktree,
   removeWorktree,
   repoRoot,
   writeWorktreeInclude,
 } from './worktree.js';
+import type { PreparedWorktree } from './worktree.js';
 import { PRE_PROMPT_SHELL, PrePromptSetup, prePromptTimeoutMs } from './prePrompt.js';
 import type { SetupOutcome } from './prePrompt.js';
 // Every job here comes from the node's cache with its defaults filled in, so
@@ -280,6 +282,11 @@ function setupFailure(
   switch (outcome.why) {
     case 'stopped':
       return { detail: `killed by ${stoppedBy} during ${which} before the prompt`, reason: null };
+    case 'stuck':
+      return {
+        detail: `${which} before the prompt left processes that would not end: ${outcome.command}`,
+        reason: `${outcome.command} left processes running before the prompt that would not end`,
+      };
     case 'timeout':
       return {
         detail: `the commands before the prompt ran past ${formatRuntime(timeoutMs)}, during ${which}: ${outcome.command}`,
@@ -1547,6 +1554,10 @@ class CronService {
     // Filled in from the CLI's final result event, when the run gets that far.
     let resultEvent: CliEvent | null = null;
 
+    // Set when this run must not clean up a worktree: it never got one of its
+    // own, or something it started may still be writing in it. Clean up
+    // finds the worktree by its branch, which could be a checkout elsewhere.
+    let keepWorktree: string | null = null;
     // `reason` is for a run that never reached claude: what stopped it, for the notification.
     let finishing = false;
     const finish = async (status: RunStatus, detail: string, reason: string | null = null): Promise<void> => {
@@ -1557,7 +1568,7 @@ class CronService {
       // Every way a run ends comes through here once the child has exited, so
       // nothing is still writing in the folder being removed. The run keeps its
       // slot until this is done, so its next trigger cannot race the removal.
-      const cleanupLine = `Worktree cleanup: ${await cleanUpWorktree(cron, cwd)}`;
+      const cleanupLine = `Worktree cleanup: ${keepWorktree ? `not cleaned up: ${keepWorktree}` : await cleanUpWorktree(cron, cwd)}`;
       if (retroSplitter && retroPrompt !== null) {
         const held = retroSplitter.flush();
         if (held) stream.write(held);
@@ -1760,27 +1771,39 @@ class CronService {
     const prepareAndLaunch = async (setup: PrePromptSetup): Promise<void> => {
       let runCwd = cwd;
       if (useWorktree) {
+        let tree: PreparedWorktree;
         try {
-          const tree = await prepareWorktree(cwd, cron.id, { signal: setup.signal });
-          for (const note of tree.notes) stream.write(`worktree   ${note}\n`);
-          if (tree.created) {
-            const copy = await copyWorktreeIncludes(tree.root, tree.path, { signal: setup.signal });
-            stream.write(
-              `${WORKTREE_INCLUDE_FILE}  copied ${copy.copied.length} file${copy.copied.length === 1 ? '' : 's'}${copy.copied.length ? `: ${copy.copied.slice(0, 20).join(', ')}${copy.copied.length > 20 ? ', ...' : ''}` : ''}` +
-                `${copy.skipped.length ? `; left out ${copy.skipped.length} already in the tree or behind a symlink: ${copy.skipped.slice(0, 20).join(', ')}` : ''}\n`,
-            );
-          }
-          runCwd = tree.path;
+          tree = await prepareWorktree(cwd, cron.id, { signal: setup.signal });
         } catch (err) {
+          // A half-made tree is already gone, and one this run could not get is not its own to remove.
+          keepWorktree = 'this run did not get a worktree of its own';
           if (setup.isStopped) return finish('stopped', `killed by ${run.stoppedBy} while its worktree was being made`);
           const message = oneLine(err instanceof Error ? err.message : String(err));
           stream.write(`could not make the worktree: ${message}\n`);
           return finish('failed', 'could not make the worktree', `could not make its worktree: ${message}`);
         }
+        for (const note of tree.notes) stream.write(`worktree   ${note}\n`);
+        if (tree.created) {
+          try {
+            const copy = await copyWorktreeIncludes(tree.root, tree.path, { signal: setup.signal });
+            stream.write(
+              `${WORKTREE_INCLUDE_FILE}  copied ${copy.copied.length} file${copy.copied.length === 1 ? '' : 's'}${copy.copied.length ? `: ${copy.copied.slice(0, 20).join(', ')}${copy.copied.length > 20 ? ', ...' : ''}` : ''}` +
+                `${copy.skipped.length ? `; left out ${copy.skipped.length} already in the tree or behind a symlink: ${copy.skipped.slice(0, 20).join(', ')}` : ''}\n`,
+            );
+          } catch (err) {
+            if (isStuck(err)) keepWorktree = 'something git started is still running in it';
+            if (setup.isStopped) return finish('stopped', `killed by ${run.stoppedBy} while files were copied into its worktree`);
+            const message = oneLine(err instanceof Error ? err.message : String(err));
+            stream.write(`could not copy what ${WORKTREE_INCLUDE_FILE} names: ${message}\n`);
+            return finish('failed', `could not copy what ${WORKTREE_INCLUDE_FILE} names`, `could not copy what ${WORKTREE_INCLUDE_FILE} names into its worktree: ${message}`);
+          }
+        }
+        runCwd = tree.path;
       }
       stream.write(`directory  ${runCwd}\n`);
       const outcome = await setup.run(setupCommands, { cwd: runCwd, write: (chunk) => stream.write(chunk), timeoutMs: setupTimeoutMs });
       if (!outcome.ok) {
+        if (outcome.why === 'stuck') keepWorktree = 'something a command before the prompt started is still running in it';
         const failure = setupFailure(outcome, setupCommands.length, setupTimeoutMs, run.stoppedBy);
         return finish(outcome.why === 'stopped' ? 'stopped' : 'failed', failure.detail, failure.reason);
       }
