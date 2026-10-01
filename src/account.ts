@@ -30,42 +30,55 @@ export function reportedAccount(value: unknown): ClaudeAccount | null {
   return id && email ? { id, email } : null;
 }
 
-class AccountMonitor {
+/**
+ * One read of the config. `verified` says the file itself answered: an account,
+ * or none because there is no file or it names none. When it could not be
+ * read or parsed, `verified` is false and `account` is the one read last time,
+ * which is fine to keep showing but proves nothing about whose login is there now.
+ */
+export interface IdentityRead {
+  verified: boolean;
+  account: ClaudeAccount | null;
+}
+
+export class AccountMonitor {
   private current: ClaudeAccount | null;
   private readAt: number;
-  private reading: Promise<ClaudeAccount | null> | null;
+  private reading: Promise<IdentityRead> | null;
+  private configFile: () => string;
 
-  public constructor() {
+  public constructor(configFile: () => string = () => claudeConfig().configFile) {
     this.current = null;
     this.readAt = 0;
     this.reading = null;
+    this.configFile = configFile;
   }
 
   /** The account as last read, re-read once the last read is a minute old. Never throws. */
   public async state(): Promise<ClaudeAccount | null> {
     if (Date.now() - this.readAt < REREAD_MS) return this.current;
-    return this.reread();
+    this.reading ??= this.reread().finally(() => {
+      this.reading = null;
+    });
+    return (await this.reading).account;
   }
 
   /**
-   * Reads the config now. A usage lookup calls this just before it reads the
-   * login, so its numbers are recorded against the account they belong to and
-   * this monitor learns of a new sign-in at the same moment.
+   * Reads the config now, never joining a read already under way, so a caller
+   * checking who is signed in after it has done something gets an answer from
+   * after that. A usage lookup reads this on both sides of reading the login.
    */
-  public reread(): Promise<ClaudeAccount | null> {
-    this.reading ??= fsp
-      .readFile(claudeConfig().configFile, 'utf8')
-      .then((text) => readAccount(JSON.parse(text)))
-      // No file is no account. One that will not parse is most likely the CLI
-      // halfway through rewriting it, so the account read last time stands.
-      .catch((err: NodeJS.ErrnoException) => (err.code === 'ENOENT' ? null : this.current))
-      .then((account) => {
-        this.current = account;
-        this.readAt = Date.now();
-        this.reading = null;
-        return account;
-      });
-    return this.reading;
+  public async reread(): Promise<IdentityRead> {
+    const read = await fsp
+      .readFile(this.configFile(), 'utf8')
+      .then((text): IdentityRead => ({ verified: true, account: readAccount(JSON.parse(text)) }))
+      // No file is no account. One that cannot be read or will not parse, most
+      // likely the CLI halfway through rewriting it, leaves the last account
+      // standing for display, unverified.
+      .catch((err: NodeJS.ErrnoException): IdentityRead => (err.code === 'ENOENT' ? { verified: true, account: null } : { verified: false, account: this.current }));
+    this.current = read.account;
+    this.readAt = Date.now();
+    return read;
   }
 }
 

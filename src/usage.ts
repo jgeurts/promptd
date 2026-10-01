@@ -2,6 +2,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { accountMonitor } from './account.js';
+import type { IdentityRead } from './account.js';
 import { claudeConfig } from './claudeConfig.js';
 import type { ClaudeConfigLocation } from './claudeConfig.js';
 import { ROOT } from './paths.js';
@@ -493,8 +494,8 @@ export interface UsageMonitorOptions {
   lookup?: () => Promise<UsageLookup>;
   /** The account signed in now, as last read. */
   account?: () => Promise<ClaudeAccount | null>;
-  /** The account read afresh, just before a lookup reads the login: the one its numbers belong to. */
-  freshAccount?: () => Promise<ClaudeAccount | null>;
+  /** The config read afresh, on both sides of a lookup, to prove whose login the lookup used. */
+  identity?: () => Promise<IdentityRead>;
   cacheFile?: string;
 }
 
@@ -506,15 +507,16 @@ export class UsageMonitor {
   public inFlight: Promise<void> | null;
   public restoring: Promise<void> | null;
   public accountId: string | null | undefined;
+  public unverified: boolean;
   private lookup: () => Promise<UsageLookup>;
   private account: () => Promise<ClaudeAccount | null>;
-  private freshAccount: () => Promise<ClaudeAccount | null>;
+  private identity: () => Promise<IdentityRead>;
   private cacheFile: string;
 
   public constructor({
     lookup = fetchUsage,
     account = () => accountMonitor.state(),
-    freshAccount = () => accountMonitor.reread(),
+    identity = () => accountMonitor.reread(),
     cacheFile = CACHE_FILE,
   }: UsageMonitorOptions = {}) {
     /** The last reading that carried windows, however old it now is, and whose account it is. */
@@ -531,9 +533,11 @@ export class UsageMonitor {
     this.restoring = null;
     /** The account signed in now, which the held reading must belong to; undefined until first read. */
     this.accountId = undefined;
+    /** The last refresh could not prove whose login it used, so the held reading is last-known. */
+    this.unverified = false;
     this.lookup = lookup;
     this.account = account;
-    this.freshAccount = freshAccount;
+    this.identity = identity;
     this.cacheFile = cacheFile;
   }
 
@@ -568,6 +572,7 @@ export class UsageMonitor {
     this.lastGood = null;
     this.reason = null;
     this.failures = 0;
+    this.unverified = false;
     this.nextFetchAt = 0;
   }
 
@@ -595,8 +600,9 @@ export class UsageMonitor {
       windows,
       checkedAt: this.lastGood?.checkedAt ?? null,
       // Older than a refresh window means these are last-known numbers, either
-      // because a refresh failed or because they came off disk at startup.
-      stale: windows.length > 0 && age > TTL_MS,
+      // because a refresh failed or because they came off disk at startup. So
+      // are they when the last refresh could not tell whose login it would use.
+      stale: windows.length > 0 && (age > TTL_MS || this.unverified),
       accountId: this.lastGood ? this.lastGood.accountId : this.accountId ?? null,
     };
   }
@@ -608,13 +614,21 @@ export class UsageMonitor {
     // the next poll start a second.
     this.nextFetchAt = Date.now() + TTL_MS;
     this.inFlight = (async () => {
-      // The account first and the login straight after, so the numbers that
-      // come back are recorded against the account whose token asked for them.
-      const accountId = (await this.freshAccount())?.id ?? null;
+      // A reading is bound to an account only when the config itself said
+      // whose login it is, on both sides of the lookup: read before, it names
+      // the account; read again once the login has been used, it proves the
+      // login did not change hands in between.
+      const before = await this.identity();
+      if (!before.verified) return this.unverifiable();
+      const accountId = before.account?.id ?? null;
       this.follow(accountId);
       const result = await this.lookup();
-      // Signed in as someone else while the request was out: these are the
-      // previous account's numbers, and the new one is asked for its own.
+      const after = await this.identity();
+      if (!after.verified) return this.unverifiable();
+      // Signed in as someone else while the login was read or the request was
+      // out: these may be either account's numbers, so they are nobody's, and
+      // the account signed in now is asked for its own.
+      if ((after.account?.id ?? null) !== accountId) return this.follow(after.account?.id ?? null);
       if (this.accountId !== accountId) return;
       this.record(result, accountId);
     })()
@@ -637,14 +651,29 @@ export class UsageMonitor {
       this.lastGood = { windows: result.windows, checkedAt: new Date().toISOString(), accountId };
       this.reason = null;
       this.failures = 0;
+      this.unverified = false;
       this.nextFetchAt = Date.now() + TTL_MS;
       void persist(this.cacheFile, this.lastGood);
       return;
     }
-    this.reason = result.reason;
+    this.failed(result.reason, result.retryMs);
+  }
+
+  private failed(reason: string | null, retryMs = 0): void {
+    this.reason = reason;
     this.failures += 1;
     const backoff = Math.min(ERROR_BACKOFF_MS * 2 ** (this.failures - 1), MAX_BACKOFF_MS);
-    this.nextFetchAt = Date.now() + Math.max(backoff, result.retryMs ?? 0);
+    this.nextFetchAt = Date.now() + Math.max(backoff, retryMs);
+  }
+
+  /**
+   * The config could not be read, so nothing proves whose login a lookup would
+   * use. No new reading is published; the last verified one stays, marked
+   * stale, and the next attempt backs off like any failed lookup.
+   */
+  private unverifiable(): void {
+    this.unverified = true;
+    this.failed('could not read which Claude account is signed in');
   }
 
   /**
