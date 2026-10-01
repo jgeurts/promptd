@@ -52,6 +52,8 @@ HUB_URL="${HUB_URL%/}"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STORAGE_ROOT="${PROMPTD_HOME:-$HOME/.claude/promptd}"
+# Where a node keeps the hub's token once it has traded its join code for it.
+PAIRED_TOKEN="${PROMPTD_NODE_HOME:-$STORAGE_ROOT/node}/hub-token"
 HUB_PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE_PLIST="$HOME/Library/LaunchAgents/$NODE_LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/promptd"
@@ -65,6 +67,9 @@ warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31mFailed:\033[0m %s\n' "$*" >&2; exit 1; }
 xml()  { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 registered() { launchctl print "$DOMAIN/$1" >/dev/null 2>&1; }
+# How many times launchd has started the agent since it was registered.
+runs_of() { launchctl print "$DOMAIN/$1" 2>/dev/null | sed -nE 's/^[[:space:]]*runs = ([0-9]+).*/\1/p' | head -n 1; }
+running() { launchctl print "$DOMAIN/$1" 2>/dev/null | grep -qE '^[[:space:]]*pid = [0-9]+'; }
 
 printf '\nRegistering promptd with launchd\n\n'
 
@@ -224,6 +229,48 @@ install_agent() {
   die "launchd registered $label but will not start it. Allow promptd under System Settings → General → Login Items & Extensions → Allow in the Background, then run this again."
 }
 
+# A join code works once, so a node given one needs a new command from its hub.
+if [ -n "$JOIN_CODE" ]; then
+  RUN_AGAIN="press Add a Mac on the hub and run its new command here"
+else
+  RUN_AGAIN="run the installer again with FORCE=1 in front of bash"
+fi
+
+# launchd starting promptd again unaided is what brings it back after a restart or
+# login, and some Macs never do. So stop the new agent once and see it come back.
+check_relaunch() {
+  local label="$1" before
+  before="$(runs_of "$label")"
+  printf '  • checking that launchd starts %s again by itself' "$label"
+  launchctl kill SIGTERM "$DOMAIN/$label" >/dev/null 2>&1
+  # launchd waits until 10s after the last start before starting it again.
+  for _ in $(seq 1 30); do
+    sleep 1
+    printf '.'
+    if [ "$(runs_of "$label")" -gt "${before:-0}" ] 2>/dev/null && running "$label"; then
+      printf '\n'
+      ok "launchd starts $label again by itself"
+      return 0
+    fi
+  done
+  printf '\n'
+  # Running for now, so this Mac is not left without it.
+  launchctl kickstart "$DOMAIN/$label" >/dev/null 2>&1
+  die "macOS is not letting promptd start on its own, so this Mac will drop off after a restart or login. Turn promptd on under System Settings → General → Login Items & Extensions → Allow in the Background, then $RUN_AGAIN."
+}
+
+# Waits up to 30s for the hub to answer on its port.
+hub_answers() {
+  printf '  • waiting for the hub to answer'
+  for _ in $(seq 1 30); do
+    if curl -fsS "http://$CHECK_HOST:$PORT/api/health" >/dev/null 2>&1; then printf '\n'; return 0; fi
+    printf '.'
+    sleep 1
+  done
+  printf '\n'
+  return 1
+}
+
 HUB_INSTALLED=0
 if [ "$NODE_ONLY" != "1" ] && needs_agent "$LABEL"; then
   # Something else already on the port would make the hub exit on boot.
@@ -254,7 +301,7 @@ $(env_entry PROMPTD_NODE_ID "$NODE_ID")"
   [ -n "$NODE_NAME" ] && NODE_ENV="$NODE_ENV
 $(env_entry PROMPTD_NODE_NAME "$NODE_NAME")"
   # A token kept from pairing with this or another hub would win over the new code.
-  [ -n "$JOIN_CODE" ] && rm -f "${PROMPTD_NODE_HOME:-$STORAGE_ROOT/node}/hub-token"
+  [ -n "$JOIN_CODE" ] && rm -f "$PAIRED_TOKEN"
   # What the node writes from here on is this install's, and so is its start time.
   NODE_LOG_START=0
   [ -f "$NODE_LOG" ] && NODE_LOG_START="$(wc -c < "$NODE_LOG" | tr -d ' ')"
@@ -267,20 +314,14 @@ fi
 # --- confirm they answer ----------------------------------------------
 
 if [ "$HUB_INSTALLED" = "1" ]; then
-  printf '  • waiting for the hub to answer'
-  answered=0
-  for _ in $(seq 1 30); do
-    if curl -fsS "http://$CHECK_HOST:$PORT/api/health" >/dev/null 2>&1; then answered=1; break; fi
-    printf '.'
-    sleep 1
-  done
-  printf '\n'
-  [ "$answered" = "1" ] || die "registered, but nothing answered on $CHECK_HOST:$PORT within 30s. Check $HUB_LOG"
+  hub_answers || die "registered, but nothing answered on $CHECK_HOST:$PORT within 30s. Check $HUB_LOG"
   ok "hub serving on http://$CHECK_HOST:$PORT"
   if [ "$CHECK_HOST" = "127.0.0.1" ] && [ "$HOST" != "127.0.0.1" ]; then
     LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
     [ -n "$LAN_IP" ] && ok "on your network at http://$LAN_IP:$PORT"
   fi
+  check_relaunch "$LABEL"
+  hub_answers || die "launchd started the hub again, but nothing answered on $CHECK_HOST:$PORT within 30s. Check $HUB_LOG"
 fi
 
 if [ "$NODE_INSTALLED" = "1" ]; then
@@ -304,8 +345,20 @@ if [ "$NODE_INSTALLED" = "1" ]; then
   printf '\n'
   if [ "$connected" = "1" ]; then
     ok "$CHECK_ID connected to $HUB_URL"
+    check_relaunch "$NODE_LABEL"
   elif [ "$connected" = "locked" ]; then
     ok "node registered; the hub requires a login, so check it under Settings → Nodes"
+    # Stopping the node before it keeps the hub's token could spend its join code for nothing.
+    paired=0
+    for _ in $(seq 1 30); do
+      if [ -z "$JOIN_CODE" ] || [ -s "$PAIRED_TOKEN" ]; then paired=1; break; fi
+      sleep 1
+    done
+    if [ "$paired" = "1" ]; then
+      check_relaunch "$NODE_LABEL"
+    else
+      warn "$CHECK_ID has not paired with $HUB_URL yet, so whether launchd starts it again by itself is unchecked"
+    fi
   else
     since_install="$(tail -c +$((NODE_LOG_START + 1)) "$NODE_LOG" 2>/dev/null)"
     # A node launchd is not running cannot be trying; say what launchd says.

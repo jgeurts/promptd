@@ -67,7 +67,7 @@ macOS starts per-user background processes with **launchd**. Run this once:
 ./scripts/register-app-mac-os.sh
 ```
 
-It finds your `node` and `claude`, runs `npm install` if `node_modules` is missing, writes both LaunchAgent plists with absolute paths, registers them, and waits until the hub answers and the node has connected before reporting success. An install registered before nodes existed gets its node agent from the hub itself, the first time it boots on the new code. Output ends with the commands for restarting, stopping and removing it.
+It finds your `node` and `claude`, runs `npm install` if `node_modules` is missing, writes both LaunchAgent plists with absolute paths, registers them, and waits until the hub answers and the node has connected before reporting success. It then stops each new agent once and waits for launchd to start it again by itself, which is what brings promptd back after a restart or login; on a Mac where it does not, it starts the agent by hand and fails, naming the setting to turn on: **Allow in the Background** under System Settings → General → Login Items & Extensions. An install registered before nodes existed gets its node agent from the hub itself, the first time it boots on the new code. Output ends with the commands for restarting, stopping and removing it.
 
 Overrides, if you need them:
 
