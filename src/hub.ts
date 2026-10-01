@@ -8,6 +8,8 @@ import { db } from './db.js';
 import { JOIN_CODES_FILE, NODE_TOKEN_FILE } from './paths.js';
 import { JoinCodes } from './joinCodes.js';
 import type { JoinCode } from './joinCodes.js';
+import { sendBuild, sendNoBuild } from './nodeBuild.js';
+import type { NodeBuild } from './nodeBuild.js';
 import { listCrons, logPath, patchCron, pruneLogs } from './store.js';
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
@@ -59,6 +61,8 @@ const BOOKKEEPING_FIELDS = new Set([
 ]);
 
 const NO_USAGE: UsageReading = { ok: false, reason: 'no node is online to read usage', windows: [], checkedAt: null, stale: false };
+
+const CODE_REFUSED = 'that join code is wrong, used or expired; make a new one on the hub';
 
 export interface HubNode {
   id: string;
@@ -435,20 +439,35 @@ class Hub {
   }
 
 
-  public router(): express.Router {
+  private hasToken(req: express.Request): boolean {
+    const header = String(req.get('authorization') ?? '');
+    const given = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+    return Boolean(given && this.token) && sameSecret(given, this.token);
+  }
+
+  /** The node API. `build` is what a node downloads promptd from, or null when this hub has none to give. */
+  public router(build: NodeBuild | null = null): express.Router {
     const router = express.Router();
     router.use(express.json({ limit: '20mb' }));
     // A new node has no token yet: it trades a join code for one.
     router.post('/pair', (req, res) => {
       if (!this.token || !this.joinCodes.redeem(String((req.body as { code?: unknown })?.code ?? ''))) {
-        return res.status(401).json({ error: 'that join code is wrong, used or expired; make a new one on the hub' });
+        return res.status(401).json({ error: CODE_REFUSED });
       }
       res.json({ token: this.token });
     });
+    // The installer downloads promptd with the join code, which stays good for
+    // the node to pair with; a node following the hub's build uses its token.
+    router.get('/build', (req, res, next) => {
+      if (!build) return sendNoBuild(res);
+      const { code } = req.query;
+      if (!this.hasToken(req) && !(typeof code === 'string' && this.joinCodes.check(code))) {
+        return res.status(401).json({ error: typeof code === 'string' ? CODE_REFUSED : 'invalid node token' });
+      }
+      sendBuild(res, build).catch(next);
+    });
     router.use((req, res, next) => {
-      const header = String(req.get('authorization') ?? '');
-      const given = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-      if (!given || !sameSecret(given, this.token)) return res.status(401).json({ error: 'invalid node token' });
+      if (!this.hasToken(req)) return res.status(401).json({ error: 'invalid node token' });
       next();
     });
     router.post('/report', (req, res, next) => {

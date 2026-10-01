@@ -1,14 +1,17 @@
 #!/bin/bash
-# Installs promptd from a GitHub release and starts it at every login.
+# Installs promptd and starts it at every login.
 #
-# The hub and a node on this Mac:
+# The hub and a node on this Mac, from a GitHub release:
 #   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash
 #
-# A node of a hub on another Mac, with the command Settings → Nodes on the hub shows:
-#   curl -fsSL https://github.com/promptilicious/promptd/releases/latest/download/install.sh | bash -s -- --hub <url> --code <code>
+# A node of a hub on another Mac, with the command Settings → Nodes on the hub
+# shows. The hub serves this script with its address filled in, and promptd too:
+#   curl -fsSL http://<hub-address>:4321/install.sh | bash -s -- --code <code>
 #
-# The binary goes to ~/.local/bin/promptd and updates itself from then on.
-# Registering it with launchd is register-app-mac-os.sh's job, from the same release.
+# The binary goes to ~/.local/bin/promptd and updates itself from then on, a hub
+# from the releases and a node from its hub. Registering it with launchd is
+# register-app-mac-os.sh's job, which a release ships beside this script and a
+# hub's copy carries inside it.
 #
 # Overrides:
 #   PROMPTD_REPO=owner/name     the repository to install from
@@ -20,6 +23,9 @@ set -euo pipefail
 REPO="${PROMPTD_REPO:-promptilicious/promptd}"
 RELEASE="${PROMPTD_RELEASE:-latest}"
 BIN_DIR="${PROMPTD_BIN_DIR:-$HOME/.local/bin}"
+# A hub serving this script fills these in: its address, and the register script.
+FROM_HUB=''
+REGISTER_SCRIPT=''
 
 die() { printf '\n\033[31mFailed:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -36,7 +42,12 @@ done
 [ "$(uname -m)" = arm64 ] || die "promptd is built for Apple silicon Macs only"
 ASSET=promptd-darwin-arm64
 
-if [ "$RELEASE" = latest ]; then
+if [ -n "$FROM_HUB" ]; then
+  # A node of the hub that served this script, installed from it.
+  export NODE_ONLY=1 HUB_URL="${HUB_URL:-$FROM_HUB}"
+  [ -n "${JOIN_CODE:-}" ] || [ -n "${NODE_TOKEN:-}" ] ||
+    die "no join code. Press Add a Mac under Settings → Nodes on the hub, and run the command it shows."
+elif [ "$RELEASE" = latest ]; then
   BASE="https://github.com/$REPO/releases/latest/download"
 else
   BASE="https://github.com/$REPO/releases/download/$RELEASE"
@@ -55,13 +66,39 @@ for dir in "$TMP" "$BIN_DIR"; do
     die "$(scutil --get LocalHostName 2>/dev/null || hostname -s) has $free_mb MB free where $dir is; promptd needs about $NEED_MB MB. Free some space and run this again."
 done
 
-printf '\nDownloading promptd from %s\n' "$REPO"
-for file in "$ASSET" register-app-mac-os.sh sha256sums.txt; do
-  curl -fsSL --retry 3 -o "$TMP/$file" "$BASE/$file" || die "could not download $BASE/$file"
-done
-grep -E "^[0-9a-f]{64}  ($ASSET|register-app-mac-os\.sh)\$" "$TMP/sha256sums.txt" > "$TMP/expected" || true
-[ "$(wc -l < "$TMP/expected")" -eq 2 ] || die "the release's checksums do not list $ASSET and register-app-mac-os.sh; try again"
-(cd "$TMP" && shasum -a 256 -c expected >/dev/null) || die "the download does not match the release's checksums; try again"
+if [ -n "$FROM_HUB" ]; then
+  printf '\nDownloading promptd from %s\n' "$HUB_URL"
+  # The hub checks the join code without using it up, for the node to pair with.
+  if [ -n "${JOIN_CODE:-}" ]; then
+    AUTH=(--get --data-urlencode "code=$JOIN_CODE")
+  else
+    AUTH=(-H "Authorization: Bearer $NODE_TOKEN")
+  fi
+  status="$(curl -sSL --retry 3 "${AUTH[@]}" -D "$TMP/headers" -o "$TMP/$ASSET" -w '%{http_code}' "$HUB_URL/api/node/build")" ||
+    die "could not reach the hub at $HUB_URL"
+  case "$status" in
+    200) ;;
+    401)
+      if [ -n "${JOIN_CODE:-}" ]; then
+        die "the hub refused join code $JOIN_CODE: it was used, has expired, or was mistyped. Press Add a Mac on the hub for a new one, and run its command here."
+      fi
+      die "the hub refused the node token" ;;
+    *) die "the hub answered $status for promptd: $(head -c 300 "$TMP/$ASSET")" ;;
+  esac
+  expected="$(tr -d '\r' < "$TMP/headers" | awk 'tolower($1) == "x-promptd-sha256:" { sum = $2 } END { print sum }')"
+  [ -n "$expected" ] || die "the hub sent promptd without its checksum; try again"
+  [ "$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')" = "$expected" ] ||
+    die "the download does not match the checksum the hub sent; try again"
+  printf '%s\n' "$REGISTER_SCRIPT" > "$TMP/register-app-mac-os.sh"
+else
+  printf '\nDownloading promptd from %s\n' "$REPO"
+  for file in "$ASSET" register-app-mac-os.sh sha256sums.txt; do
+    curl -fsSL --retry 3 -o "$TMP/$file" "$BASE/$file" || die "could not download $BASE/$file"
+  done
+  grep -E "^[0-9a-f]{64}  ($ASSET|register-app-mac-os\.sh)\$" "$TMP/sha256sums.txt" > "$TMP/expected" || true
+  [ "$(wc -l < "$TMP/expected")" -eq 2 ] || die "the release's checksums do not list $ASSET and register-app-mac-os.sh; try again"
+  (cd "$TMP" && shasum -a 256 -c expected >/dev/null) || die "the download does not match the release's checksums; try again"
+fi
 
 # A rename, so a promptd already running keeps the file it started from.
 NEXT="$(mktemp "$BIN_DIR/promptd.XXXXXX")"

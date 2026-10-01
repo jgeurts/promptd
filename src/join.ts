@@ -91,7 +91,7 @@ export async function joinUrl({ host, port, origin }: JoinUrlInput): Promise<str
   return (await tailscaleServeUrl(port)) ?? reachableOrigin(origin) ?? (await localHostnameUrl(host, port));
 }
 
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return /^[\w@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 

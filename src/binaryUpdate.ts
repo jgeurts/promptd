@@ -21,6 +21,10 @@ export function versionOfTag(tag: string): string | null {
 /** The release file: promptd is built for Apple silicon Macs only. */
 export const ASSET = 'promptd-darwin-arm64';
 
+// A hub hands its build to its nodes with these, naming the build and its sha256.
+export const BUILD_VERSION_HEADER = 'x-promptd-version';
+export const BUILD_SHA256_HEADER = 'x-promptd-sha256';
+
 /** The sha256 that a `shasum -a 256` listing gives for `file`, or null when it lists no such file. */
 export function checksumFor(sums: string, file: string): string | null {
   for (const line of sums.split('\n')) {
