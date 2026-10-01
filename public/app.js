@@ -209,6 +209,11 @@ function nodeOfflinePill(node) {
   ]);
 }
 
+/** A job with commands before the prompt, on a node too old to run them, which is not sent it. */
+function withheldPill(reason) {
+  return el('span', { class: 'pill warn', title: reason }, [el('span', { class: 'led' }), 'node too old']);
+}
+
 /**
  * A live run keeps its running badge through a pause and picks up the paused
  * badge when it finishes. A deactivated cron stays deactivated: a pause does
@@ -221,6 +226,7 @@ function statusPill(cron, pause) {
   }
   if (!cron.isActive) return el('span', { class: 'pill paused' }, [el('span', { class: 'led' }), 'deactivated']);
   if (cron.node && !cron.node.online) return nodeOfflinePill(cron.node);
+  if (cron.withheld) return withheldPill(cron.withheld);
   if (pause?.paused) {
     return el(
       'span',
@@ -245,6 +251,7 @@ function executionPill(execution, pause) {
   }
   if (!execution.isActive) return el('span', { class: 'pill paused' }, [el('span', { class: 'led' }), 'deactivated']);
   if (execution.status === 'scheduled' && execution.node && !execution.node.online) return nodeOfflinePill(execution.node);
+  if (execution.status === 'scheduled' && execution.withheld) return withheldPill(execution.withheld);
   if (execution.status === 'cancelled') {
     return el('span', { class: 'pill warn', title: `Dropped by ${execution.stoppedBy ?? 'the user'} before it ran.` }, [
       el('span', { class: 'led' }),
