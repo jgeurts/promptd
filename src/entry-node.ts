@@ -193,11 +193,24 @@ async function readToken(): Promise<{ token: string; paired: boolean }> {
   );
 }
 
+/** Requests on their way to the hub, which signing off waits for so that none lands after it. */
+const pending = new Set<Promise<unknown>>();
+
 async function request<T>(method: string, route: string, body?: unknown): Promise<T> {
+  const sent = send<T>(method, route, body);
+  pending.add(sent);
+  try {
+    return await sent;
+  } finally {
+    pending.delete(sent);
+  }
+}
+
+async function send<T>(method: string, route: string, body?: unknown): Promise<T> {
+  const { token, paired } = await readToken();
   // Anything sent after signing off would sign the node back in, and the hub would
   // turn its next process away as a second one syncing under the same name.
   if (leaving && route !== '/api/node/leave') throw new Error('the node has signed off from the hub');
-  const { token, paired } = await readToken();
   const res = await fetch(`${HUB_URL}${route}`, {
     method,
     headers: {
@@ -561,6 +574,8 @@ function leave(why: string): Promise<void> {
   leaving ??= (async () => {
     console.log(`[node] ${why}; saving state`);
     await flushJobCache().catch((err) => console.error(`[node] could not save state: ${(err as Error).message}`));
+    // A report already on its way would land after the sign-off and undo it.
+    await Promise.allSettled(pending);
     await request('POST', '/api/node/leave', {}).catch(() => {});
   })();
   return leaving;
