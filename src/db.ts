@@ -232,7 +232,7 @@ const MIGRATIONS: Record<string, Migration> = {
    * its job was set to and is kept as the job's own, so nothing runs
    * differently after the upgrade.
    */
-  '20260930_002_job_setting_defaults': {
+  '20260930_006_job_setting_defaults': {
     async up(db: Kysely<unknown>): Promise<void> {
       const columns = [
         ['use_worktree', 'integer'],
@@ -268,7 +268,7 @@ const MIGRATIONS: Record<string, Migration> = {
     },
   },
   // Whether a job's name was taken from its prompt, so a title from claude may still replace it.
-  '20260930_003_name_inferred': {
+  '20260930_007_name_inferred': {
     async up(db: Kysely<unknown>): Promise<void> {
       for (const table of ['crons', 'executions']) {
         await db.schema.alterTable(table).addColumn('name_inferred', 'integer', (col) => col.notNull().defaultTo(0)).execute();
