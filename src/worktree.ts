@@ -374,7 +374,9 @@ async function catchUp(tree: string, branch: string, base: Base, signal: AbortSi
       },
     );
     if (refused === null) return `${what} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`;
-    return `${what} at ${short(head)}, as it was left: moving it to ${base.label} would replace files it holds (${refused})`;
+    // Read again: a post-merge hook can fail after the move itself.
+    const now = await git(tree, ['rev-parse', 'HEAD']).catch(() => head);
+    return `${what} at ${short(now)}: git did not move it to ${base.label} (${refused})`;
   }
   return `${what} at ${short(head)}${onBranch ? '' : ', off its branch'}, as it was left`;
 }

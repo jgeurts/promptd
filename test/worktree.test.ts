@@ -192,7 +192,7 @@ describe('prepareWorktree', () => {
     const again = await prepareWorktree(app, 'job-16');
     expect(git(again.path, 'rev-parse', 'HEAD')).toBe(newest);
     expect(fs.readFileSync(path.join(again.path, '.env'), 'utf8')).toBe('EDITED=1\n');
-    expect(again.notes.join('\n')).toContain('would replace files it holds');
+    expect(again.notes.join('\n')).toContain('git did not move it to origin/main');
   });
 
   it('is cleaned up by removeWorktree like one claude made', async () => {
