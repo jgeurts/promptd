@@ -3306,7 +3306,7 @@ function connectEvents() {
     });
 
   on('hello', () => {
-    stream.awaitingHealth = true;
+    stream.awaitingHealth = healthAsked + 1;
     checkHealth();
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
@@ -3430,7 +3430,7 @@ function connectEvents() {
   // The browser retries on its own; until the next hello, the header says the updates are down.
   events.onerror = () => {
     stream.state = 'disconnected';
-    stream.awaitingHealth = false;
+    stream.awaitingHealth = 0;
     paintHeader();
   };
 }
@@ -3843,11 +3843,14 @@ let announced = null; // the facts last announced, so only a change is spoken
 
 /**
  * The page's own event stream: `connecting` until the first hello, then
- * connected or not. A hello counts as connected only once a fresh health
- * reading has landed after it (`awaitingHealth`), so the header never says the
- * updates are back over numbers it held through the gap.
+ * connected or not. A hello counts as connected only once a health reading
+ * asked for after it has landed (`awaitingHealth` is the first such request's
+ * number), so the header never says the updates are back over numbers it held
+ * through the gap.
  */
-const stream = { state: 'connecting', lastAt: null, awaitingHealth: false };
+const stream = { state: 'connecting', lastAt: null, awaitingHealth: 0 };
+let healthAsked = 0; // health requests started, numbered
+let healthDrawn = 0; // the newest of them whose answer is drawn, so a slow older one cannot replace it
 
 // Past this many, the panel's list of waiting jobs says how many more there are.
 const WAITING_SHOWN = 6;
@@ -4569,8 +4572,11 @@ function machineCard(nodeId, system) {
 
 /** Reads health, which every part of the header is drawn from, and notices when an update has landed. */
 async function checkHealth() {
+  const asked = ++healthAsked;
   try {
     const health = await api('/api/health');
+    if (asked < healthDrawn) return;
+    healthDrawn = asked;
     if (health.authRequired) {
       location.assign('/login');
       return;
@@ -4581,8 +4587,8 @@ async function checkHealth() {
     if (health.commit && !loadedCommit) loadedCommit = health.commit;
     else if (health.commit && health.commit !== loadedCommit) staleBuild = true;
     healthState = health;
-    if (stream.awaitingHealth) {
-      stream.awaitingHealth = false;
+    if (stream.awaitingHealth && asked >= stream.awaitingHealth) {
+      stream.awaitingHealth = 0;
       stream.state = 'connected';
     }
     paintHeader();

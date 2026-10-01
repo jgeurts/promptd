@@ -359,6 +359,21 @@ describe('waitingJobs', () => {
       ['Alpha', 2],
     ]);
   });
+
+  it('keeps each queue together and in order when two nodes share a name', () => {
+    const at = '2026-09-30T10:00:00.000Z';
+    const slot = (cronId: string, cronName: string, position: number): DelayEntry =>
+      held({ cronId, cronName, hold: 'concurrency', position, queueLength: 2, arrivedAt: at });
+    const jobs = waitingJobs([
+      node({ id: 'b', name: 'mac', waiting: [slot('o', 'Oscar', 0), slot('c', 'Charlie', 1)] }),
+      node({ id: 'a', name: 'mac', waiting: [slot('k', 'Kilo', 0)] }),
+    ]);
+    expect(jobs.map((job) => [job.nodeId, job.name, job.position])).toEqual([
+      ['a', 'Kilo', 1],
+      ['b', 'Oscar', 1],
+      ['b', 'Charlie', 2],
+    ]);
+  });
 });
 
 describe('header summary', () => {

@@ -350,13 +350,21 @@ export function machineExceptions(nodes: ClusterNode[]): MachineException[] {
  * Usage holds first, because they wait on the clock rather than on a job
  * finishing, then in the order the nodes queue them: by when each trigger first
  * had to wait, which a trigger moved from a usage hold into the slot queue
- * keeps. Two that arrived in the same instant on one node keep that node's own
- * order, its queue position, rather than falling back to their names.
+ * keeps. Ties go by node, and two that arrived in the same instant on one node
+ * keep that node's own order, its queue position, rather than their names. The
+ * node id is in the key because two nodes may share a name.
  */
 function queueOrder(a: WaitingJob, b: WaitingJob): number {
   const kind = (job: WaitingJob): number => (job.hold === 'usage' ? 0 : 1);
-  const place = a.nodeId === b.nodeId && a.position !== null && b.position !== null ? a.position - b.position : 0;
-  return kind(a) - kind(b) || Date.parse(a.since) - Date.parse(b.since) || place || a.nodeName.localeCompare(b.nodeName) || a.name.localeCompare(b.name);
+  const place = a.position !== null && b.position !== null ? a.position - b.position : 0;
+  return (
+    kind(a) - kind(b) ||
+    Date.parse(a.since) - Date.parse(b.since) ||
+    a.nodeName.localeCompare(b.nodeName) ||
+    a.nodeId.localeCompare(b.nodeId) ||
+    place ||
+    a.name.localeCompare(b.name)
+  );
 }
 
 /** Every trigger the online nodes are holding, in `queueOrder`. */
