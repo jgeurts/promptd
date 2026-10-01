@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
+import { runInGroup } from './processGroup.js';
 
 /**
  * Runs a job's commands before the prompt: plain shell, in order, each in a
@@ -8,14 +7,16 @@ import type { ChildProcess } from 'node:child_process';
  * it, with the node's own environment less BASH_ENV, which bash would
  * otherwise source first. Nothing here reaches Claude: the output goes to the
  * run's log, and a command that fails stops the run before Claude starts.
+ *
+ * Each command runs in a process group of its own, and the next step waits
+ * until that group is empty, so nothing a command started is still running
+ * when Claude starts or the worktree is removed.
  */
 
 export const PRE_PROMPT_SHELL = ['/bin/bash', '-e', '-o', 'pipefail', '-c'] as const;
 
 /** How long all of a run's commands may take together, unless the node's environment says otherwise. */
 export const DEFAULT_PRE_PROMPT_TIMEOUT_MS = 10 * 60_000;
-
-const KILL_AFTER_MS = 5000;
 
 // What one command's output may put in the log: its start, and then the end
 // of whatever followed, which is where an install says what went wrong.
@@ -33,8 +34,6 @@ export type SetupOutcome =
   | { ok: false; why: 'exit'; index: number; command: string; code: number | null; signal: NodeJS.Signals | null }
   | { ok: false; why: 'spawn'; index: number; command: string; error: string }
   | { ok: false; why: 'timeout' | 'stopped'; index: number; command: string };
-
-type CommandEnd = { how: 'exit'; code: number | null; signal: NodeJS.Signals | null } | { how: 'spawn'; error: string };
 
 /** Writes a command's output through, up to a point, then keeps only its end. */
 class CappedOutput {
@@ -88,16 +87,15 @@ function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+
 /**
  * One run's commands, and the handle that stops them. `stop` ends whatever
- * is going: git is aborted through `signal`, and the running command's whole
- * process group gets SIGTERM, then SIGKILL five seconds later.
+ * is going: the git work before the commands through `signal`, and the
+ * running command's whole process group, SIGTERM then SIGKILL five seconds
+ * later. Neither answers until what it stopped is gone.
  */
 export class PrePromptSetup {
   private readonly controller = new AbortController();
-  private child: ChildProcess | null = null;
-  private stopped = false;
-  private timedOut = false;
 
   /** For the git work that comes before the commands, so Stop ends that too. */
   public get signal(): AbortSignal {
@@ -105,31 +103,11 @@ export class PrePromptSetup {
   }
 
   public get isStopped(): boolean {
-    return this.stopped;
+    return this.controller.signal.aborted;
   }
 
   public stop(): void {
-    if (this.stopped) return;
-    this.stopped = true;
     this.controller.abort();
-    this.end();
-  }
-
-  /** SIGTERM to the command and everything it started, then SIGKILL if it is still there. */
-  private end(): void {
-    const child = this.child;
-    if (!child?.pid) return;
-    const group = (signal: NodeJS.Signals): void => {
-      try {
-        process.kill(-child.pid!, signal);
-      } catch {
-        /* already gone */
-      }
-    };
-    group('SIGTERM');
-    setTimeout(() => {
-      if (this.child === child) group('SIGKILL');
-    }, KILL_AFTER_MS).unref();
   }
 
   /**
@@ -144,25 +122,31 @@ export class PrePromptSetup {
     const { BASH_ENV: _ignored, ...shellEnv } = env;
     const deadline = Date.now() + timeoutMs;
     for (const [index, command] of commands.entries()) {
-      if (this.stopped) return { ok: false, why: 'stopped', index, command };
+      if (this.isStopped) return { ok: false, why: 'stopped', index, command };
       const remaining = deadline - Date.now();
       if (remaining <= 0) return { ok: false, why: 'timeout', index, command };
       write(`$ ${command}\n`);
       const started = Date.now();
       const output = new CappedOutput(write);
-      const end = await this.runOne(command, { cwd, env: shellEnv, output, remaining });
+      const end = await runInGroup(PRE_PROMPT_SHELL[0], [...PRE_PROMPT_SHELL.slice(1), command], {
+        cwd,
+        env: shellEnv,
+        signal: this.controller.signal,
+        timeoutMs: remaining,
+        onOutput: (chunk) => output.push(chunk),
+      });
       output.finish();
       const took = seconds(Date.now() - started);
       const lead = output.endsWithNewline ? '' : '\n';
-      if (end.how === 'spawn') {
+      if (end.error !== null) {
         write(`${lead}could not start ${PRE_PROMPT_SHELL[0]}: ${end.error}\n`);
         return { ok: false, why: 'spawn', index, command, error: end.error };
       }
-      if (this.stopped) {
+      if (end.aborted) {
         write(`${lead}stopped after ${took}\n`);
         return { ok: false, why: 'stopped', index, command };
       }
-      if (this.timedOut) {
+      if (end.timedOut) {
         write(`${lead}stopped after ${took}: the commands before the prompt ran past ${seconds(timeoutMs)}\n`);
         return { ok: false, why: 'timeout', index, command };
       }
@@ -170,69 +154,5 @@ export class PrePromptSetup {
       if (end.code !== 0) return { ok: false, why: 'exit', index, command, code: end.code, signal: end.signal };
     }
     return { ok: true };
-  }
-
-  private runOne(
-    command: string,
-    { cwd, env, output, remaining }: { cwd: string; env: NodeJS.ProcessEnv; output: CappedOutput; remaining: number },
-  ): Promise<CommandEnd> {
-    return new Promise((resolve) => {
-      let child: ChildProcess;
-      try {
-        child = spawn(PRE_PROMPT_SHELL[0], [...PRE_PROMPT_SHELL.slice(1), command], {
-          cwd,
-          env,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          // Its own process group, so Stop and the timeout reach whatever it starts.
-          detached: true,
-        });
-      } catch (err) {
-        resolve({ how: 'spawn', error: err instanceof Error ? err.message : String(err) });
-        return;
-      }
-      this.child = child;
-      // A Stop that came between two commands, while this one was starting.
-      if (this.stopped) this.end();
-      const timer = setTimeout(() => {
-        this.timedOut = true;
-        this.end();
-      }, remaining);
-      child.stdout?.on('data', (chunk: Buffer) => output.push(chunk));
-      child.stderr?.on('data', (chunk: Buffer) => output.push(chunk));
-
-      let ended: CommandEnd | null = null;
-      const settle = (): void => {
-        clearTimeout(timer);
-        if (this.child === child) this.child = null;
-        resolve(ended ?? { how: 'exit', code: null, signal: null });
-      };
-      child.on('error', (err) => {
-        // Only a failure to start comes here without an exit to follow.
-        if (child.pid === undefined) {
-          ended = { how: 'spawn', error: err.message };
-          settle();
-        }
-      });
-      child.on('exit', (code, signal) => {
-        ended = { how: 'exit', code, signal };
-        // Something it left running in the background could hold the output
-        // open, and would carry on into Claude's run; neither is wanted.
-        try {
-          process.kill(-child.pid!, 'SIGTERM');
-        } catch {
-          /* nothing left */
-        }
-        const grace = setTimeout(() => {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          settle();
-        }, KILL_AFTER_MS);
-        grace.unref();
-        child.once('close', () => {
-          clearTimeout(grace);
-          settle();
-        });
-      });
-    });
   }
 }

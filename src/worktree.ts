@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { runInGroup } from './processGroup.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -23,20 +24,43 @@ interface GitOptions {
   input?: string;
 }
 
+// A fetch that wants a password would otherwise wait for one forever.
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+
+/**
+ * git for a step a Stop can cut short: in a process group of its own, so
+ * stopping it ends git and anything git started, such as a filter, and it
+ * does not answer until they are gone. Nothing is then still writing in a
+ * tree that is about to be removed.
+ */
+async function stoppableGit(dir: string, args: string[], options: GitOptions): Promise<string> {
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  const result = await runInGroup('git', ['-C', dir, ...args], {
+    env: GIT_ENV,
+    input: options.input,
+    signal: options.signal,
+    timeoutMs: options.timeout ?? 60_000,
+    onOutput: (chunk, from) => (from === 'stdout' ? stdout : stderr).push(chunk),
+  });
+  if (result.aborted) throw new Error(`git ${args[0]} was stopped`);
+  if (result.error !== null) throw new Error(result.error);
+  if (result.timedOut) throw new Error(`git ${args[0]} took longer than ${((options.timeout ?? 60_000) / 1000).toFixed(0)}s`);
+  if (result.code !== 0) {
+    const message = Buffer.concat(stderr).toString('utf8').trim();
+    throw new Error(message || `git ${args[0]} ${result.signal ? `was ended by ${result.signal}` : `exited with ${result.code}`}`, { cause: { code: result.code } });
+  }
+  const out = Buffer.concat(stdout).toString('utf8');
+  return options.raw ? out : out.trim();
+}
+
 /** Runs git in `dir` and returns its trimmed stdout; a failure throws with git's own message. */
 async function git(dir: string, args: string[], timeout: number | GitOptions = 60_000): Promise<string> {
   const options: GitOptions = typeof timeout === 'number' ? { timeout } : timeout;
+  if (options.signal || options.input !== undefined || options.raw) return stoppableGit(dir, args, options);
   try {
-    const running = execFileAsync('git', ['-C', dir, ...args], {
-      timeout: options.timeout ?? 60_000,
-      signal: options.signal,
-      maxBuffer: 256 * 1024 * 1024,
-      // A fetch that wants a password would otherwise wait for one forever.
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    });
-    if (options.input !== undefined) running.child.stdin?.end(options.input);
-    const { stdout } = await running;
-    return options.raw ? stdout : stdout.trim();
+    const { stdout } = await execFileAsync('git', ['-C', dir, ...args], { timeout: options.timeout ?? 60_000 });
+    return stdout.trim();
   } catch (err) {
     throw new Error((err as GitError).stderr?.trim() || (err as GitError).message, { cause: err });
   }
@@ -265,16 +289,7 @@ export async function prepareWorktree(dir: string, name: string, { signal }: { s
     if (top !== (await fsp.realpath(tree)) || (await commonDir(tree)) !== (await commonDir(root))) {
       throw new Error(`${tree} already exists but is not a worktree of ${root}; move it aside and run again`);
     }
-    const head = await git(tree, ['rev-parse', 'HEAD']);
-    const onBranch = (await git(tree, ['symbolic-ref', '--short', '--quiet', 'HEAD']).catch(() => '')) === branch;
-    const clean = onBranch && !(await git(tree, ['status', '--porcelain']));
-    const upstream = clean && (await git(tree, ['merge-base', '--is-ancestor', head, base.commit]).then(() => true, () => false));
-    if (base.fromRemote && upstream && head !== base.commit) {
-      await git(tree, ['reset', '--quiet', '--hard', base.commit], { signal });
-      notes.push(`reused ${tree} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`);
-    } else {
-      notes.push(`reused ${tree} at ${short(head)}${onBranch ? ` on ${branch}` : ''}, as the last run left it`);
-    }
+    notes.push(await catchUp(tree, branch, base, signal, `reused ${tree}`));
     return { path: tree, branch, root, created: false, notes };
   }
 
@@ -282,9 +297,35 @@ export async function prepareWorktree(dir: string, name: string, { signal }: { s
   // refuses its path until it is forgotten.
   await git(root, ['worktree', 'prune']);
   await fsp.mkdir(path.dirname(tree), { recursive: true });
-  await git(root, ['worktree', 'add', '--quiet', '--no-track', '-B', branch, tree, base.commit], { timeout: 10 * 60_000, signal });
+  // A branch left from an earlier tree may hold commits nothing else has, so
+  // it is checked out again as it is rather than reset to the base.
+  const kept = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]).catch(() => '');
+  if (kept) {
+    await git(root, ['worktree', 'add', '--quiet', tree, branch], { timeout: 10 * 60_000, signal });
+    notes.push(await catchUp(tree, branch, base, signal, `made ${tree} again from the existing ${branch}`));
+    return { path: tree, branch, root, created: true, notes };
+  }
+  await git(root, ['worktree', 'add', '--quiet', '--no-track', '-b', branch, tree, base.commit], { timeout: 10 * 60_000, signal });
   notes.push(`created ${tree} on ${branch} from ${base.label} (${short(base.commit)})`);
   return { path: tree, branch, root, created: true, notes };
+}
+
+/**
+ * Moves a tree that has no work of its own up to the newest base, as Claude
+ * Code does when it reopens one: only when it is clean, still on its branch,
+ * and every commit on it is already on the base. Anything else is left as it
+ * is. Answers what it did, for the log, after `what` it says happened first.
+ */
+async function catchUp(tree: string, branch: string, base: Base, signal: AbortSignal | undefined, what: string): Promise<string> {
+  const head = await git(tree, ['rev-parse', 'HEAD']);
+  const onBranch = (await git(tree, ['symbolic-ref', '--short', '--quiet', 'HEAD']).catch(() => '')) === branch;
+  const clean = onBranch && !(await git(tree, ['status', '--porcelain']));
+  const upstream = clean && (await git(tree, ['merge-base', '--is-ancestor', head, base.commit]).then(() => true, () => false));
+  if (base.fromRemote && upstream && head !== base.commit) {
+    await git(tree, ['reset', '--quiet', '--hard', base.commit], { signal });
+    return `${what} and moved it to ${base.label} (${short(base.commit)}), since it had no work of its own`;
+  }
+  return `${what} at ${short(head)}${onBranch ? '' : ', off its branch'}, as it was left`;
 }
 
 export interface IncludeCopy {
@@ -307,9 +348,9 @@ async function crossesSymlink(tree: string, target: string): Promise<boolean> {
 /**
  * Copies into a new worktree what `.worktreeinclude` in the main checkout
  * names, as Claude Code does when it makes one: each file that matches a
- * pattern and that git ignores, so a tracked file is never copied over it. A
- * symlink is left out, and so is a file whose place in the tree is reached
- * through a committed symlink.
+ * pattern and that git ignores. A symlink is left out, and so is any file
+ * whose place in the tree is already taken or is reached through a symlink,
+ * so a copy never replaces what the tree checked out or writes outside it.
  */
 export async function copyWorktreeIncludes(sourceRoot: string, tree: string, { signal }: { signal?: AbortSignal } = {}): Promise<IncludeCopy> {
   const result: IncludeCopy = { copied: [], skipped: [] };
@@ -331,12 +372,15 @@ export async function copyWorktreeIncludes(sourceRoot: string, tree: string, { s
     signal?.throwIfAborted();
     const from = path.join(sourceRoot, file);
     const to = path.join(tree, file);
-    if ((await lstat(from))?.isSymbolicLink() || (await crossesSymlink(tree, to))) {
+    // Something already at `to` is the tree's own, such as a file the base
+    // tracks that this checkout ignores, or a committed symlink a copy would
+    // write through; either way it is left alone.
+    if ((await lstat(from))?.isSymbolicLink() || (await crossesSymlink(tree, to)) || (await lstat(to))) {
       result.skipped.push(file);
       continue;
     }
     await fsp.mkdir(path.dirname(to), { recursive: true });
-    await fsp.copyFile(from, to, fs.constants.COPYFILE_FICLONE);
+    await fsp.copyFile(from, to, fs.constants.COPYFILE_EXCL | fs.constants.COPYFILE_FICLONE);
     result.copied.push(file);
   }
   return result;

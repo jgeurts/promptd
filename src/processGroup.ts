@@ -1,0 +1,141 @@
+import { spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
+
+/**
+ * Runs one command in a process group of its own and answers only once every
+ * process in that group is gone, so nothing it started is still writing when
+ * the caller moves on: to the next command, to Claude, or to removing the
+ * worktree.
+ *
+ * Ending it, by abort or timeout, sends the group SIGTERM, then SIGKILL five
+ * seconds later. When the command exits by itself, whatever it left running
+ * in the group is ended the same way. A process that leaves the group on
+ * purpose (a daemon that calls setsid) is beyond its reach.
+ */
+
+export const KILL_AFTER_MS = 5000;
+const POLL_MS = 50;
+
+export interface GroupOptions {
+  /** Where it starts; this process's own folder when left out. */
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Written to stdin, which is otherwise closed. */
+  input?: string;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  /** Each chunk of stdout and stderr as it arrives. */
+  onOutput?: (chunk: Buffer, from: 'stderr' | 'stdout') => void;
+}
+
+export interface GroupResult {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  /** Set when it could not be started at all. */
+  error: string | null;
+  timedOut: boolean;
+  aborted: boolean;
+}
+
+function signalGroup(pid: number, signal: NodeJS.Signals | 0): boolean {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms).unref());
+
+/** Waits for the group to empty, up to `ms`; true once it has. */
+async function emptied(pid: number, ms: number): Promise<boolean> {
+  const until = Date.now() + ms;
+  while (signalGroup(pid, 0)) {
+    if (Date.now() >= until) return false;
+    await sleep(POLL_MS);
+  }
+  return true;
+}
+
+/** SIGTERM to the group, then SIGKILL if anything is left, and back once it is empty. */
+async function endGroup(pid: number): Promise<void> {
+  if (!signalGroup(pid, 'SIGTERM')) return;
+  if (await emptied(pid, KILL_AFTER_MS)) return;
+  signalGroup(pid, 'SIGKILL');
+  await emptied(pid, KILL_AFTER_MS);
+}
+
+export function runInGroup(command: string, args: string[], options: GroupOptions): Promise<GroupResult> {
+  const { cwd, env = process.env, input, signal, timeoutMs, onOutput } = options;
+  return new Promise((resolve) => {
+    const result: GroupResult = { code: null, signal: null, error: null, timedOut: false, aborted: false };
+    if (signal?.aborted) {
+      resolve({ ...result, aborted: true });
+      return;
+    }
+    let child: ChildProcess;
+    try {
+      child = spawn(command, args, { cwd, env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], detached: true });
+    } catch (err) {
+      resolve({ ...result, error: err instanceof Error ? err.message : String(err) });
+      return;
+    }
+
+    let ending: Promise<void> | null = null;
+    const end = (): Promise<void> => {
+      ending ??= child.pid === undefined ? Promise.resolve() : endGroup(child.pid);
+      return ending;
+    };
+    const onAbort = (): void => {
+      result.aborted = true;
+      void end();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = timeoutMs === undefined ? null : setTimeout(() => {
+      result.timedOut = true;
+      void end();
+    }, Math.max(0, timeoutMs));
+
+    child.stdout?.on('data', (chunk: Buffer) => onOutput?.(chunk, 'stdout'));
+    child.stderr?.on('data', (chunk: Buffer) => onOutput?.(chunk, 'stderr'));
+    child.stdin?.on('error', () => {
+      /* it stopped reading; its exit says how it went */
+    });
+    if (input !== undefined) child.stdin?.end(input);
+
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(result);
+    };
+
+    child.once('error', (err) => {
+      // Only a failure to start arrives without an exit to follow.
+      if (child.pid !== undefined) return;
+      result.error = err.message;
+      settle();
+    });
+    child.once('exit', (code, exitSignal) => {
+      result.code = code;
+      result.signal = exitSignal;
+      const closed = new Promise<void>((done) => {
+        if (child.stdout?.closed !== false && child.stderr?.closed !== false) done();
+        else child.once('close', () => done());
+      });
+      // Whatever it left behind goes too, and only then is the run over. A
+      // process outside the group can still hold the output open, so that is
+      // given up on once the group is empty.
+      void end()
+        .then(() => Promise.race([closed, sleep(KILL_AFTER_MS)]))
+        .then(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          settle();
+        });
+    });
+  });
+}

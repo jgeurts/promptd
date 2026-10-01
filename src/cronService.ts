@@ -1767,7 +1767,7 @@ class CronService {
             const copy = await copyWorktreeIncludes(tree.root, tree.path, { signal: setup.signal });
             stream.write(
               `${WORKTREE_INCLUDE_FILE}  copied ${copy.copied.length} file${copy.copied.length === 1 ? '' : 's'}${copy.copied.length ? `: ${copy.copied.slice(0, 20).join(', ')}${copy.copied.length > 20 ? ', ...' : ''}` : ''}` +
-                `${copy.skipped.length ? `; left out ${copy.skipped.length} reached through a symlink: ${copy.skipped.slice(0, 20).join(', ')}` : ''}\n`,
+                `${copy.skipped.length ? `; left out ${copy.skipped.length} already in the tree or behind a symlink: ${copy.skipped.slice(0, 20).join(', ')}` : ''}\n`,
             );
           }
           runCwd = tree.path;

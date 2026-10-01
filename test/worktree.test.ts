@@ -199,6 +199,18 @@ describe('prepareWorktree', () => {
     expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 
+  it('keeps the commits on a branch whose folder was deleted, checking it out again rather than resetting it', async () => {
+    const { app } = behindOrigin();
+    const first = await prepareWorktree(app, 'job-12');
+    const own = commit(first.path, 'work kept only on the branch');
+    fs.rmSync(first.path, { recursive: true, force: true });
+
+    const again = await prepareWorktree(app, 'job-12');
+    expect(again).toMatchObject({ path: first.path, created: true });
+    expect(git(again.path, 'rev-parse', 'HEAD')).toBe(own);
+    expect(again.notes.join('\n')).toContain('again from the existing worktree-job-12');
+  });
+
   it('stops when asked, before making anything', async () => {
     const { app } = behindOrigin();
     const controller = new AbortController();
@@ -230,6 +242,29 @@ describe('copyWorktreeIncludes', () => {
     expect(fs.existsSync(path.join(tree.path, 'secret.txt'))).toBe(false);
     expect(fs.existsSync(path.join(tree.path, 'untracked.txt'))).toBe(false);
     expect(fs.readFileSync(path.join(tree.path, 'tracked.env.example'), 'utf8')).toBe('tracked\n');
+  });
+
+  it('leaves alone what the tree already has: a file the base tracks, and a committed symlink a copy would write through', async () => {
+    const { app, pusher } = behindOrigin();
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-outside-')), 'target');
+    fs.writeFileSync(outside, 'untouched\n');
+    // origin has since started tracking .env, and committed a symlink where a local file is listed.
+    fs.writeFileSync(path.join(pusher, '.env'), 'TRACKED=1\n');
+    fs.symlinkSync(outside, path.join(pusher, 'local.json'));
+    git(pusher, 'add', '.env', 'local.json');
+    commit(pusher, 'track .env and link local.json');
+    git(pusher, 'push', '-q', 'origin', 'HEAD:main');
+    // This checkout is behind, and ignores its own copies of both.
+    fs.writeFileSync(path.join(app, '.git', 'info', 'exclude'), '.env\nlocal.json\n');
+    fs.writeFileSync(path.join(app, '.env'), 'LOCAL=1\n');
+    fs.writeFileSync(path.join(app, 'local.json'), '{"local":true}\n');
+    fs.writeFileSync(path.join(app, '.worktreeinclude'), '.env\nlocal.json\n');
+
+    const tree = await prepareWorktree(app, 'job-13');
+    const copy = await copyWorktreeIncludes(tree.root, tree.path);
+    expect(copy).toEqual({ copied: [], skipped: ['.env', 'local.json'] });
+    expect(fs.readFileSync(path.join(tree.path, '.env'), 'utf8')).toBe('TRACKED=1\n');
+    expect(fs.readFileSync(outside, 'utf8')).toBe('untouched\n');
   });
 
   it('copies nothing without a .worktreeinclude', async () => {
