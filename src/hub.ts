@@ -393,6 +393,7 @@ class Hub {
     return {
       id: node.id,
       name: node.name,
+      isHub: this.isLocal(node),
       online,
       lastSeenAt: node.lastSeenAt ?? null,
       commit: node.commit,

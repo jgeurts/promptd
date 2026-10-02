@@ -59,6 +59,9 @@
         and one status block pinned to the bottom with the worst current issue
         and each computer's standing. A drawer off the left edge below 1024px.
       -->
+      <!-- A disk past 90% full, under the header and across the page; app.js fills it. -->
+      <div id="disk-banner" class="disk-banner" role="status" hidden></div>
+
       <aside id="sidebar" class="sidebar" aria-label="Sidebar">
         <div class="sidebar-head">
           <button id="sidebar-close" class="btn small icon side-close" type="button" aria-label="Close menu" title="Close menu">&times;</button>
@@ -71,14 +74,18 @@
           <section class="side-group" aria-labelledby="side-jobs-title">
             <h2 id="side-jobs-title" class="side-title">Jobs</h2>
             <ul id="side-jobs" class="side-list"></ul>
-            <!-- When the Memory page lands here, its item goes after One-time, before the projects: add it to SIDE_PAGES in app.js. -->
-            <div id="side-projects" class="side-projects"></div>
+            <!-- When the Memory page lands here, its item goes after One-time: add it to SIDE_PAGES in app.js. -->
           </section>
+          <section id="side-projects" class="side-group side-projects" aria-labelledby="side-projects-title"></section>
         </nav>
         <section class="side-status" aria-labelledby="side-status-title">
-          <h2 class="side-title"><a id="side-status-title" class="side-status-link" href="#/status" data-route="status">Status</a></h2>
-          <a id="side-alert" class="side-alert" href="#/status"></a>
+          <div class="side-title-row">
+            <h2 class="side-title"><a id="side-status-title" class="side-status-link" href="#/status" data-route="status">Status</a></h2>
+            <span id="side-open" class="side-open"></span>
+          </div>
+          <a id="side-alert" class="side-alert" href="#/status" hidden></a>
           <ul id="side-nodes" class="side-nodes"></ul>
+          <div id="side-keys" class="node-keys" aria-hidden="true" hidden></div>
         </section>
       </aside>
 

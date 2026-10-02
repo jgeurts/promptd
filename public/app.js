@@ -630,7 +630,7 @@ function updatedPhrase(counts) {
 }
 
 /**
- * Takes the counts the hub sent and redraws the tabs' numbers. A rise is said
+ * Takes the counts the hub sent and redraws the sidebar's marks. A rise is said
  * aloud, once for a burst of runs ending together; a fall is the reader's own
  * doing, and the first answer is the page loading, not news.
  */
@@ -639,7 +639,6 @@ function setActivityCounts(counts) {
   const next = { cron: Number(counts.cron) || 0, execution: Number(counts.execution) || 0 };
   const rose = activityCounts && (next.cron > activityCounts.cron || next.execution > activityCounts.execution);
   activityCounts = next;
-  for (const tab of document.querySelectorAll('.tab[data-kind]')) paintTabCount(tab);
   paintSideCounts();
   if (!rose || !activityStatusEl) return;
   clearTimeout(activityAnnounceTimer);
@@ -658,39 +657,9 @@ function refreshActivityCounts() {
     .catch(() => {});
 }
 
-/** A tab's number of updated jobs: drawn for the eye, said in words to a screen reader. */
-function paintTabCount(tab) {
-  const count = activityCounts?.[tab.dataset.kind] ?? 0;
-  const badge = tab.querySelector('.tab-count');
-  badge.hidden = !count;
-  badge.textContent = count > 99 ? '99+' : String(count);
-  tab.querySelector('.tab-count-words').textContent = count ? `, ${count} updated` : '';
-  tab.title = count ? `${count} updated since you last opened ${count === 1 ? 'it' : 'them'}` : '';
-}
 
-/** The two tabs. A project filter follows from one to the other. */
-function tabBar(current, project = null) {
-  const tabs = TABS.map((tab) =>
-    el(
-      'a',
-      {
-        class: `tab${tab.id === current ? ' selected' : ''}`,
-        href: project ? `${tab.hash}?project=${encodeURIComponent(project.id)}` : tab.hash,
-        role: 'tab',
-        'aria-selected': tab.id === current ? 'true' : 'false',
-        'data-kind': tab.kind,
-        'data-focus': `tab:${tab.id}`,
-      },
-      [
-        el('span', { text: tab.label }),
-        el('span', { class: 'tab-count', 'aria-hidden': 'true', hidden: '' }),
-        el('span', { class: 'sr-only tab-count-words' }),
-      ],
-    ),
-  );
-  for (const tab of tabs) paintTabCount(tab);
-  return el('nav', { class: 'tabs', role: 'tablist' }, tabs);
-}
+
+
 
 /**
  * Each tab's orders, the first being where it starts. Activity is running,
@@ -906,10 +875,10 @@ async function renderHome(tab = 'crons') {
   const head = el('div', { class: 'page-head' }, [
     el('div', {}, [
       // Focus lands here after a move between pages, and a redraw puts it back.
-      el('h1', { text: project ? project.name : 'promptd', tabindex: '-1', 'data-focus': 'title' }),
+      el('h1', { text: tab === 'executions' ? 'One-time' : 'Crons', tabindex: '-1', 'data-focus': 'title' }),
       subEl,
       project
-        ? el('p', { class: 'sub' }, ['Project · ', el('a', { class: 'link', href: TABS.find((candidate) => candidate.id === tab).hash, 'data-focus': 'show-all', text: 'Show every job' })])
+        ? el('p', { class: 'sub' }, [`Project: ${project.name} · `, el('a', { class: 'link', href: TABS.find((candidate) => candidate.id === tab).hash, 'data-focus': 'show-all', text: 'Show every job' })])
         : null,
     ]),
     el('div', { class: 'head-actions' }, [
@@ -923,7 +892,7 @@ async function renderHome(tab = 'crons') {
   // Filled while detached and swapped in at once. Clearing the page first and
   // filling it after the fetch left it one header tall for a moment, which
   // threw the scroll back to the top on every refresh.
-  const panel = el('div', { class: 'tab-panel', role: 'tabpanel' });
+  const panel = el('div', { class: 'tab-panel' });
   const sub = (text) => {
     subEl.textContent = text;
   };
@@ -937,7 +906,7 @@ async function renderHome(tab = 'crons') {
   Object.assign(listOrder, order ?? NO_ORDER);
   // Redraws come with every run event, and must not throw the keyboard back to the top.
   const focused = view.contains(document.activeElement) ? document.activeElement.closest('[data-focus]')?.dataset.focus : null;
-  view.replaceChildren(head, tabBar(tab, project), panel);
+  view.replaceChildren(head, panel);
   if (focused) view.querySelector(`[data-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   panel.addEventListener('pointerleave', () => catchUp(0));
   panel.addEventListener('focusout', () => catchUp(0));
@@ -3759,6 +3728,10 @@ async function renderSettings() {
         'Colors the band across the top of every page and the dot beside the name, so each server is told apart at a glance. ',
         'Give each server its own and you can tell which one is open before reading anything. Orange is the default.',
       ]),
+      divider(),
+      el('h3', { id: 'status-view-title', text: 'Sidebar status' }),
+      statusViewPicker(),
+      el('div', { class: 'hint', text: 'How the status block draws each computer: two bars, session over weekly, or two rings. Kept by this browser.' }),
       ...updates,
       ...dates,
       ...(local ? [divider(), ...local.limit, divider(), ...local.queue] : []),
@@ -5211,6 +5184,8 @@ const sideJobsEl = document.getElementById('side-jobs');
 const sideProjectsEl = document.getElementById('side-projects');
 const sideAlertEl = document.getElementById('side-alert');
 const sideNodesEl = document.getElementById('side-nodes');
+const sideOpenEl = document.getElementById('side-open');
+const sideKeysEl = document.getElementById('side-keys');
 const settingsEl = document.getElementById('settings-open');
 const updateDotEl = document.getElementById('update-dot');
 const announcerEl = document.getElementById('status-announcer');
@@ -5426,13 +5401,20 @@ function countOf(n, noun) {
 }
 
 /**
- * What the alert line says: only what the meters cannot show. A limit reached
- * or near is on the meters already, with its percentage and its word, so the
- * line keeps to jobs held, computers offline, machine trouble, the page's own
- * connection and an update on offer. The status page still lists everything.
+ * Alerts the status block's line leaves out, because something else on screen
+ * shows them: limits on the bars, an offline computer on its row, a full disk
+ * in the banner under the header, an update on the Settings button.
  */
+const SHOWN_ELSEWHERE = new Set(['accounts-reached', 'accounts-near', 'offline', 'machines', 'update']);
+
+/** What the line says: jobs waiting, and the page's own connection. The status page still lists everything. */
 function lineAlerts(alerts) {
-  return alerts.filter((alert) => alert.id !== 'accounts-reached' && alert.id !== 'accounts-near');
+  return alerts.filter((alert) => !SHOWN_ELSEWHERE.has(alert.id));
+}
+
+/** The phone's strip, with the sidebar closed: everything but limits, the disk banner's news and an update on offer. */
+function stripAlerts(alerts) {
+  return alerts.filter((alert) => !['accounts-reached', 'accounts-near', 'machines', 'update'].includes(alert.id));
 }
 
 /** Where the worst current issue is explained, or the top of the status page with nothing wrong. */
@@ -5458,12 +5440,16 @@ function alertWords(alerts, { clear = SEVERITY.ok.word } = {}) {
 }
 
 /**
- * The one line under the Status heading: the worst current issue the meters
- * cannot show, in words, linking to the section that explains it, or "All
- * clear". Border, glyph and word carry the severity together, never a colour
- * alone.
+ * The one line under the Status heading, only while there is something to
+ * say: the worst issue nothing else shows, in words, linking to the section
+ * that explains it. Glyph and word carry the severity, never a colour alone.
  */
 function paintAlert(alerts) {
+  sideAlertEl.hidden = !alerts.length;
+  if (!alerts.length) {
+    sideAlertEl.replaceChildren();
+    return;
+  }
   sideAlertEl.className = `side-alert ${worstSeverity(alerts)}`;
   sideAlertEl.href = alertHref(alerts);
   sideAlertEl.replaceChildren(el('span', { class: 'glyph', 'aria-hidden': 'true', text: alertGlyph(alerts) }), el('span', {}, alertWords(alerts)));
@@ -5513,6 +5499,8 @@ const ICONS = {
   plus: '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>',
   online: '●',
   offline: '○',
+  warn: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2 14.2 13H1.8Z"/><path d="M8 6.4v3"/><path d="M8 11.3v.01"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6"/><path d="M8 10.9v.01"/></svg>',
 };
 
 /**
@@ -5537,7 +5525,7 @@ function paintJobsItems() {
           {
             icon: page.icon,
             label: page.label,
-            after: [el('span', { class: 'side-count', 'data-kind': page.kind, 'aria-hidden': 'true', hidden: '' }), el('span', { class: 'sr-only side-count-words' })],
+            after: [el('span', { class: 'side-count side-dot', 'data-kind': page.kind, 'aria-hidden': 'true', hidden: '' }), el('span', { class: 'sr-only side-count-words' })],
           },
         ),
       ]),
@@ -5545,22 +5533,21 @@ function paintJobsItems() {
   );
 }
 
-/** The sidebar's copy of a tab's updated count, said in words to a screen reader as the tab's is. */
+/** The sidebar's mark for a page with updates nobody has opened: a dot, the count in its title and said in words. */
 function paintSideCounts() {
   for (const badge of sideJobsEl.querySelectorAll('.side-count[data-kind]')) {
     const count = activityCounts?.[badge.dataset.kind] ?? 0;
     badge.hidden = !count;
-    badge.textContent = count > 99 ? '99+' : String(count);
+    badge.parentElement.title = count ? `${count} updated since you last looked` : '';
     badge.parentElement.querySelector('.side-count-words').textContent = count ? `, ${count} updated` : '';
   }
 }
 
 let projectsState = []; // /api/projects/summary, as last read
 let projectsDrawn = null; // what the rows were last drawn from
-let projectsOpen = true; // the Projects list unfolded
 let projectsRefreshTimer = null;
 let newProjectOpen = false; // the New project form is showing
-let projectsParts = null; // the section's fixed parts, built once: { toggle, count, list, add }
+let projectsParts = null; // the section's fixed parts, built once: { add, form, list }
 
 /** Re-reads the projects' counts after run activity, coalesced like `refreshHealth`. */
 function refreshProjects() {
@@ -5582,22 +5569,7 @@ function projectHash(projectId) {
   return `${tab.hash}?project=${encodeURIComponent(projectId)}`;
 }
 
-/** The New project row, which the form takes the place of. */
-function newProjectButton() {
-  return sideItem(
-    'button',
-    {
-      type: 'button',
-      'data-key': 'project:new',
-      onclick: () => {
-        newProjectOpen = true;
-        paintProjects();
-        projectsParts.add.querySelector('#side-new-name')?.focus();
-      },
-    },
-    { icon: ICONS.plus, label: 'New project' },
-  );
-}
+
 
 /** The form that adds a project, with its label shown and any error beside the field. It uses the Settings page's API. */
 function newProjectForm() {
@@ -5606,7 +5578,7 @@ function newProjectForm() {
   const close = () => {
     newProjectOpen = false;
     paintProjects();
-    projectsParts.add.querySelector('[data-key="project:new"]')?.focus();
+    projectsParts.add.focus();
   };
   const form = el(
     'form',
@@ -5656,37 +5628,37 @@ function newProjectForm() {
 }
 
 /**
- * The section's fixed parts: the row that folds it, the list of projects, and
- * the place the New project row or its form sits. Built once, so the form
- * outlives every redraw of the rows beside it.
+ * The section's fixed parts: the heading with its + button, the place the New
+ * project form opens, and the list of projects. Built once, so the form
+ * outlives every redraw of the rows below it.
  */
 function projectsSkeleton() {
   if (projectsParts) return projectsParts;
-  const listId = 'side-project-list';
-  const count = el('span', { class: 'side-count quiet' });
-  const toggle = el(
-    'button',
-    {
-      type: 'button',
-      class: 'side-item side-disclose',
-      'aria-controls': listId,
-      'data-key': 'projects',
-      onclick: () => {
-        projectsOpen = !projectsOpen;
-        paintProjects();
-      },
+  const add = el('button', {
+    type: 'button',
+    class: 'side-head-btn',
+    'aria-label': 'New project',
+    title: 'New project',
+    'aria-expanded': 'false',
+    'aria-controls': 'side-new-wrap',
+    'data-key': 'project:new',
+    html: ICONS.plus,
+    onclick: () => {
+      newProjectOpen = !newProjectOpen;
+      paintProjects();
+      if (newProjectOpen) projectsParts.form.querySelector('#side-new-name')?.focus();
     },
-    [el('span', { class: 'side-icon side-chevron', 'aria-hidden': 'true', html: ICONS.chevron }), el('span', { class: 'side-label', text: 'Projects' }), count],
-  );
-  const list = el('ul', { id: listId, class: 'side-list' });
-  const add = el('div', { class: 'side-add' });
-  sideProjectsEl.replaceChildren(toggle, list, add);
-  projectsParts = { toggle, count, list, add };
+  });
+  const head = el('div', { class: 'side-title-row' }, [el('h2', { id: 'side-projects-title', class: 'side-title', text: 'Projects' }), add]);
+  const form = el('div', { id: 'side-new-wrap', class: 'side-add', hidden: '' });
+  const list = el('ul', { id: 'side-project-list', class: 'side-list', 'aria-labelledby': 'side-projects-title', hidden: '' });
+  sideProjectsEl.replaceChildren(head, form, list);
+  projectsParts = { add, form, list };
   return projectsParts;
 }
 
 /**
- * The projects, folded under one row that counts them. Each shows how many
+ * The projects, under their heading once there is one. Each shows how many
  * jobs it has, a run under way and an update not yet opened, so which project
  * needs a look shows without filtering; the item filters both lists to it,
  * and the current one, pressed again, clears the filter. Called on every
@@ -5695,14 +5667,13 @@ function projectsSkeleton() {
  * the draft and the focus where they were.
  */
 function paintProjects() {
-  const { toggle, count, list, add } = projectsSkeleton();
+  const { add, form, list } = projectsSkeleton();
   const { project: current, kind, section } = parseHash();
-  toggle.setAttribute('aria-expanded', String(projectsOpen));
-  count.replaceChildren(el('span', { 'aria-hidden': 'true', text: String(projectsState.length) }), el('span', { class: 'sr-only', text: `, ${projectsState.length}` }));
-  list.hidden = !projectsOpen;
-  add.hidden = !projectsOpen;
-  if (newProjectOpen && !add.querySelector('form')) add.replaceChildren(newProjectForm());
-  else if (!newProjectOpen && !add.querySelector('[data-key="project:new"]')) add.replaceChildren(newProjectButton());
+  add.setAttribute('aria-expanded', String(newProjectOpen));
+  form.hidden = !newProjectOpen;
+  if (newProjectOpen && !form.querySelector('form')) form.replaceChildren(newProjectForm());
+  else if (!newProjectOpen) form.replaceChildren();
+  list.hidden = !projectsState.length;
   // The rows are rebuilt only when what they show has changed: a list rebuilt under a pointer loses the click.
   // The section is in it because a row leads to the list that is open, and from any other page to the crons list.
   const drawn = JSON.stringify([projectsState, current, kind, section]);
@@ -5739,7 +5710,7 @@ function paintProjects() {
         ),
       ]),
     );
-    list.replaceChildren(...(items.length ? items : [el('li', { class: 'side-empty', text: 'No projects yet' })]));
+    list.replaceChildren(...items);
     if (focused) list.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
   }
   syncCurrent();
@@ -5772,47 +5743,386 @@ function paintRunning() {
   );
 }
 
+// ---- the computers in the status block, and the hover that details one
+
+const STATUS_VIEW_KEY = 'promptd.statusView';
+
+/** How the status block draws each computer, "bars" or "rings": this browser's choice, from Settings. */
+function statusView() {
+  try {
+    return localStorage.getItem(STATUS_VIEW_KEY) === 'rings' ? 'rings' : 'bars';
+  } catch {
+    return 'bars';
+  }
+}
+
+/** The Settings page's two choices for `statusView`, which redraw the sidebar at once. */
+function statusViewPicker() {
+  const current = statusView();
+  const option = (value, label) => {
+    const input = el('input', { type: 'radio', name: 'status-view', value });
+    input.checked = value === current;
+    input.addEventListener('change', () => {
+      try {
+        localStorage.setItem(STATUS_VIEW_KEY, value);
+      } catch {
+        // Kept for this visit only, where storage is blocked.
+      }
+      paintShell();
+      toast(`Sidebar shows ${label.toLowerCase()}`);
+    });
+    return el('label', { class: 'check' }, [input, ` ${label}`]);
+  };
+  return el('div', { class: 'delay-grid', role: 'radiogroup', 'aria-labelledby': 'status-view-title' }, [option('bars', 'Bars'), option('rings', 'Rings')]);
+}
+
+/** "RoundHead" for "RoundHead.localdomain": the network's suffix says nothing at this width. */
+function shortHost(name) {
+  return String(name ?? '').replace(/\.(localdomain|local|lan|home|internal)$/i, '');
+}
+
+/** The hub's own computer first, then the rest A to Z. */
+function sidebarOrder(computers) {
+  return [...computers].sort(
+    (a, b) => Number(Boolean(b.isHub)) - Number(Boolean(a.isHub)) || shortHost(a.name).localeCompare(shortHost(b.name), undefined, { sensitivity: 'base' }),
+  );
+}
+
+/** Every limit a computer's account reports; a hub older than this page sends only the ones it drew. */
+function readingWindows(node) {
+  return node.reading?.windows ?? node.reading?.limits ?? [];
+}
+
+function limitKind(limit) {
+  return limit.kind ?? String(limit.key ?? '').split(':')[0];
+}
+
+/** Session, Weekly, or the model a weekly limit is kept for: names a 264px column has room for. */
+function limitShortName(limit) {
+  const kind = limitKind(limit);
+  if (kind === 'session') return 'Session';
+  if (kind === 'weekly_all') return 'Weekly';
+  if (kind === 'weekly_scoped' && limit.scope) return limit.scope;
+  return limit.name;
+}
+
+/** The share of a limit used, 0 to 100, and 0 for one the account does not report. */
+function usedOf(limit) {
+  return limit ? Math.max(0, Math.min(100, Number(limit.usedPercent) || 0)) : 0;
+}
+
+/** "4:50 PM" today, "Sat 7 PM" this week, "Oct 12" past it: when a computer is back, as short as it can be said. */
+function fmtBack(iso) {
+  const at = new Date(iso);
+  const now = new Date();
+  const time = at.toLocaleTimeString(undefined, at.getMinutes() ? { hour: 'numeric', minute: '2-digit' } : { hour: 'numeric' });
+  if (at.toDateString() === now.toDateString()) return time;
+  if (at - now < 6 * 86400000) return `${at.toLocaleDateString(undefined, { weekday: 'short' })} ${time}`;
+  return at.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/** "today 6:13 PM", or `fmtWhen`'s "Sat 7:00 PM" and "Oct 12, 3:00 PM" for any other day. */
+function fmtResets(iso) {
+  const at = new Date(iso);
+  return at.toDateString() === new Date().toDateString() ? `today ${at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : fmtWhen(iso);
+}
+
 /**
- * One row per computer: online or offline in glyph and word, the name onto its
- * page, how many jobs it runs of its limit, and its account's meters: the
- * session, the weekly, and the limit `shownLimits` adds when another is the
- * bottleneck, with the reset time once a limit is near or reached. Every
- * computer on one account shares its reading, so the meters are drawn once,
- * on the first such computer, and the others name it instead.
+ * What a computer's row says on its right: offline, back when the last of its
+ * used-up limits resets, or open. A limit used up is a hold, not a failure, so
+ * only offline is drawn in the failure colour.
+ */
+function nodeState(node) {
+  if (!node.online) return { kind: 'offline', text: 'offline' };
+  const reached = readingWindows(node).filter((limit) => limit.status === 'reached');
+  if (!reached.length) return { kind: 'open', text: 'open' };
+  const resets = reached.map((limit) => limit.resetsAt).filter(Boolean).sort();
+  return { kind: 'held', text: resets.length === reached.length ? `back ${fmtBack(resets.at(-1))}` : 'used up', at: resets.at(-1) ?? null };
+}
+
+/** The small line under a row, when there is one: when an offline computer was last heard, or why there are no bars. */
+function nodeMeta(node) {
+  if (!node.online) return node.lastSeenAt ? `last seen ${fmtAgo(node.lastSeenAt)}` : 'not seen yet';
+  if (!readingWindows(node).length) return node.reading?.reason ? `No usage reading: ${node.reading.reason}` : 'No usage reading yet';
+  if (node.reading?.stale) return node.reading.checkedAt ? `usage from ${fmtAgo(node.reading.checkedAt)}` : 'usage could not be refreshed';
+  return null;
+}
+
+/** The row in words, for a screen reader: what the bars and the hover show to the eye. */
+function nodeWords(node) {
+  const windows = readingWindows(node);
+  if (!node.online || !windows.length) return '';
+  return windows
+    .map((limit) => `${limitShortName(limit)} ${fmtUsed(limit.usedPercent)} used${limit.resetsAt ? `, resets ${fmtResets(limit.resetsAt)}` : ''}.`)
+    .join(' ');
+}
+
+/** A thin bar for one limit, filling as it is used, the same colour whether or not it is full. */
+function usageBar(limit, kind) {
+  return el('span', { class: 'node-bar' }, [el('i', { class: kind, style: `width: ${usedOf(limit)}%` })]);
+}
+
+function runningMark(node) {
+  return node.online && node.running
+    ? el('span', { class: 'node-run' }, [el('span', { 'aria-hidden': 'true', text: '▸' }), ` ${node.running} running`])
+    : null;
+}
+
+/** One computer as two bars, session over weekly, under its name and state. */
+function nodeBarsRow(node) {
+  const state = nodeState(node);
+  const windows = readingWindows(node);
+  const meta = nodeMeta(node);
+  return el('li', { class: `node-row ${state.kind}` }, [
+    el('a', { class: 'node-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
+      el('span', { class: 'node-head' }, [
+        el('span', { class: 'node-name', text: shortHost(node.name) }),
+        runningMark(node),
+        el('span', { class: 'node-state', text: state.text }),
+      ]),
+      node.online && windows.length
+        ? el('span', { class: 'node-bars', 'aria-hidden': 'true' }, [
+            usageBar(windows.find((limit) => limitKind(limit) === 'session'), 'session'),
+            usageBar(windows.find((limit) => limitKind(limit) === 'weekly_all'), 'week'),
+          ])
+        : null,
+      meta ? el('span', { class: 'node-meta', text: meta }) : null,
+      el('span', { class: 'sr-only', text: ` ${nodeWords(node)}` }),
+    ]),
+  ]);
+}
+
+/** Two rings, weekly outside and session inside, each filling as it is used, with a word or a number in the middle. */
+function ringsSvg(node, state) {
+  const windows = readingWindows(node);
+  const session = usedOf(windows.find((limit) => limitKind(limit) === 'session'));
+  const week = usedOf(windows.find((limit) => limitKind(limit) === 'weekly_all'));
+  const arc = (r, used, color) => {
+    const around = 2 * Math.PI * r;
+    const track = `<circle cx="36" cy="36" r="${r}" fill="none" stroke="var(--track)" stroke-width="6"/>`;
+    if (!used) return track;
+    const cap = used >= 100 ? 'butt' : 'round';
+    return `${track}<circle cx="36" cy="36" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="${cap}" stroke-dasharray="${((around * used) / 100).toFixed(1)} ${around.toFixed(1)}" transform="rotate(-90 36 36)"/>`;
+  };
+  const back = state.kind === 'held' && state.at ? new Date(state.at) : null;
+  const words = back
+    ? [
+        back.toDateString() === new Date().toDateString() ? 'back' : back.toLocaleDateString(undefined, { weekday: 'short' }),
+        back.toLocaleTimeString(undefined, back.getMinutes() ? { hour: 'numeric', minute: '2-digit' } : { hour: 'numeric' }),
+      ]
+    : [`${Math.round(Math.max(session, week))}%`];
+  const text =
+    words.length === 1
+      ? `<text x="36" y="40.5" text-anchor="middle" class="ring-num">${words[0]}</text>`
+      : `<text x="36" y="34" text-anchor="middle" class="ring-word">${words[0]}</text><text x="36" y="47" text-anchor="middle" class="ring-word">${words[1]}</text>`;
+  return `<svg viewBox="0 0 72 72" width="64" height="64" aria-hidden="true">${arc(30, week, 'var(--meter-week)')}${arc(21, session, 'var(--meter-session)')}${text}</svg>`;
+}
+
+/** The line under a ring: when an offline computer was last heard, "used up" when the ring's middle says when it is back, or the state. */
+function ringCaption(node, state) {
+  if (!node.online) return nodeMeta(node);
+  if (state.kind === 'held' && state.at) return 'used up';
+  return state.text;
+}
+
+/** One computer as two rings, its name and its state beneath. Offline draws no rings, the word in their place. */
+function nodeRingCell(node) {
+  const state = nodeState(node);
+  const drawn = node.online && readingWindows(node).length;
+  return el('li', { class: `node-cell ${state.kind}` }, [
+    el('a', { class: 'node-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
+      drawn ? el('span', { class: 'node-ring', html: ringsSvg(node, state) }) : el('span', { class: 'node-ring empty', 'aria-hidden': 'true', text: node.online ? 'no reading' : 'offline' }),
+      el('span', { class: 'node-name', text: shortHost(node.name) }),
+      el('span', { class: 'node-state' }, [runningMark(node) ?? ringCaption(node, state)]),
+      el('span', { class: 'sr-only', text: ` ${state.text}. ${nodeWords(node)}` }),
+    ]),
+  ]);
+}
+
+/**
+ * The status block's computers, the hub's own first and the rest A to Z, as
+ * bars or rings (Settings). A limit used up keeps its colour and fills its bar:
+ * the row's "back Sat 7 PM" says when it frees. The heading counts the
+ * computers open for work, and the key under them says which bar is which.
  */
 function paintNodes() {
-  const { cluster } = healthState;
-  const drawnFor = new Map(); // account key -> the computer whose row carries its meters
-  const rows = cluster.computers.map((node) => {
-    const { reading } = node;
-    const load = node.online ? `${node.running} of ${node.concurrencyLimit || '∞'}` : null;
-    const seen = node.online ? null : node.lastSeenAt ? `Last seen ${fmtAgo(node.lastSeenAt)}` : 'Not seen yet';
-    const shownOn = node.accountKey ? drawnFor.get(node.accountKey) : undefined;
-    if (node.accountKey && !shownOn && reading.limits.length) drawnFor.set(node.accountKey, node.name);
-    let detail;
-    if (shownOn) detail = [el('span', { class: 'side-node-meta', text: `same account as ${shownOn}` })];
-    else if (reading.limits.length) {
-      detail = [
-        el('ul', { class: 'avail-limits', title: reading.stale ? 'Usage out of date' : null }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))),
-        reading.stale
-          ? el('span', { class: 'side-node-meta stale', text: reading.checkedAt ? `Last known · usage checked ${fmtAgo(reading.checkedAt)}` : 'Last known · usage could not be refreshed' })
-          : null,
-      ];
-    } else {
-      detail = [el('span', { class: 'side-node-meta', text: node.online ? `No usage reading${reading.reason ? `: ${reading.reason}` : ' yet'}` : 'No usage reading while offline' })];
-    }
-    return el('li', { class: 'side-node' }, [
-      el('div', { class: 'side-node-head' }, [
-        el('span', { class: `side-icon ${node.online ? 'online' : 'offline'}`, 'aria-hidden': 'true', text: node.online ? ICONS.online : ICONS.offline }),
-        el('a', { class: 'side-node-name', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, text: node.name }),
-        el('span', { class: 'side-node-load' }, [node.online ? 'online' : 'offline', load ? ' · ' : null, load ? el('span', { title: 'Running, of its job limit', text: load }) : null]),
-      ]),
-      seen ? el('span', { class: 'side-node-meta', text: seen }) : null,
-      ...detail.filter(Boolean),
-    ]);
-  });
-  sideNodesEl.replaceChildren(...(rows.length ? rows : [el('li', { class: 'side-node-meta', text: 'No computers connected' })]));
+  const computers = sidebarOrder(healthState.cluster.computers);
+  const mode = statusView();
+  const open = computers.filter((node) => nodeState(node).kind === 'open').length;
+  sideOpenEl.textContent = computers.length ? `${open} of ${computers.length} open` : '';
+  sideNodesEl.className = `side-nodes ${mode}`;
+  if (!computers.length) {
+    sideNodesEl.replaceChildren(el('li', { class: 'node-meta', text: 'No computers connected' }));
+    sideKeysEl.hidden = true;
+  } else {
+    sideNodesEl.replaceChildren(...computers.map(mode === 'rings' ? nodeRingCell : nodeBarsRow));
+    sideKeysEl.hidden = !computers.some((node) => node.online && readingWindows(node).length);
+    sideKeysEl.replaceChildren(
+      el('span', { class: 'key' }, [el('i', { class: 'session' }), mode === 'rings' ? 'inner: session' : 'session']),
+      el('span', { class: 'key' }, [el('i', { class: 'week' }), mode === 'rings' ? 'outer: weekly' : 'weekly']),
+    );
+  }
+  if (nodeTipFor) showNodeTip(sideNodesEl.querySelector(`[data-node-id="${CSS.escape(nodeTipFor)}"]`));
 }
+
+// The hover: every limit a computer's account has, each as a row like the
+// computers' own, its name and the share used above a bar, when it resets
+// beneath. Drawn for the eye; the row's own words carry the same to a screen
+// reader, so this stays out of the accessibility tree.
+const nodeTipEl = el('div', { class: 'node-tip', 'aria-hidden': 'true', hidden: '' });
+document.body.append(nodeTipEl);
+let nodeTipFor = null; // the computer whose details are showing
+
+function tipLines(node) {
+  const state = nodeState(node);
+  const windows = readingWindows(node);
+  const session = windows.find((limit) => limitKind(limit) === 'session');
+  const lines = [
+    el('div', { class: 'tip-head' }, [el('b', { text: shortHost(node.name) }), el('span', { text: state.text })]),
+    ...windows.map((limit) =>
+      el('div', { class: 'tip-lim' }, [
+        el('span', { class: 'tip-lim-head' }, [el('span', { text: limitShortName(limit) }), el('span', { class: 'tip-pct', text: fmtUsed(limit.usedPercent) })]),
+        usageBar(limit, limitKind(limit) === 'session' ? 'session' : 'week'),
+        el('span', { class: 'tip-reset', text: limit.resetsAt ? `Resets ${fmtResets(limit.resetsAt)}` : limitKind(limit) === 'session' ? 'No session started' : 'No reset time reported' }),
+      ]),
+    ),
+  ];
+  const notes = [
+    node.reading?.sharedWith?.length ? `Same account as ${node.reading.sharedWith.map(shortHost).join(', ')}` : null,
+    node.reading?.stale ? (node.reading.checkedAt ? `Usage checked ${fmtAgo(node.reading.checkedAt)}` : 'Usage could not be refreshed') : null,
+    Number.isFinite(session?.waitsAt) ? `Jobs set to wait for usage hold at ${session.waitsAt}%` : null,
+  ].filter(Boolean);
+  if (notes.length) lines.push(el('div', { class: 'tip-notes' }, notes.map((note) => el('span', { text: note }))));
+  return lines;
+}
+
+/** Shows the details beside a computer's row, inside the window, or hides them for a row that has none. */
+function showNodeTip(link) {
+  const node = link ? healthState?.cluster?.computers?.find((candidate) => candidate.id === link.dataset.nodeId) : null;
+  if (!node || !node.online || !readingWindows(node).length) {
+    hideNodeTip();
+    return;
+  }
+  nodeTipFor = node.id;
+  nodeTipEl.replaceChildren(...tipLines(node));
+  nodeTipEl.hidden = false;
+  const row = link.getBoundingClientRect();
+  const tip = nodeTipEl.getBoundingClientRect();
+  const left = Math.min(row.right + 10, innerWidth - tip.width - 8);
+  const top = Math.min(Math.max(8, row.top - 6), innerHeight - tip.height - 8);
+  nodeTipEl.style.left = `${Math.max(8, left)}px`;
+  nodeTipEl.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideNodeTip() {
+  nodeTipFor = null;
+  nodeTipEl.hidden = true;
+}
+
+sideNodesEl.addEventListener('pointerover', (event) => {
+  const link = event.target.closest('[data-node-id]');
+  if (link && link.dataset.nodeId !== nodeTipFor) showNodeTip(link);
+});
+sideNodesEl.addEventListener('pointerleave', hideNodeTip);
+sideNodesEl.addEventListener('focusin', (event) => showNodeTip(event.target.closest('[data-node-id]')));
+sideNodesEl.addEventListener('focusout', hideNodeTip);
+addEventListener('resize', hideNodeTip);
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && nodeTipFor) hideNodeTip();
+});
+
+// ---- the banner under the header for a disk filling up
+
+// Past this, a disk shows under the header; past the second, in the failure colour. The Status page and notifications start lower.
+const DISK_SHOWN_AT = 90;
+const DISK_CRITICAL_AT = 95;
+const DISK_HIDDEN_KEY = 'promptd.diskBannerHidden';
+
+/** The disks past `DISK_SHOWN_AT` full, fullest first: the one machine trouble that ends in failed jobs. */
+function fullDisks() {
+  return (healthState?.cluster?.exceptions ?? []).filter((reading) => reading.metric === 'disk' && reading.value >= DISK_SHOWN_AT).sort((a, b) => b.value - a.value);
+}
+
+function diskLevel(disk) {
+  return disk.value >= DISK_CRITICAL_AT ? 'critical' : 'warning';
+}
+
+/** Which computers' banners were hidden, and at which level, as this browser remembers. */
+function hiddenDisks() {
+  try {
+    return JSON.parse(localStorage.getItem(DISK_HIDDEN_KEY) || '{}') ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function saveHiddenDisks(hidden) {
+  try {
+    localStorage.setItem(DISK_HIDDEN_KEY, JSON.stringify(hidden));
+  } catch {
+    // Hidden for this visit only, where storage is blocked.
+  }
+}
+
+const diskBannerEl = document.getElementById('disk-banner');
+
+/**
+ * The banner for the fullest disk past the line, with how many more there
+ * are. Hiding it lasts until it gets worse: a disk hidden at 92% shows again
+ * past 95%, and one that drops back below the line forgets it was hidden, so
+ * it shows again if it fills again.
+ */
+function paintDiskBanner() {
+  const disks = fullDisks();
+  const hidden = hiddenDisks();
+  const present = new Set(disks.map((disk) => disk.nodeId));
+  const forgotten = Object.keys(hidden).filter((nodeId) => !present.has(nodeId));
+  for (const nodeId of forgotten) delete hidden[nodeId];
+  if (forgotten.length) saveHiddenDisks(hidden);
+  const shown = disks.filter((disk) => !(hidden[disk.nodeId] === 'critical' || (hidden[disk.nodeId] === 'warning' && diskLevel(disk) === 'warning')));
+  diskBannerEl.hidden = !shown.length;
+  if (!shown.length) {
+    diskBannerEl.replaceChildren();
+    syncBannerHeight();
+    return;
+  }
+  const worst = shown[0];
+  const critical = diskLevel(worst) === 'critical';
+  const name = shortHost(worst.nodeName);
+  diskBannerEl.className = `disk-banner ${critical ? 'critical' : 'warning'}`;
+  diskBannerEl.replaceChildren(
+    el('span', { class: 'banner-glyph', 'aria-hidden': 'true', html: critical ? ICONS.stop : ICONS.warn }),
+    el('span', { class: 'banner-text' }, [
+      el('span', { class: 'sr-only', text: critical ? 'Critical: ' : 'Warning: ' }),
+      el('b', { text: `${name}'s disk is ${Math.round(worst.value)}% full.` }),
+      ' ',
+      el('span', { class: 'banner-why', text: critical ? 'Jobs there will fail when it fills.' : 'Jobs there fail once it fills.' }),
+      shown.length > 1 ? el('a', { class: 'banner-more', href: '#/status/computers', text: ` +${shown.length - 1} more` }) : null,
+    ]),
+    el('a', { class: 'banner-link', href: `#/nodes/${encodeURIComponent(worst.nodeId)}`, text: `Open ${name}` }),
+    el('button', {
+      type: 'button',
+      class: 'btn small icon banner-close',
+      'aria-label': 'Hide until it gets worse',
+      title: 'Hide until it gets worse',
+      html: '&times;',
+      onclick: () => {
+        const next = hiddenDisks();
+        for (const disk of shown) next[disk.nodeId] = diskLevel(disk);
+        saveHiddenDisks(next);
+        paintDiskBanner();
+        view.focus({ preventScroll: true });
+      },
+    }),
+  );
+  syncBannerHeight();
+}
+
+/** The sidebar sits below the header and the banner, so it has to know how tall the banner is. */
+function syncBannerHeight() {
+  document.documentElement.style.setProperty('--banner-h', diskBannerEl.hidden ? '0px' : `${diskBannerEl.offsetHeight}px`);
+}
+addEventListener('resize', syncBannerHeight);
 
 /** Marks the item for the open page, and the project the list is filtered to. */
 function syncCurrent() {
@@ -5822,6 +6132,11 @@ function syncCurrent() {
   if (section === 'list' && project) current.add(`project:${project}`);
   if (section === 'nodes' && id) current.add(`nodes:${decodeURIComponent(id)}`);
   if (section === 'status') current.add('status');
+  // Crons and One-time keep the project the open list is filtered to, as the tabs above the list once did.
+  for (const page of SIDE_PAGES) {
+    const link = sideJobsEl.querySelector(`[data-key="page:${page.id}"]`);
+    if (link) link.href = project ? `${page.hash}?project=${encodeURIComponent(project)}` : page.hash;
+  }
   for (const item of document.querySelectorAll('[data-route]')) {
     if (current.has(item.dataset.route)) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
@@ -5862,9 +6177,11 @@ function paintShell() {
   // The line and the strip leave the limits to the meters; the announcer and the status page keep the full set.
   const shown = lineAlerts(alerts);
   if (changed('alert', shown)) paintAlert(shown);
-  if (changed('strip', [shown, cluster.nodes.online, cluster.nodes.total])) paintStrip(shown);
+  const strip = stripAlerts(alerts);
+  if (changed('strip', [strip, cluster.nodes.online, cluster.nodes.total])) paintStrip(strip);
   if (changed('running', (healthState.runningJobs ?? []).map((run) => [run.cronId, run.cronName, run.kind, run.nodeId, run.nodeName, run.startedAt]))) paintRunning();
-  if (changed('nodes', [cluster.computers, minute])) paintNodes();
+  if (changed('nodes', [cluster.computers, minute, statusView()])) paintNodes();
+  if (changed('banner', [fullDisks().map((disk) => [disk.nodeId, disk.nodeName, Math.round(disk.value)])])) paintDiskBanner();
   syncCurrent();
   if (focused) sidebarEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }

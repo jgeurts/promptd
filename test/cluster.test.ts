@@ -315,6 +315,22 @@ describe("the Node field's reading per computer", () => {
     expect(mini?.reading.limits).toHaveLength(2);
   });
 
+  it("gives each computer every limit its account reports, for the sidebar's hover, beside the ones its row draws", () => {
+    // A model's weekly limit with room is not drawn on the row, and the hover still lists it.
+    const windows = [usageWindow('session', 38), usageWindow('weekly_all', 83), usageWindow('weekly_scoped', 20, 'normal', 'Fable')];
+    const drawn = clusterSummary([node({ usage: reading(windows) })], null).computers[0]!.reading;
+    expect(drawn.limits.map((limit) => limit.key)).toEqual(['session:0', 'weekly_all:0']);
+    expect(drawn.windows.map((limit) => limit.key)).toEqual(['session:0', 'weekly_all:0', 'weekly_scoped:Fable']);
+  });
+
+  it("marks the hub's own computer, which the sidebar lists first", () => {
+    const summary = clusterSummary([node({ id: 'lab', name: 'lab' }), node({ id: 'mini', name: 'mini', isHub: true })], null);
+    expect(summary.computers.map((computer) => [computer.id, computer.isHub])).toEqual([
+      ['lab', false],
+      ['mini', true],
+    ]);
+  });
+
   it('leaves a computer with nothing to show empty, with the reason when the account gives one', () => {
     const summary = clusterSummary(
       [
@@ -323,7 +339,7 @@ describe("the Node field's reading per computer", () => {
       ],
       null,
     );
-    expect(summary.computers[0]?.reading).toEqual({ account: null, sharedWith: [], limits: [], checkedAt: null, stale: false, reason: null });
+    expect(summary.computers[0]?.reading).toEqual({ account: null, sharedWith: [], limits: [], windows: [], checkedAt: null, stale: false, reason: null });
     expect(summary.computers[1]?.reading).toMatchObject({ account: 'sam@example.com', limits: [], reason: 'reading usage for the account now signed in' });
   });
 
