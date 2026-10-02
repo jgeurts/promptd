@@ -102,7 +102,7 @@ export interface NodeReading {
   account: string | null;
   /** The other computers signed in to the same account: one reading serves them all. */
   sharedWith: string[];
-  /** The limits drawn for it; see `shownLimits`. */
+  /** The limits drawn for it; see `readingLimits`. */
   limits: AccountLimit[];
   checkedAt: string | null;
   stale: boolean;
@@ -601,6 +601,17 @@ export function shownLimits(windows: AccountLimit[]): AccountLimit[] {
   return windows.filter((limit) => ['session', 'weekly_all'].includes(kindOf(limit) ?? '') || limit === worst);
 }
 
+/**
+ * The limits a computer's row draws: `shownLimits`, plus every other limit
+ * that is near or reached, in the reading's own order. A flagged limit that
+ * is not the bottleneck, a model's weekly limit at 55% while the session is
+ * at 70%, would otherwise have neither a meter nor a line to say so.
+ */
+export function readingLimits(windows: AccountLimit[]): AccountLimit[] {
+  const shown = shownLimits(windows);
+  return windows.filter((limit) => shown.includes(limit) || limit.status !== 'ok');
+}
+
 /** One account as `availability` weighs it, from either kind of entry. */
 interface Candidate {
   key: string;
@@ -762,7 +773,7 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
     return {
       account: account ? account.email : own ? 'Account unknown' : null,
       sharedWith: account ? account.nodeIds.filter((id) => id !== node.id).map((id) => names.get(id) ?? id) : [],
-      limits: usage ? shownLimits(usage.windows) : [],
+      limits: usage ? readingLimits(usage.windows) : [],
       checkedAt: usage?.checkedAt ?? null,
       stale: Boolean(usage?.stale),
       reason: usage?.reason ?? null,

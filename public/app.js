@@ -5386,6 +5386,17 @@ sidebarEl.addEventListener('click', (event) => {
   closeSidebar({ restoreFocus: false });
   if (new URL(link.href, location.href).hash === location.hash) focusPage();
 });
+// The header stays live behind an open drawer so the bell can close it, which leaves its other
+// controls reachable too: a page opened from one would draw behind the drawer, over an inert view.
+// So a header link or the feedback button closes whichever drawer is open first; a link to the
+// page already open, which fires no hashchange, then puts focus on that page's heading itself.
+document.querySelector('.topbar').addEventListener('click', (event) => {
+  const control = event.target.closest?.('a[href], #feedback-open');
+  if (!control || !(sidebarOpen || drawerOpen)) return;
+  closeSidebar({ restoreFocus: false });
+  closeDrawer({ restoreFocus: false });
+  if (control.matches('a[href]') && new URL(control.href, location.href).hash === location.hash) focusPage();
+});
 sidebarCloseEl.addEventListener('click', () => closeSidebar());
 drawerBackdropEl?.addEventListener('click', () => {
   closeSidebar({ restoreFocus: false });
@@ -5463,7 +5474,8 @@ function availLimit(limit, { reset = true } = {}) {
   const used = Math.max(0, Math.min(100, Number(limit.usedPercent) || 0));
   return el('li', { class: `avail-lim ${limit.status}` }, [
     el('span', { class: 'lim-name', text: limit.name }),
-    el('span', { class: 'lim-pct' }, [LIMIT_FLAG[limit.status] ? el('span', { class: 'sr-only', text: `${LIMIT_FLAG[limit.status]}, ` }) : null, `${fmtUsed(used)} used`]),
+    // The word is drawn, not only read aloud, so the colour never carries it alone.
+    el('span', { class: 'lim-pct' }, [LIMIT_FLAG[limit.status] ? el('span', { class: 'lim-word', text: LIMIT_FLAG[limit.status] }) : null, `${fmtUsed(used)} used`]),
     el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: `lim-fill ${limit.status}`, style: `width: ${used}%` })]),
     reset ? el('span', { class: 'lim-reset', text: limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported' }) : null,
   ]);

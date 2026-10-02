@@ -986,6 +986,15 @@ a {
   white-space: nowrap;
 }
 
+/* "Reached" or "Near" beside the percentage, in the same colour and a size that stays out of the number's way. */
+.lim-word {
+  margin-right: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .lim.near .lim-name,
 .lim.near .lim-flag-cell,
 .lim.near .lim-pct {
