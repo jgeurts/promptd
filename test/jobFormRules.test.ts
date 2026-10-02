@@ -92,15 +92,15 @@ describe('what the Node field reads for each computer', () => {
     expect(readings.get('studio')).toMatchObject({ account: 'sam@example.com', sharedWith: [] });
   });
 
-  it('shows the session and weekly limits, and another only when it is the tightest', () => {
-    const windows = [limit('session:0', 38), limit('weekly_all:1', 61), limit('weekly_scoped:Fable', 95, 'near')];
-    const blocks = (tightest: string): NodeBlocks => ({
+  it('shows the session and weekly limits, and another only when it is the most used', () => {
+    const blocks = (scopedUsed: number): NodeBlocks => ({
       computers: [computer('galaxy', 'account:acct-kim')],
-      accounts: [{ ...kim, nodeIds: ['galaxy'], ...usage(windows, tightest) }],
+      // The severity-first `tightest` names the weekly limit either way; the tile goes by what is most used.
+      accounts: [{ ...kim, nodeIds: ['galaxy'], ...usage([limit('session:0', 38), limit('weekly_all:1', 61, 'near'), limit('weekly_scoped:Fable', scopedUsed)], 'weekly_all:1') }],
       unknownAccountUsage: [],
     });
-    expect(nodeReadings(blocks('weekly_scoped:Fable')).get('galaxy')?.limits.map((entry) => entry.key)).toEqual(['session:0', 'weekly_all:1', 'weekly_scoped:Fable']);
-    expect(nodeReadings(blocks('weekly_all:1')).get('galaxy')?.limits.map((entry) => entry.key)).toEqual(['session:0', 'weekly_all:1']);
+    expect(nodeReadings(blocks(95)).get('galaxy')?.limits.map((entry) => entry.key)).toEqual(['session:0', 'weekly_all:1', 'weekly_scoped:Fable']);
+    expect(nodeReadings(blocks(50)).get('galaxy')?.limits.map((entry) => entry.key)).toEqual(['session:0', 'weekly_all:1']);
   });
 
   it('keeps an offline computer under its account, reading as offline', () => {

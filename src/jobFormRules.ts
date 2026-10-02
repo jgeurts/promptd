@@ -20,7 +20,7 @@ export interface NodeReading {
   account: string | null;
   /** The other computers signed in to the same account: one reading serves them all. */
   sharedWith: string[];
-  /** The 5-hour session and the weekly all-models limit, with the tightest added when it is another: the tile's own pick. */
+  /** The 5-hour session and the weekly all-models limit, with the bottleneck added when it is another: the tile's own pick. */
   limits: AccountLimit[];
   checkedAt: string | null;
   stale: boolean;
@@ -31,10 +31,17 @@ export interface NodeReading {
 /** The parts of the summary the Node field draws from. */
 export type NodeBlocks = Pick<ClusterSummary, 'accounts' | 'computers' | 'unknownAccountUsage'>;
 
-/** The same pick as the tile's `best.limits` (`availability` in cluster.ts), in the reading's own order. */
+/** The window that stops work first: most used, then the one the API calls worse, then by key. The same order as `bottleneckWindow` in cluster.ts. */
+const SEVERITY_RANK: Record<AccountLimit['severity'], number> = { normal: 0, warning: 1, critical: 2 };
+function bottleneck(windows: AccountLimit[]): AccountLimit | null {
+  return [...windows].sort((a, b) => b.usedPercent - a.usedPercent || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.key.localeCompare(b.key))[0] ?? null;
+}
+
+/** The same pick as the tile's `best.limits` (`availability` in cluster.ts): session and weekly, in the reading's own order, plus the bottleneck when it is another. */
 function shownLimits(usage: UsageSummary): AccountLimit[] {
   const kind = (limit: AccountLimit): string => limit.kind ?? limit.key.split(':')[0] ?? '';
-  return usage.windows.filter((limit) => ['session', 'weekly_all'].includes(kind(limit)) || limit.key === usage.tightest);
+  const worst = bottleneck(usage.windows);
+  return usage.windows.filter((limit) => ['session', 'weekly_all'].includes(kind(limit)) || limit === worst);
 }
 
 /**

@@ -2356,10 +2356,6 @@ function followNodeDirectory(input, listing, keep) {
   input.dataset.nodeDefault = next;
 }
 
-/**
- * Which node runs the job. Blank follows the default node, so changing the default moves it.
- * `onChange` gets the listing of the node that would run it, once the nodes load and on every pick.
- */
 /** Hidden until a project exists, so a server that uses none never sees it. */
 function projectPicker(selected) {
   const select = el('select', { class: 'select' });
@@ -2461,9 +2457,12 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
     ];
     if (!reading) return lines;
     if (reading.limits.length) {
+      // Said before the numbers, as the tile says it, so a reading that could not be refreshed is never taken for a fresh one.
+      if (reading.stale) {
+        lines.push(el('span', { class: 'node-meta stale', text: reading.checkedAt ? `Last known numbers: usage last checked ${fmtAgo(reading.checkedAt)}` : 'Last known numbers: usage could not be refreshed' }));
+      }
       // The tile's own meters; the reset time only where it matters, to keep each card short.
-      lines.push(el('ul', { class: 'avail-limits' }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))));
-      if (reading.stale) lines.push(el('span', { class: 'node-meta stale', text: `Usage last checked ${fmtAgo(reading.checkedAt)}, so it may be out of date` }));
+      lines.push(el('ul', { class: 'avail-limits', title: reading.stale ? 'Usage out of date' : null }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))));
     } else {
       lines.push(el('span', { class: 'node-meta', text: online ? `No usage reading${reading.reason ? `: ${reading.reason}` : ' yet'}` : 'No usage reading while offline' }));
     }
