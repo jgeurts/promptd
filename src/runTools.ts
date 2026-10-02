@@ -115,8 +115,11 @@ export function bounded(value: string, max = SUMMARY_MAX): string {
 // word goes, and so does whatever follows the usual token prefixes. Every
 // pattern is anchored on a fixed word, so a long run of letters before it
 // costs one look per character and no more: GITHUB_TOKEN=x keeps GITHUB_
-// and loses x. The key may be quoted, as JSON writes it.
-const KEYWORD = /(?:api[_-]?key|token|secret|password|passwd|pwd)["']?\s*[=:]\s*|--?(?:api-?key|token|secret|password)\s+/gi;
+// and loses x. The key may be quoted, as JSON writes it. `key`, `auth` and
+// `credential` count only as the last part of a name, so AWS_SECRET_ACCESS_KEY=
+// matches and monkey: does not.
+const KEYWORD =
+  /(?:api[_-]?key|token|secret|password|passwd|pwd|(?<![a-z])(?:key|auth|credentials?))["']?\s*[=:]\s*|--?(?:api-?key|token|secret|password)\s+/gi;
 const PREFIXED: [RegExp, string][] = [
   [/\b(bearer|basic)\s+[^\s"']+/gi, '$1 ***'],
   [/\bsk-[a-z0-9_-]{8,}/gi, 'sk-***'],

@@ -361,6 +361,9 @@ describe('no credential reaches the log', () => {
     ['the same URL with a long password, which the cut takes the host of', line('Task', { description: `Fetch https://user:${SECRET}${'a'.repeat(450)}@host/x?token=${SECRET}` }), '⏺ Task  Fetch https://…'],
     ['a file named after a token', line('Read', { file_path: `/repo/token=${SECRET}.txt` }), '⏺ Read  /repo/token=***'],
     ['a failure quoting an authorization header', failed(`Authorization: Bearer ${SECRET}`), '  ✗ Bash failed: Authorization: Bearer ***'],
+    ['a name that ends in KEY', line('Bash', { description: `Export AWS_SECRET_ACCESS_KEY=${SECRET} then run` }), '⏺ Bash  Export AWS_SECRET_ACCESS_KEY=*** then run'],
+    ['a credentials file setting', line('Bash', { description: `Set aws_credentials: ${SECRET}` }), '⏺ Bash  Set aws_credentials: ***'],
+    ['a word that only ends in key', line('Bash', { description: 'Feed the monkey: bananas' }), '⏺ Bash  Feed the monkey: bananas'],
   ];
   for (const [what, written, expected] of cases) {
     it(`keeps the secret out of ${what}`, () => {
