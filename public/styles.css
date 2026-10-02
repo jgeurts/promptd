@@ -2631,6 +2631,16 @@ fieldset.when legend {
   grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr);
   gap: 16px;
   align-items: start;
+  container-type: inline-size;
+}
+
+/* Under about 700px of row the Node cards would be narrower than the sidebar
+   tile they borrow from, so the two stack. By the row's own width, since the
+   sidebar takes some of the window's. */
+@container (max-width: 700px) {
+  .where-row > * {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 720px) {

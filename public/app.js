@@ -1,5 +1,5 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
-import { isActiveForSave, nodeReadings, scheduledAtForSave } from '/shared/jobFormRules.js';
+import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -12,6 +12,7 @@ let updateWatchTimer = null; // polling while an update waits for runs to finish
 // Set by the Settings page so run activity can redraw its queue card without
 // rebuilding the whole page under the user's cursor. Cleared on navigation.
 let repaintQueue = null;
+let disposeView = null; // what the open page holds outside the DOM, let go of on the way to the next: timers, listeners, answers still out
 // The commit the server reported when this page loaded. If it ever differs, the
 // server has been updated underneath us and this page is running old code.
 let loadedCommit = null;
@@ -1532,6 +1533,8 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '', 
   const accept = (index) => {
     if (!items[index]) return;
     input.value = items[index];
+    // Setting the value fires nothing; whoever listens for the field to settle, as the Node field does, hears this.
+    input.dispatchEvent(new Event('change', { bubbles: true }));
     input.focus();
     // Accepting ends in a slash, so re-querying lists what is inside it.
     lookup();
@@ -2399,55 +2402,72 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
   const list = el('div', { class: 'node-opts' }, [el('span', { class: 'node-meta', text: 'Loading the nodes…' })]);
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
   const field = el('fieldset', { class: 'field node-field' }, [el('legend', { text: 'Node' }), list, note]);
-  const current = selected ?? '';
+  // The stored value: what was saved, until a radio is picked. Held apart from
+  // the radios, so a save before the nodes load, or after they fail to, sends
+  // the job's own node rather than the default.
+  let value = selected ?? '';
   let byId = new Map(); // the listings /api/nodes gave
   let fallbackId = '';
-  let options = []; // one per radio: { value, listing, reading, folder, drawn, online }
-  let readings = new Map(); // by node id, from the last cluster summary seen
-  const read = () => list.querySelector('input:checked')?.value ?? '';
-  const chosen = () => byId.get(read() || fallbackId) ?? null;
+  let options = []; // one per radio: { value, listing, reading, folder, root, drawn, online, asked, answered }
+  let computers = new Map(); // by node id, from the last cluster summary seen
+  let disposed = false;
+  const chosen = () => byId.get(value || fallbackId) ?? null;
 
-  // ---- the folder check: each online computer is asked whether it has the Working Directory
-  let folderTimer = null;
-  let folderAsked = 0;
-  const sayFolder = (option, text, status) => {
+  // ---- the folder check
+  // Each online computer is asked once per settled Working Directory, never per
+  // keystroke: a remote node answers inside its sync, so a burst would hold up
+  // its heartbeat and its commands. One request is out per computer at a time;
+  // the newest path wins, and an answer paints only while it is still the path
+  // in the field.
+  const folderPath = () => directory?.value.trim() ?? '';
+  const sayFolder = (option, text, status = '') => {
     option.folder.textContent = text;
     option.folder.className = `node-folder${status ? ` ${status}` : ''}`;
   };
+  const askFolder = (option, path) => {
+    option.asked = path;
+    api(`/api/browse?path=${encodeURIComponent(path)}&node=${encodeURIComponent(option.value)}`)
+      .then(
+        (result) => ({ text: result.exists ? 'Folder found' : 'Folder not on this Mac', status: result.exists ? 'ok' : 'warn' }),
+        (err) => ({ text: `Folder not checked: ${err.message}`, status: '' }),
+      )
+      .then((answer) => {
+        if (disposed || option.asked !== path) return; // let go of, or already superseded
+        option.asked = null;
+        const now = folderPath();
+        if (now === path) {
+          option.answered = path;
+          sayFolder(option, answer.text, answer.status);
+        } else if (now) {
+          askFolder(option, now); // the field moved on while this was out
+        }
+      });
+  };
   const checkFolders = () => {
-    const path = directory?.value.trim() ?? '';
-    const asked = ++folderAsked;
+    const path = folderPath();
     for (const option of options) {
       if (!option.listing) continue;
       option.folder.hidden = !path;
-      if (!path) continue;
-      if (!(readings.get(option.value)?.online ?? option.listing.online)) {
-        sayFolder(option, 'Offline, so the folder is not checked', '');
+      const online = computers.get(option.value)?.online ?? option.listing.online;
+      if (!path || !online) {
+        option.asked = null; // an answer still out is dropped
+        option.answered = null;
+        if (path) sayFolder(option, 'Offline, so the folder is not checked');
         continue;
       }
-      // The last answer stands, dimmed, while the next is on its way, so typing does not flicker.
-      if (!option.folder.textContent) sayFolder(option, 'Checking for the folder…', '');
-      option.folder.classList.add('pending');
-      api(`/api/browse?path=${encodeURIComponent(path)}&node=${encodeURIComponent(option.value)}`)
-        .then((result) => {
-          if (asked === folderAsked) sayFolder(option, result.exists ? 'Folder found' : 'Folder not on this Mac', result.exists ? 'ok' : 'warn');
-        })
-        .catch((err) => {
-          if (asked === folderAsked) sayFolder(option, `Folder not checked: ${err.message}`, '');
-        });
+      if (option.answered === path && !option.asked) continue; // already says it
+      sayFolder(option, 'Checking for the folder…', 'pending');
+      if (!option.asked) askFolder(option, path);
     }
   };
-  const scheduleFolders = () => {
-    clearTimeout(folderTimer);
-    folderTimer = setTimeout(checkFolders, 400);
-  };
-  directory?.addEventListener('input', scheduleFolders);
+  // `change` is the field settling: leaving it after an edit, or taking a suggestion.
+  directory?.addEventListener('change', checkFolders);
 
   // ---- the readings, in the sidebar's vocabulary
   const andList = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
-  const readingLines = (listing, reading) => {
-    const online = reading ? reading.online : listing.online;
-    const load = !reading ? null : online ? `${reading.running} of ${reading.concurrencyLimit || '∞'} running` : reading.lastSeenAt ? `last seen ${fmtAgo(reading.lastSeenAt)}` : 'not seen yet';
+  const readingLines = (listing, computer) => {
+    const online = computer ? computer.online : listing.online;
+    const load = !computer ? null : online ? `${computer.running} of ${computer.concurrencyLimit || '∞'} running` : computer.lastSeenAt ? `last seen ${fmtAgo(computer.lastSeenAt)}` : 'not seen yet';
     const lines = [
       el('span', { class: `node-state ${online ? 'online' : 'offline'}` }, [
         el('span', { class: 'glyph', 'aria-hidden': 'true', text: online ? ICONS.online : ICONS.offline }),
@@ -2455,7 +2475,8 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
         load ? ` · ${load}` : null,
       ]),
     ];
-    if (!reading) return lines;
+    if (!computer) return lines;
+    const reading = computer.reading;
     if (reading.limits.length) {
       // Said before the numbers, as the tile says it, so a reading that could not be refreshed is never taken for a fresh one.
       if (reading.stale) {
@@ -2471,48 +2492,49 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
     }
     return lines;
   };
-  /** Redraws only the cards whose reading changed, and only their reading, so the radios are never touched. */
+  /** Redraws only the cards whose computer changed, and only their reading, so the radios are never touched. */
   const paintReadings = (cluster) => {
     if (!cluster?.computers) return;
-    readings = nodeReadings(cluster);
+    computers = new Map(cluster.computers.map((computer) => [computer.id, computer]));
     let flipped = false;
     for (const option of options) {
       if (!option.listing) continue;
-      const reading = readings.get(option.value) ?? null;
+      const computer = computers.get(option.value) ?? null;
       // The minute is in it so "last seen 3 minutes ago" keeps up.
-      const drawn = JSON.stringify([reading, Math.floor(Date.now() / 60000)]);
+      const drawn = JSON.stringify([computer, Math.floor(Date.now() / 60000)]);
       if (drawn === option.drawn) continue;
       option.drawn = drawn;
-      const online = reading?.online ?? option.listing.online;
+      const online = computer?.online ?? option.listing.online;
       if (option.online !== undefined && option.online !== online) flipped = true;
       option.online = online;
-      option.reading.replaceChildren(...readingLines(option.listing, reading));
+      option.reading.replaceChildren(...readingLines(option.listing, computer));
     }
     // A computer that has just come online can now answer for the folder.
-    if (flipped) scheduleFolders();
+    if (flipped) checkFolders();
   };
 
   // ---- the cards
-  const option = (value, label, listing) => {
+  const option = (optionValue, label, listing) => {
     const nameId = uid('node-name');
     const readingId = uid('node-reading');
     const input = el('input', {
       type: 'radio',
       name: group,
-      value,
-      checked: value === current,
+      value: optionValue,
+      checked: optionValue === value,
       'aria-labelledby': nameId,
       'aria-describedby': readingId,
       onchange: () => {
+        value = input.value;
         onChange(chosen());
-        // A new job's folder follows the node, so the check runs again after the form has moved it.
-        scheduleFolders();
+        // A new job's folder follows the node, so the check runs again once the form has moved it.
+        checkFolders();
       },
     });
     const reading = el('span', { class: 'node-reading', id: readingId });
     const folder = el('span', { class: 'node-folder', hidden: 'hidden' });
     const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [el('span', { class: 'node-opt-name', id: nameId, text: label }), reading, folder])]);
-    return { value, listing, reading, folder, root, drawn: null, online: undefined };
+    return { value: optionValue, listing, reading, folder, root, drawn: null, online: undefined, asked: null, answered: null };
   };
   const paint = ({ nodes = [], defaultNodeId = '' }) => {
     byId = new Map(nodes.map((node) => [node.id, node]));
@@ -2522,36 +2544,36 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       option('', fallback ? `Default node — ${fallback.name}` : 'Default node', null),
       ...nodes.map((node) => option(node.id, node.name, node)),
     ];
-    if (current && !byId.has(current)) options.push(option(current, `${current} (not connected)`, null));
+    if (value && !byId.has(value)) options.push(option(value, `${value} (not connected)`, null));
     list.replaceChildren(...options.map((entry) => entry.root));
   };
 
-  // The health poll keeps the cards current for as long as the form is on the page.
-  let shown = false;
-  const onHealth = (health) => {
-    if (field.isConnected) shown = true;
-    else if (shown) {
-      healthListeners.delete(onHealth);
-      return;
-    }
-    paintReadings(health.cluster);
+  // The health poll keeps the cards current until the page lets the form go.
+  const onHealth = (health) => paintReadings(health.cluster);
+  healthListeners.add(onHealth);
+  const dispose = () => {
+    disposed = true;
+    healthListeners.delete(onHealth);
+    directory?.removeEventListener('change', checkFolders);
+    for (const entry of options) entry.asked = null;
   };
 
   api('/api/nodes')
     .then((state) => {
+      if (disposed) return;
       paint(state);
       paintReadings(state.cluster);
-      healthListeners.add(onHealth);
       onChange(chosen());
-      scheduleFolders();
+      checkFolders();
     })
     .catch((err) => {
+      if (disposed) return;
       list.replaceChildren();
       note.textContent = `Could not load the nodes: ${err.message}`;
       note.className = 'hint warn';
     });
 
-  return { read, field };
+  return { read: () => value, field, dispose };
 }
 
 /**
@@ -2664,6 +2686,7 @@ async function renderJobForm(kind, id, duplicateOf) {
       schedule?.refresh();
     },
   });
+  disposeView = node.dispose;
 
   // ---- when ----
   let schedule = null;
@@ -4291,6 +4314,8 @@ async function route() {
   closeLogStream();
   clearTimeout(logsState.searchTimer);
   repaintQueue = null;
+  disposeView?.();
+  disposeView = null;
   nodeMachine = null;
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);

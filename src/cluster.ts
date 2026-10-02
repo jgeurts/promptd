@@ -92,6 +92,23 @@ export interface UnknownAccountUsage extends UsageSummary {
   nodeName: string;
 }
 
+/**
+ * One computer's standing as the job form's Node field shows it: its account's
+ * limits, which every computer on that account shares, and who else shares them.
+ */
+export interface NodeReading {
+  /** The account's email, "Account unknown" for a computer that reports usage without naming one, or null with nothing to show. */
+  account: string | null;
+  /** The other computers signed in to the same account: one reading serves them all. */
+  sharedWith: string[];
+  /** The limits drawn for it; see `shownLimits`. */
+  limits: AccountLimit[];
+  checkedAt: string | null;
+  stale: boolean;
+  /** Why there is no reading, when the account has none. */
+  reason: string | null;
+}
+
 /** One node over one metric's alert line. */
 export interface MachineException {
   nodeId: string;
@@ -231,6 +248,8 @@ export interface ClusterSummary {
     /** 0 is no limit. */
     concurrencyLimit: number;
     accountKey: string | null;
+    /** What the job form's Node field shows for it. */
+    reading: NodeReading;
   }>;
   running: number;
   /** Summed over online nodes; 0 when any of them has no limit. */
@@ -566,6 +585,16 @@ export function bottleneckWindow<T extends UsageWindow>(windows: T[]): T | null 
   return [...windows].sort((a, b) => b.usedPercent - a.usedPercent || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.key.localeCompare(b.key))[0] ?? null;
 }
 
+/**
+ * The limits a reading is drawn with, on the tile and on the Node field's
+ * cards: the session and the weekly, all models, in the reading's own order,
+ * with the bottleneck added only when it is another.
+ */
+export function shownLimits(windows: AccountLimit[]): AccountLimit[] {
+  const worst = bottleneckWindow(windows);
+  return windows.filter((limit) => ['session', 'weekly_all'].includes(kindOf(limit) ?? '') || limit === worst);
+}
+
 /** One account as `availability` weighs it, from either kind of entry. */
 interface Candidate {
   key: string;
@@ -645,9 +674,7 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
   const [bestOf, ...rest] = candidates;
   let best: BestAccount | null = null;
   if (bestOf) {
-    const headline = bestOf.usage.windows.filter((limit) => ['session', 'weekly_all'].includes(kindOf(limit) ?? ''));
-    // In the reading's own order, with the bottleneck added only when it is not a headline limit already.
-    const limits = bestOf.usage.windows.filter((limit) => headline.includes(limit) || limit === bestOf.tightest);
+    const limits = shownLimits(bestOf.usage.windows);
     const unshown = bestOf.usage.windows.filter((limit) => !limits.includes(limit) && limit.status !== 'ok');
     best = {
       key: bestOf.key,
@@ -719,6 +746,21 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
     if (node.account) return `account:${node.account.id}`;
     return unknown.some((entry) => entry.nodeId === node.id) ? `unknown:${node.id}` : null;
   };
+  const names = new Map(nodes.map((node) => [node.id, node.name]));
+  const reading = (node: ClusterNode): NodeReading => {
+    const accountId = node.account?.id ?? null;
+    const account = accountId ? (accounts.find((entry) => entry.id === accountId) ?? null) : null;
+    const own = account ? null : (unknown.find((entry) => entry.nodeId === node.id) ?? null);
+    const usage: UsageSummary | null = account ?? own;
+    return {
+      account: account ? account.email : own ? 'Account unknown' : null,
+      sharedWith: account ? account.nodeIds.filter((id) => id !== node.id).map((id) => names.get(id) ?? id) : [],
+      limits: usage ? shownLimits(usage.windows) : [],
+      checkedAt: usage?.checkedAt ?? null,
+      stale: Boolean(usage?.stale),
+      reason: usage?.reason ?? null,
+    };
+  };
   const summary: Omit<ClusterSummary, 'availability' | 'header'> = {
     nodes: {
       total: nodes.length,
@@ -733,6 +775,7 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
       running: node.online ? node.running : 0,
       concurrencyLimit: node.online ? node.concurrencyLimit : 0,
       accountKey: accountKey(node),
+      reading: reading(node),
     })),
     running: online.reduce((total, node) => total + node.running, 0),
     concurrencyLimit: clusterLimit(online.map((node) => node.concurrencyLimit)),
