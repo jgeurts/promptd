@@ -37,13 +37,12 @@ a {
 
 /*
  * The app shell: the header across the top, the sidebar down the left and the
- * page beside it. The sidebar is a 264px column, a 56px rail when collapsed
- * (`html[data-sidebar='rail']`), and a drawer off the left edge on a phone.
+ * page beside it. The sidebar is a 264px column, and a drawer off the left
+ * edge below 1024px.
  */
 :root {
   --topbar-h: 52px;
   --sidebar-w: 264px;
-  --rail-w: 56px;
 }
 
 .shell {
@@ -120,6 +119,27 @@ a {
   margin-left: auto;
 }
 
+/* An update on offer: an amber dot on the Settings button's corner, as the bell's marks sit on its. */
+.btn.settings {
+  position: relative;
+  overflow: visible;
+}
+
+.update-dot {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+.update-dot[hidden] {
+  display: none;
+}
+
 /*
  * The one-line availability strip, on a phone only: the best account's
  * tightest limit and the alert word, so the display stays in view with the
@@ -157,29 +177,33 @@ a {
 }
 
 .status-strip.warning .glyph,
-.status-strip.warning .strip-word {
+.status-strip.warning .strip-text {
   color: var(--amber);
 }
 
 .status-strip.critical .glyph,
-.status-strip.critical .strip-word {
+.status-strip.critical .strip-text {
   color: var(--red);
 }
 
-.status-strip .strip-limit {
+.status-strip .strip-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.status-strip .strip-word {
-  margin-left: auto;
   font-weight: 600;
-  white-space: nowrap;
 }
 
-/* The sidebar: a column that stays put while the page scrolls, and scrolls on its own when it is the taller. */
+.status-strip .side-more {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+/*
+ * The sidebar: a column that stays put while the page scrolls. The navigation
+ * at the top scrolls on its own when the column is short; the status block
+ * stays pinned at the bottom.
+ */
 .sidebar {
   grid-column: 1;
   grid-row: 2;
@@ -188,27 +212,26 @@ a {
   display: flex;
   flex-direction: column;
   height: calc(100vh - var(--topbar-h));
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 8px 10px 12px;
+  overflow: hidden;
+  padding: 12px 10px 12px;
   border-right: 1px solid var(--border);
   background: var(--panel);
 }
 
+/* Only the drawer has a close button, so the head is empty on a desktop. */
 .sidebar-head {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.sidebar .btn.side-close {
   display: none;
+  justify-content: flex-end;
 }
 
 .side-nav {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .side-group {
@@ -274,8 +297,6 @@ a {
 }
 
 .side-item:focus-visible,
-.avail:focus-visible,
-.side-toggle:focus-visible,
 .topbar .menu:focus-visible,
 .status-page a:focus-visible,
 .status-page .btn:focus-visible,
@@ -474,81 +495,181 @@ a {
   display: none;
 }
 
-.side-foot {
-  display: grid;
-  gap: 2px;
-  margin-top: 14px;
+/*
+ * The status block, pinned to the bottom: the heading onto the System status
+ * page, one line for the worst current issue, and one row per computer with
+ * its account's meters. Glyph, word and colour say each state together.
+ */
+.side-status {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 60%;
+  margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
-/*
- * The availability tile: the one display and the one action. The border and
- * the glyph say the severity along with the word on the alert line, so
- * nothing here rests on colour alone.
- */
-.avail {
-  position: relative;
-  display: block;
-  margin: 2px 0 12px;
-  padding: 10px 12px 11px;
-  border: 1px solid var(--ok-border);
-  border-radius: 10px;
-  background: var(--panel-2);
+.side-status .side-title {
+  margin: 0;
+}
+
+.side-status-link {
+  display: inline-block;
+  padding: 2px 0;
+  border-radius: 4px;
+  color: inherit;
+}
+
+.side-status-link:hover,
+.side-status-link[aria-current='page'] {
   color: var(--text);
 }
 
-.avail.warning {
-  border-color: var(--warn-border);
+.side-status-link[aria-current='page'] {
+  text-decoration: underline;
+  text-decoration-color: var(--accent);
+  text-underline-offset: 3px;
 }
 
-.avail.critical {
-  border-color: rgba(240, 113, 106, 0.6);
-}
-
-.avail:hover {
-  background: #232834;
-}
-
-.avail-head {
+/* The one line: the glyph, the severity word for a screen reader, the issue, then "+2 more". */
+.side-alert {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.avail-head .glyph {
-  margin: 0;
-  font-size: 11px;
-}
-
-.avail.ok .avail-head .glyph {
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0 0 2px;
+  padding: 7px 8px;
+  border: 1px solid var(--ok-border);
+  border-radius: 8px;
   color: var(--green);
-}
-
-.avail.warning .avail-head .glyph {
-  color: var(--amber);
-}
-
-.avail.critical .avail-head .glyph {
-  color: var(--red);
-}
-
-.avail-who {
-  margin-top: 5px;
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
-.avail-who .muted {
-  font-weight: 400;
+.side-alert:hover {
+  background: var(--panel-2);
 }
 
+.side-alert.warning {
+  border-color: var(--warn-border);
+  color: var(--amber);
+}
+
+.side-alert.critical {
+  border-color: rgba(240, 113, 106, 0.6);
+  color: var(--red);
+}
+
+.side-alert .glyph {
+  flex: none;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.side-alert .side-more {
+  color: var(--muted);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.side-nodes {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0 8px;
+  list-style: none;
+}
+
+.side-node {
+  display: grid;
+  gap: 5px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+}
+
+.side-node:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+/* The row's first line: the glyph, the name, and how busy it is, with the state's word in the load. */
+.side-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.side-node-head .side-icon {
+  width: auto;
+  font-size: 12px;
+}
+
+.side-node-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.side-node-name:hover {
+  text-decoration: underline;
+}
+
+.side-node-name:focus-visible,
+.side-alert:focus-visible,
+.side-status-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.side-node-load {
+  margin-left: auto;
+  flex: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.side-node .avail-limits {
+  gap: 5px;
+}
+
+.side-node .avail-lim {
+  font-size: 11.5px;
+}
+
+.side-node .avail-lim .lim-meter {
+  height: 4px;
+}
+
+.side-node .avail-lim .lim-reset {
+  font-size: 11px;
+}
+
+/* "same account as mini", "No usage reading", "last known · checked 3 hours ago". */
+.side-node-meta {
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.side-node-meta.stale {
+  color: var(--amber);
+}
+
+/* One limit on its own line: the name, the percentage used, a meter, and when it resets. Also the job form's Node field. */
 .avail-limits {
   display: grid;
   gap: 7px;
@@ -593,207 +714,6 @@ a {
   background: var(--red);
 }
 
-.avail-others,
-.avail-checked {
-  margin: 8px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
-.avail-checked.stale {
-  color: var(--amber);
-}
-
-/* The worst current issue, in words, under a rule; "+2 more" after it. */
-.avail-alert {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  margin: 9px 0 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--border);
-  font-size: 12.5px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.avail-alert .glyph {
-  flex: none;
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.avail-alert.clear {
-  color: var(--green);
-}
-
-.avail-alert.warning {
-  color: var(--amber);
-}
-
-.avail-alert.critical {
-  color: var(--red);
-}
-
-.avail-more {
-  color: var(--muted);
-  font-weight: 400;
-  white-space: nowrap;
-}
-
-/* What the rail shows of the tile: the glyph and the tightest percentage. */
-.avail-rail {
-  display: none;
-}
-
-/* A tooltip for the rail, drawn only there, on hover and on keyboard focus alike. */
-.side-tip {
-  display: none;
-}
-
-@media (min-width: 641px) {
-  html[data-sidebar='rail'] .shell {
-    --sidebar-w: var(--rail-w);
-  }
-
-  /* The rail may run taller than the window; its tooltips must not be clipped, so it does not scroll inside itself. */
-  html[data-sidebar='rail'] .sidebar {
-    height: auto;
-    min-height: calc(100vh - var(--topbar-h));
-    overflow: visible;
-    padding: 8px 6px 12px;
-  }
-
-  html[data-sidebar='rail'] .sidebar-head {
-    justify-content: center;
-  }
-
-  html[data-sidebar='rail'] .side-toggle svg {
-    transform: rotate(180deg);
-  }
-
-  /* The words stay for a screen reader; only the eye loses them. */
-  html[data-sidebar='rail'] .side-label,
-  html[data-sidebar='rail'] .side-sub,
-  html[data-sidebar='rail'] .side-title {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-    border: 0;
-  }
-
-  html[data-sidebar='rail'] .side-item {
-    justify-content: center;
-    gap: 0;
-    padding: 7px 0;
-  }
-
-  html[data-sidebar='rail'] .side-text {
-    flex: none;
-  }
-
-  /* A count or a mark sits on the icon's corner, where a label would have been. */
-  html[data-sidebar='rail'] .side-count,
-  html[data-sidebar='rail'] .side-mark {
-    position: absolute;
-    top: 2px;
-    right: 4px;
-  }
-
-  html[data-sidebar='rail'] .side-count {
-    min-width: 16px;
-    padding: 0 4px;
-    font-size: 10px;
-    line-height: 16px;
-  }
-
-  html[data-sidebar='rail'] .side-mark.running {
-    top: auto;
-    bottom: 2px;
-  }
-
-  /* Lists of words have no icon to stand for them; they wait for the sidebar to open. */
-  html[data-sidebar='rail'] .side-group.running,
-  html[data-sidebar='rail'] .side-projects {
-    display: none;
-  }
-
-  html[data-sidebar='rail'] .avail {
-    margin: 2px 0 10px;
-    padding: 8px 0;
-    text-align: center;
-  }
-
-  html[data-sidebar='rail'] .avail-body {
-    display: none;
-  }
-
-  html[data-sidebar='rail'] .avail-rail {
-    display: grid;
-    gap: 2px;
-    font-size: 11px;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  html[data-sidebar='rail'] .avail-rail .glyph {
-    margin: 0;
-    font-size: 12px;
-  }
-
-  /* A reading that could not be refreshed says so under its number. */
-  html[data-sidebar='rail'] .avail-stale {
-    color: var(--amber);
-    font-size: 9px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-
-  html[data-sidebar='rail'] .avail.ok .avail-rail .glyph {
-    color: var(--green);
-  }
-
-  html[data-sidebar='rail'] .avail.warning .avail-rail .glyph {
-    color: var(--amber);
-  }
-
-  html[data-sidebar='rail'] .avail.critical .avail-rail .glyph {
-    color: var(--red);
-  }
-
-  html[data-sidebar='rail'] .side-item:hover .side-tip,
-  html[data-sidebar='rail'] .side-item:focus-visible .side-tip,
-  html[data-sidebar='rail'] .avail:hover .side-tip,
-  html[data-sidebar='rail'] .avail:focus-visible .side-tip {
-    display: block;
-    position: absolute;
-    top: 50%;
-    left: calc(100% + 10px);
-    z-index: 20;
-    max-width: 320px;
-    padding: 6px 10px;
-    border: 1px solid var(--control-border);
-    border-radius: 6px;
-    background: #0b0d12;
-    color: var(--text);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1.4;
-    text-align: left;
-    white-space: normal;
-    width: max-content;
-    transform: translateY(-50%);
-    pointer-events: none;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  }
-}
 
 .hdr-icon {
   display: inline-flex;
@@ -1101,10 +1021,15 @@ a {
   }
   .topbar-right .btn.icon,
   .topbar .menu,
-  .side-toggle,
   .side-close {
     width: 44px;
     height: 44px;
+  }
+  .side-alert,
+  .side-node-name {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
   }
 }
 
@@ -1126,25 +1051,15 @@ a {
 }
 
 /*
- * A phone: the sidebar becomes a drawer off the left edge, opened from the
- * menu button, and the availability strip takes a line of its own under the
- * brand so the one display stays in view with the drawer closed.
+ * Below 1024px the sidebar becomes a drawer off the left edge, opened from
+ * the menu button. The two drawers share the backdrop and the inert page.
  */
-@media (max-width: 640px) {
+@media (max-width: 1023px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
   }
-  .topbar {
-    padding: 8px 12px;
-  }
   .topbar .btn.menu {
     display: inline-flex;
-  }
-  .status-strip {
-    display: flex;
-  }
-  .status-strip[hidden] {
-    display: none;
   }
   .sidebar {
     position: fixed;
@@ -1166,17 +1081,13 @@ a {
     visibility: visible;
     transition: transform 200ms ease;
   }
-  .sidebar .btn.side-toggle {
-    display: none;
-  }
-  .sidebar .btn.side-close {
-    display: inline-flex;
+  .sidebar-head {
+    display: flex;
   }
   /* Outranks the page's own placement in column 2, declared further down. */
   .shell > .view {
     grid-column: 1;
   }
-  .topbar-right .btn.icon,
   .topbar .menu,
   .side-close {
     width: 44px;
@@ -1184,6 +1095,26 @@ a {
   }
   .side-item {
     min-height: 44px;
+  }
+}
+
+/*
+ * A phone: the status line takes a line of its own under the brand so the
+ * worst current issue stays in view with the drawer closed.
+ */
+@media (max-width: 640px) {
+  .topbar {
+    padding: 8px 12px;
+  }
+  .status-strip {
+    display: flex;
+  }
+  .status-strip[hidden] {
+    display: none;
+  }
+  .topbar-right .btn.icon {
+    width: 44px;
+    height: 44px;
   }
 }
 

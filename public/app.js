@@ -4567,15 +4567,17 @@ function connectEvents() {
 }
 
 /**
- * An update on offer: a dot on the sidebar's Settings item, and the last line
- * the availability tile can show. Shown whenever main is behind, whether or
- * not the server is allowed to apply it itself; Settings is where it is taken.
+ * An update on offer: a dot on the header's Settings button, said in its
+ * label, and the last line the sidebar's alert line can show. Shown whenever
+ * main is behind, whether or not the server is allowed to apply it itself;
+ * Settings is where it is taken.
  */
 function setUpdateBadge(available, behind = 0) {
   updateOffered = Boolean(available);
-  sideUpdateEl.hidden = !updateOffered;
+  updateDotEl.hidden = !updateOffered;
   const commits = behind ? `${behind} commit${behind === 1 ? '' : 's'} behind origin/main. ` : '';
-  sideSettingsEl.title = updateOffered ? `Update available. ${commits}Open Settings to update.` : '';
+  settingsEl.setAttribute('aria-label', updateOffered ? 'Settings, update available' : 'Settings');
+  settingsEl.title = updateOffered ? `Update available. ${commits}Open Settings to update.` : 'Settings';
   paintShell();
 }
 
@@ -5191,12 +5193,11 @@ drawerReadAllEl?.addEventListener('click', async () => {
 // ---- the sidebar ------------------------------------------------------
 
 /**
- * The sidebar answers where work can still go, what is running, and what
- * needs attention, in one place. The availability tile at the top is the one
- * display and the one action: the whole tile is a link onto the System status
- * page, at the section that explains the worst current issue. Under it: the
- * runs under way, the two job lists and the projects, each computer, then
- * Settings and feedback.
+ * The sidebar: the runs under way, the two job lists and the projects at the
+ * top, and one status block pinned to the bottom with the worst current issue
+ * in words and each computer's standing, its account's meters included. The
+ * block's heading and its alert line open the System status page, the line at
+ * the section that explains the issue.
  *
  * The words and the rules behind them come from the cluster summary that
  * /api/health carries (src/cluster.ts, where they are tested). The page adds
@@ -5205,20 +5206,16 @@ drawerReadAllEl?.addEventListener('click', async () => {
  * update is on offer.
  */
 const sidebarEl = document.getElementById('sidebar');
-const sidebarToggleEl = document.getElementById('sidebar-toggle');
 const sidebarCloseEl = document.getElementById('sidebar-close');
 const menuEl = document.getElementById('menu');
-const availEl = document.getElementById('avail');
-const availRailEl = availEl.querySelector('.avail-rail');
-const availBodyEl = availEl.querySelector('.avail-body');
-const availTipEl = document.getElementById('avail-tip');
 const stripEl = document.getElementById('status-strip');
 const sideRunningEl = document.getElementById('side-running');
 const sideJobsEl = document.getElementById('side-jobs');
 const sideProjectsEl = document.getElementById('side-projects');
+const sideAlertEl = document.getElementById('side-alert');
 const sideNodesEl = document.getElementById('side-nodes');
-const sideSettingsEl = document.getElementById('side-settings');
-const sideUpdateEl = document.getElementById('side-update');
+const settingsEl = document.getElementById('settings-open');
+const updateDotEl = document.getElementById('update-dot');
 const announcerEl = document.getElementById('status-announcer');
 
 let healthState = null; // the last /api/health answer
@@ -5304,16 +5301,6 @@ function fmtUsed(percent) {
   return used >= 99.5 && used < 100 ? `${Math.floor(used * 10) / 10}%` : `${Math.round(used)}%`;
 }
 
-/** A limit's short name, for a line with no room for the long one: "Session", "Weekly", "Fable", "Credits". */
-function shortLimitName(limit) {
-  const kind = limit.kind ?? String(limit.key ?? '').split(':')[0];
-  if (kind === 'session') return 'Session';
-  if (kind === 'weekly_all') return 'Weekly';
-  if (kind === 'weekly_scoped') return limit.scope || 'Weekly';
-  if (kind === 'spend') return 'Credits';
-  return limit.name ?? limit.label;
-}
-
 /** Items with a separator between them, as children for `el`. */
 function joined(items, separator) {
   return items.flatMap((item, index) => (index ? [separator, item] : [item]));
@@ -5353,43 +5340,10 @@ function worstSeverity(alerts) {
   return 'ok';
 }
 
-// ---- the sidebar's width, and the drawer it becomes on a phone
+// ---- the drawer the sidebar becomes below 1024px
 
-const PHONE = matchMedia('(max-width: 640px)');
-const WIDE = matchMedia('(min-width: 1024px)');
-let sidebarChoice = null; // 'open' or 'rail' once chosen with the toggle; null follows the window's width
-
-function readSidebarChoice() {
-  try {
-    const saved = localStorage.getItem('promptd.sidebar');
-    return saved === 'rail' || saved === 'open' ? saved : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Open on a wide window, a rail on a narrower one, unless the toggle has said otherwise. */
-function applySidebarMode() {
-  const rail = (sidebarChoice ?? (WIDE.matches ? 'open' : 'rail')) === 'rail';
-  document.documentElement.dataset.sidebar = rail ? 'rail' : 'open';
-  sidebarToggleEl.setAttribute('aria-expanded', String(!rail));
-  const label = rail ? 'Expand sidebar' : 'Collapse sidebar';
-  sidebarToggleEl.setAttribute('aria-label', label);
-  sidebarToggleEl.title = label;
-}
-
-sidebarToggleEl.addEventListener('click', () => {
-  sidebarChoice = document.documentElement.dataset.sidebar === 'rail' ? 'open' : 'rail';
-  try {
-    localStorage.setItem('promptd.sidebar', sidebarChoice);
-  } catch {
-    // Kept for this page only.
-  }
-  applySidebarMode();
-});
-WIDE.addEventListener('change', applySidebarMode);
-
-let sidebarOpen = false; // the drawer on a phone
+const DRAWER = matchMedia('(max-width: 1023px)');
+let sidebarOpen = false; // the drawer is open
 let drawerOpener = null; // the control that opened whichever drawer is open, which focus returns to
 
 /**
@@ -5445,9 +5399,9 @@ document.addEventListener('keydown', (event) => {
 });
 // A link in the drawer goes somewhere else, so the drawer gets out of the way.
 window.addEventListener('hashchange', () => closeSidebar({ restoreFocus: false }));
-// Leaving the phone width while the drawer is open would leave the page inert behind a sidebar that is no longer a drawer.
-PHONE.addEventListener('change', () => {
-  if (!PHONE.matches) closeSidebar({ restoreFocus: false });
+// Widening past the drawer while it is open would leave the page inert behind a sidebar that is no longer a drawer.
+DRAWER.addEventListener('change', () => {
+  if (!DRAWER.matches) closeSidebar({ restoreFocus: false });
 });
 
 // Keyboard users land on it first. It must not change the hash, which is where the page keeps its route.
@@ -5456,48 +5410,58 @@ document.getElementById('skip-link')?.addEventListener('click', (event) => {
   view.focus();
 });
 
-// ---- the availability tile and the phone's strip
+// ---- the status block's alert line, and the phone's strip
 
-/**
- * The alerts the tile itself shows. With several accounts the line under the
- * meters says how the other accounts stand and a flag on a meter says the
- * best's, so an alert that only counts accounts is left out; one about a
- * flagged limit the best account's meters leave out is named in its place.
- * The tile's severity and where it links still come from all of them.
- */
-function tileAlerts(alerts, availability) {
-  const { best, accounts } = availability;
-  if (accounts <= 1 || !best) return alerts;
-  return alerts.flatMap((alert) => {
-    if (alert.id !== 'accounts-reached' && alert.id !== 'accounts-near') return [alert];
-    const named = best.unshown.find((entry) => entry.status === (alert.id === 'accounts-reached' ? 'reached' : 'near'));
-    return named ? [{ ...alert, text: named.text }] : [];
-  });
-}
-
-/** "5-hour session 61% used", or for a reading that could not be refreshed, "last known 5-hour session 61% used". */
-function bottleneckWords(best, { short = false } = {}) {
-  const words = `${short ? shortLimitName(best.tightest) : best.tightest.name} ${fmtUsed(best.tightest.usedPercent)} used`;
-  return best.stale ? `last known ${words}` : words;
+/** "1 node", "3 nodes". */
+function countOf(n, noun) {
+  return `${n} ${noun}${n === 1 ? '' : 's'}`;
 }
 
 /**
- * The tile's one-sentence summary: the link's accessible name, and the rail's
- * tooltip. "galaxy: 5-hour session 61% used. 2 other accounts at their weekly
- * limit. 1 job waiting for account limits, 1 more. Opens System status."
+ * What the alert line says: only what the meters cannot show. A limit reached
+ * or near is on the meters already, with its percentage and its word, so the
+ * line keeps to jobs held, computers offline, machine trouble, the page's own
+ * connection and an update on offer. The status page still lists everything.
  */
-function availabilitySentence(availability, alerts, shown, severity) {
-  const parts = [];
-  const { best, others } = availability;
-  if (best) parts.push(`${best.nodeNames.join(', ') || best.title}: ${best.stale ? 'usage out of date, ' : ''}${bottleneckWords(best)}`);
-  else parts.push('No usage reading yet');
-  if (others.text) parts.push(othersWords(availability));
-  if (shown.length) parts.push(`${shown[0].text}${shown.length > 1 ? `, ${shown.length - 1} more` : ''}`);
-  else if (!alerts.length) parts.push(SEVERITY[severity].word);
-  return `${parts.join('. ')}. Opens System status.`;
+function lineAlerts(alerts) {
+  return alerts.filter((alert) => alert.id !== 'accounts-reached' && alert.id !== 'accounts-near');
 }
 
-/** One limit in the tile: name, percentage used, meter, and when it resets; `reset: false` leaves that line out where there is no room for it. */
+/** Where the worst current issue is explained, or the top of the status page with nothing wrong. */
+function alertHref(alerts) {
+  const first = alerts[0] ?? null;
+  return first && first.section !== 'page' ? `#/status/${first.section}` : first ? '#/status/page' : '#/status';
+}
+
+/** The glyph for the worst current issue; an update on offer is news, drawn with the all-clear glyph. */
+function alertGlyph(alerts) {
+  const first = alerts[0] ?? null;
+  return SEVERITY[first && first.severity !== 'info' ? first.severity : 'ok'].glyph;
+}
+
+/** The words of the alert line: the severity for a screen reader, the issue, then "+2 more". */
+function alertWords(alerts, { clear = SEVERITY.ok.word } = {}) {
+  const first = alerts[0] ?? null;
+  return [
+    first?.severity === 'critical' || first?.severity === 'warning' ? el('span', { class: 'sr-only', text: `${first.severity}: ` }) : null,
+    first ? first.text : clear,
+    alerts.length > 1 ? el('span', { class: 'side-more', text: ` +${alerts.length - 1} more` }) : null,
+  ].filter(Boolean);
+}
+
+/**
+ * The one line under the Status heading: the worst current issue the meters
+ * cannot show, in words, linking to the section that explains it, or "All
+ * clear". Border, glyph and word carry the severity together, never a colour
+ * alone.
+ */
+function paintAlert(alerts) {
+  sideAlertEl.className = `side-alert ${worstSeverity(alerts)}`;
+  sideAlertEl.href = alertHref(alerts);
+  sideAlertEl.replaceChildren(el('span', { class: 'glyph', 'aria-hidden': 'true', text: alertGlyph(alerts) }), el('span', {}, alertWords(alerts)));
+}
+
+/** One limit on its own line: name, percentage used, meter, and when it resets; `reset: false` leaves that line out where there is no room for it. */
 function availLimit(limit, { reset = true } = {}) {
   const used = Math.max(0, Math.min(100, Number(limit.usedPercent) || 0));
   return el('li', { class: `avail-lim ${limit.status}` }, [
@@ -5508,102 +5472,14 @@ function availLimit(limit, { reset = true } = {}) {
   ]);
 }
 
-/** "1 reading out of date", "2 readings out of date". */
-function staleWords(n) {
-  return `${n} reading${n === 1 ? '' : 's'} out of date`;
-}
-
-/** How many of the other accounts' readings are stale: the best's own staleness is said beside its numbers. */
-function staleOthers({ best, staleAccounts }) {
-  return Math.max(0, staleAccounts - (best?.stale ? 1 : 0));
-}
-
-/** The line on the other accounts, qualified when any of them is compared on old numbers: "2 other accounts at their weekly limit, 1 reading out of date". */
-function othersWords(availability) {
-  const stale = staleOthers(availability);
-  return `${availability.others.text}${stale ? `, ${staleWords(stale)}` : ''}`;
-}
-
-/**
- * The tile. One account: its session and weekly meters, plus a model-scoped
- * weekly limit when that is the tightest. Several: the account with the most
- * room, named by its computers, and one line on how the others stand. Under
- * the meters, the worst current issue in words, then how many more. A reading
- * that could not be refreshed says so wherever its numbers appear.
- */
-function paintAvailability(alerts) {
-  const availability = healthState.cluster.availability;
-  const { best, others, accounts, staleAccounts } = availability;
-  const severity = worstSeverity(alerts);
-  const first = alerts[0] ?? null;
-  const shown = tileAlerts(alerts, availability);
-  const lead = shown[0] ?? null;
-  availEl.className = `avail ${severity}`;
-  // The tile lands on the section that explains the worst issue, or at the top with nothing wrong.
-  availEl.href = first && first.section !== 'page' ? `#/status/${first.section}` : first ? '#/status/page' : '#/status';
-  const sentence = availabilitySentence(availability, alerts, shown, severity);
-  availEl.setAttribute('aria-label', sentence);
-  availTipEl.textContent = sentence;
-  availRailEl.replaceChildren(
-    ...[
-      el('span', { class: 'glyph', text: SEVERITY[severity].glyph }),
-      el('span', { text: best ? fmtUsed(best.tightest.usedPercent) : '—' }),
-      best?.stale ? el('span', { class: 'avail-stale', text: 'stale' }) : null,
-    ].filter(Boolean),
-  );
-  // Nothing wrong: a line that says so. Something wrong the account line already says: no line, the border and glyph carry it.
-  const alertLine =
-    lead || !alerts.length
-      ? el('p', { class: `avail-alert ${lead ? lead.severity : 'clear'}` }, [
-          el('span', { class: 'glyph', 'aria-hidden': 'true', text: lead ? SEVERITY[lead.severity === 'info' ? 'ok' : lead.severity].glyph : SEVERITY.ok.glyph }),
-          el('span', {}, [
-            lead?.severity === 'critical' || lead?.severity === 'warning' ? el('span', { class: 'sr-only', text: `${lead.severity}: ` }) : null,
-            lead ? lead.text : SEVERITY.ok.word,
-            shown.length > 1 ? el('span', { class: 'avail-more', text: ` +${shown.length - 1} more` }) : null,
-          ]),
-        ])
-      : null;
-  const glyph = el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph });
-  if (!best) {
-    const reason = [...healthState.cluster.accounts, ...healthState.cluster.unknownAccountUsage].find((entry) => entry.reason)?.reason ?? null;
-    availBodyEl.replaceChildren(
-      ...[
-        el('span', { class: 'avail-head' }, [glyph, 'Availability']),
-        el('p', { class: 'avail-checked', text: healthState.cluster.nodes.online ? `No usage reading yet${reason ? `: ${reason}` : ''}` : 'No computer is online to read usage' }),
-        alertLine,
-      ].filter(Boolean),
-    );
-    return;
-  }
-  const head = accounts > 1 ? `Most room of ${accounts} accounts${staleAccounts ? ` · ${staleWords(staleAccounts)}` : ''}` : best.stale ? 'Availability · usage out of date' : 'Availability';
-  // Filtered: replaceChildren writes a null as the word "null", where `el` would skip it.
-  availBodyEl.replaceChildren(
-    ...[
-      el('span', { class: 'avail-head' }, [glyph, head]),
-      el('div', { class: 'avail-who' }, [best.nodeNames.join(', ') || best.title, best.nodeNames.length ? el('span', { class: 'muted', text: ` · ${best.title}` }) : null]),
-      el('ul', { class: 'avail-limits' }, best.limits.map(availLimit)),
-      others.text ? el('p', { class: 'avail-others', text: `${othersWords(availability)}${others.firstResetAt ? ` · first frees ${fmtWhen(others.firstResetAt)}` : ''}` }) : null,
-      best.stale ? el('p', { class: 'avail-checked stale', text: best.checkedAt ? `Last known numbers: usage last checked ${fmtAgo(best.checkedAt)}` : 'Last known numbers: usage could not be refreshed' }) : null,
-      alertLine,
-    ].filter(Boolean),
-  );
-}
-
-/** The phone's one line under the brand: the best account's bottleneck, and the alert word. */
+/** The phone's one line under the brand: the same alert line, or "All clear · 2 of 3 nodes online". */
 function paintStrip(alerts) {
-  const availability = healthState.cluster.availability;
-  const { best } = availability;
-  const severity = worstSeverity(alerts);
-  const shown = tileAlerts(alerts, availability);
-  stripEl.className = `status-strip ${severity}`;
-  stripEl.href = availEl.href;
+  const { nodes } = healthState.cluster;
+  stripEl.className = `status-strip ${worstSeverity(alerts)}`;
+  stripEl.href = alertHref(alerts);
   stripEl.replaceChildren(
-    el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph }),
-    el('span', {
-      class: 'strip-limit',
-      text: best ? `${best.nodeNames[0] ?? best.title} · ${best.stale ? 'Usage out of date · ' : ''}${bottleneckWords(best, { short: true })}` : 'No usage reading yet',
-    }),
-    el('span', { class: 'strip-word', text: shown[0]?.text ?? SEVERITY[alerts.length ? severity : 'ok'].word }),
+    el('span', { class: 'glyph', 'aria-hidden': 'true', text: alertGlyph(alerts) }),
+    el('span', { class: 'strip-text' }, alertWords(alerts, { clear: `All clear · ${nodes.online} of ${countOf(nodes.total, 'node')} online` })),
   );
   stripEl.hidden = false;
 }
@@ -5611,12 +5487,11 @@ function paintStrip(alerts) {
 // ---- the lists under the tile
 
 /** One row of the sidebar: an icon, a label, and whatever follows it, as a link or a button. */
-function sideItem(tag, props, { icon, iconClass = '', label, sub = null, after = [], tip = null }) {
+function sideItem(tag, props, { icon, iconClass = '', label, sub = null, after = [] }) {
   return el(tag, { ...props, class: `side-item ${props.class ?? ''}`.trim() }, [
     el('span', { class: `side-icon ${iconClass}`.trim(), 'aria-hidden': 'true', html: icon }),
     sub ? el('span', { class: 'side-text' }, [el('span', { class: 'side-label', text: label }), sub]) : el('span', { class: 'side-label', text: label }),
     ...after,
-    el('span', { class: 'side-tip', 'aria-hidden': 'true', text: tip ?? label }),
   ]);
 }
 
@@ -5851,7 +5726,6 @@ function paintProjects() {
                 el('span', { class: 'sr-only', text: `, ${project.jobs} job${project.jobs === 1 ? '' : 's'}` }),
               ]),
             ],
-            tip: `${project.name}: ${project.jobs} job${project.jobs === 1 ? '' : 's'}${project.running ? `, ${project.running} running` : ''}${project.updated ? `, ${project.updated} updated` : ''}`,
           },
         ),
       ]),
@@ -5881,7 +5755,6 @@ function paintRunning() {
                   run.nodeName ? '·' : null,
                   el('span', { 'data-runtime-start': run.startedAt, text: fmtElapsed(run.startedAt) }),
                 ]),
-                tip: `${run.cronName}${run.nodeName ? ` on ${run.nodeName}` : ''}, running`,
               },
             ),
           ]),
@@ -5890,39 +5763,46 @@ function paintRunning() {
   );
 }
 
-/** Each computer: online or not, in glyph and word, how busy, and a small meter of its account's tightest limit. */
+/**
+ * One row per computer: online or offline in glyph and word, the name onto its
+ * page, how many jobs it runs of its limit, and its account's meters: the
+ * session, the weekly, and the limit `shownLimits` adds when another is the
+ * bottleneck, with the reset time once a limit is near or reached. Every
+ * computer on one account shares its reading, so the meters are drawn once,
+ * on the first such computer, and the others name it instead.
+ */
 function paintNodes() {
   const { cluster } = healthState;
-  const blocks = new Map([
-    ...cluster.accounts.map((account) => [`account:${account.id}`, account]),
-    ...cluster.unknownAccountUsage.map((entry) => [`unknown:${entry.nodeId}`, entry]),
-  ]);
-  const items = cluster.computers.map((node) => {
-    const usage = node.accountKey ? blocks.get(node.accountKey) : null;
-    const tightest = usage?.windows?.find((window) => window.key === usage.tightest) ?? null;
-    const used = tightest ? Math.max(0, Math.min(100, Number(tightest.usedPercent) || 0)) : null;
-    const load = node.online ? `${node.running} of ${node.concurrencyLimit || '∞'}` : node.lastSeenAt ? `last seen ${fmtAgo(node.lastSeenAt)}` : 'not seen yet';
-    return el('li', {}, [
-      sideItem(
-        'a',
-        { href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}` },
-        {
-          icon: node.online ? ICONS.online : ICONS.offline,
-          iconClass: node.online ? 'online' : 'offline',
-          label: node.name,
-          sub: el('span', { class: 'side-sub' }, [
-            el('span', { text: node.online ? 'online' : 'offline' }),
-            '·',
-            el('span', { text: load, title: node.online ? 'Running, of its job limit' : null }),
-            tightest ? el('span', { class: 'lim-meter', 'aria-hidden': 'true', title: usage.stale ? 'Usage out of date' : null }, [el('span', { class: `lim-fill ${tightest.status}`, style: `width: ${used}%` })]) : null,
-            tightest ? el('span', { class: 'sr-only', text: `, ${usage.stale ? 'last known ' : ''}${tightest.name} ${fmtUsed(used)} used` }) : null,
-          ]),
-          tip: `${node.name}: ${node.online ? `online, ${load} running` : `offline, ${load}`}${tightest ? `, ${usage.stale ? 'last known ' : ''}${tightest.name} ${fmtUsed(used)} used` : ''}`,
-        },
-      ),
+  const drawnFor = new Map(); // account key -> the computer whose row carries its meters
+  const rows = cluster.computers.map((node) => {
+    const { reading } = node;
+    const load = node.online ? `${node.running} of ${node.concurrencyLimit || '∞'}` : null;
+    const seen = node.online ? null : node.lastSeenAt ? `Last seen ${fmtAgo(node.lastSeenAt)}` : 'Not seen yet';
+    const shownOn = node.accountKey ? drawnFor.get(node.accountKey) : undefined;
+    if (node.accountKey && !shownOn && reading.limits.length) drawnFor.set(node.accountKey, node.name);
+    let detail;
+    if (shownOn) detail = [el('span', { class: 'side-node-meta', text: `same account as ${shownOn}` })];
+    else if (reading.limits.length) {
+      detail = [
+        el('ul', { class: 'avail-limits', title: reading.stale ? 'Usage out of date' : null }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))),
+        reading.stale
+          ? el('span', { class: 'side-node-meta stale', text: reading.checkedAt ? `Last known · usage checked ${fmtAgo(reading.checkedAt)}` : 'Last known · usage could not be refreshed' })
+          : null,
+      ];
+    } else {
+      detail = [el('span', { class: 'side-node-meta', text: node.online ? `No usage reading${reading.reason ? `: ${reading.reason}` : ' yet'}` : 'No usage reading while offline' })];
+    }
+    return el('li', { class: 'side-node' }, [
+      el('div', { class: 'side-node-head' }, [
+        el('span', { class: `side-icon ${node.online ? 'online' : 'offline'}`, 'aria-hidden': 'true', text: node.online ? ICONS.online : ICONS.offline }),
+        el('a', { class: 'side-node-name', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, text: node.name }),
+        el('span', { class: 'side-node-load' }, [node.online ? 'online' : 'offline', load ? ' · ' : null, load ? el('span', { title: 'Running, of its job limit', text: load }) : null]),
+      ]),
+      seen ? el('span', { class: 'side-node-meta', text: seen }) : null,
+      ...detail.filter(Boolean),
     ]);
   });
-  sideNodesEl.replaceChildren(...(items.length ? items : [el('li', { class: 'side-empty', text: 'No computers connected' })]));
+  sideNodesEl.replaceChildren(...(rows.length ? rows : [el('li', { class: 'side-node-meta', text: 'No computers connected' })]));
 }
 
 /** Marks the item for the open page, and the project the list is filtered to. */
@@ -5932,7 +5812,7 @@ function syncCurrent() {
   if (section === 'list') current.add(`list:${kind}`);
   if (section === 'list' && project) current.add(`project:${project}`);
   if (section === 'nodes' && id) current.add(`nodes:${decodeURIComponent(id)}`);
-  if (section === 'settings') current.add('settings');
+  if (section === 'status') current.add('status');
   for (const item of document.querySelectorAll('[data-route]')) {
     if (current.has(item.dataset.route)) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
@@ -5967,16 +5847,15 @@ function paintShell() {
   announce(alerts);
   paintStatusPage();
   const { cluster } = healthState;
-  // Relative times, "resets in 3 hours" and "last seen 2 minutes ago", move with the minute.
+  // Relative times, "resets in 3 hours", "last seen 2 minutes ago" and "checked 3 hours ago", move with the minute.
   const minute = Math.floor(Date.now() / 60000);
   const focused = sidebarEl.contains(document.activeElement) ? document.activeElement.closest('[data-key]')?.dataset.key : null;
-  const reasons = [...cluster.accounts, ...cluster.unknownAccountUsage].map((entry) => entry.reason);
-  if (changed('tile', [cluster.availability, cluster.nodes.online, reasons, alerts, minute])) {
-    paintAvailability(alerts);
-    paintStrip(alerts);
-  }
+  // The line and the strip leave the limits to the meters; the announcer and the status page keep the full set.
+  const shown = lineAlerts(alerts);
+  if (changed('alert', shown)) paintAlert(shown);
+  if (changed('strip', [shown, cluster.nodes.online, cluster.nodes.total])) paintStrip(shown);
   if (changed('running', (healthState.runningJobs ?? []).map((run) => [run.cronId, run.cronName, run.kind, run.nodeId, run.nodeName, run.startedAt]))) paintRunning();
-  if (changed('nodes', [cluster.computers, cluster.accounts, cluster.unknownAccountUsage, minute])) paintNodes();
+  if (changed('nodes', [cluster.computers, minute])) paintNodes();
   syncCurrent();
   if (focused) sidebarEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
@@ -6592,8 +6471,6 @@ setInterval(() => {
   if (parseHash().section === 'list') refreshCurrentView();
 }, 15000);
 
-sidebarChoice = readSidebarChoice();
-applySidebarMode();
 paintJobsItems();
 paintProjects();
 refreshProjects();

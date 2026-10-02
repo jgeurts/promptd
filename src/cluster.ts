@@ -93,8 +93,9 @@ export interface UnknownAccountUsage extends UsageSummary {
 }
 
 /**
- * One computer's standing as the job form's Node field shows it: its account's
- * limits, which every computer on that account shares, and who else shares them.
+ * One computer's standing as the sidebar's status block and the job form's
+ * Node field show it: its account's limits, which every computer on that
+ * account shares, and who else shares them.
  */
 export interface NodeReading {
   /** The account's email, "Account unknown" for a computer that reports usage without naming one, or null with nothing to show. */
@@ -180,7 +181,11 @@ export interface AvailabilityAlert {
   text: string;
 }
 
-/** The account with the most room, as the tile draws it. */
+/**
+ * The account with the most room, as the previous build's availability tile
+ * drew it. Kept for a page still open on that build, which reads it until it
+ * reloads; nothing on this build draws it.
+ */
 export interface BestAccount {
   /** `account:<id>`, or `unknown:<nodeId>` for a reading with no account named: the block's anchor on the status page. */
   key: string;
@@ -204,20 +209,21 @@ export interface BestAccount {
 }
 
 /**
- * Where work can still go, over every account at once: the account with the
- * most room on its tightest limit, how the other accounts stand, and what is
- * wrong, worst first.
+ * What is wrong, worst first, over every account and computer at once, and
+ * for a page still open on the previous build, that build's best-account tile:
+ * `best`, `accounts`, `staleAccounts` and `others` are kept for it, like
+ * `headline` and `tightest`, and nothing on this build reads them.
  */
 export interface Availability {
-  /** Null when no online computer has a usage reading. */
+  /** Kept for open pages: the account with the most room, or null when no online computer has a usage reading. */
   best: BestAccount | null;
-  /** How many accounts have a reading; `best` is the best of these. */
+  /** Kept for open pages: how many accounts have a reading; `best` is the best of these. */
   accounts: number;
-  /** How many of those readings are stale, so a comparison can say it rests on old numbers. */
+  /** Kept for open pages: how many of those readings are stale. */
   staleAccounts: number;
   /**
-   * The accounts other than the best, by their worst limit. `text` is the
-   * sentence under the meters, "2 other accounts at their weekly limit", or
+   * Kept for open pages: the accounts other than the best, by their worst
+   * limit. `text` is the sentence under the meters, "2 other accounts at their weekly limit", or
    * null when there is no other account; `firstResetAt` is the earliest any of
    * them is free again, each once the last of its reached limits resets, for
    * the page to add in local time. Null when none reports every reset time.
@@ -248,7 +254,7 @@ export interface ClusterSummary {
     /** 0 is no limit. */
     concurrencyLimit: number;
     accountKey: string | null;
-    /** What the job form's Node field shows for it. */
+    /** What the sidebar's status block and the job form's Node field show for it. */
     reading: NodeReading;
   }>;
   running: number;
@@ -586,9 +592,9 @@ export function bottleneckWindow<T extends UsageWindow>(windows: T[]): T | null 
 }
 
 /**
- * The limits a reading is drawn with, on the tile and on the Node field's
- * cards: the session and the weekly, all models, in the reading's own order,
- * with the bottleneck added only when it is another.
+ * The limits a reading is drawn with, in the sidebar's status block and on
+ * the Node field's cards: the session and the weekly, all models, in the
+ * reading's own order, with the bottleneck added only when it is another.
  */
 export function shownLimits(windows: AccountLimit[]): AccountLimit[] {
   const worst = bottleneckWindow(windows);
@@ -644,11 +650,12 @@ function freesAt(candidate: Candidate): string | null {
 }
 
 /**
- * The best case over every account: the one whose bottleneck has the most
- * room, named by its computers, then how the rest stand and what is wrong.
- * A fresh reading is preferred over a stale one, which may say more room than
- * there is. Pure over the rest of the summary, so the tile's words are tested
- * here with the header's.
+ * What is wrong, worst first, in the words the sidebar's alert line and the
+ * phone's strip say; and, for a page still open on the previous build, the
+ * best case over every account: the one whose bottleneck has the most room,
+ * named by its computers, then how the rest stand. A fresh reading is
+ * preferred over a stale one there. Pure over the rest of the summary, so the
+ * words are tested here with the header's.
  */
 export function availability(summary: Omit<ClusterSummary, 'availability' | 'header'>): Availability {
   const names = new Map(summary.computers.map((node) => [node.id, node.name]));
