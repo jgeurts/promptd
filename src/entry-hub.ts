@@ -101,9 +101,10 @@ app.use(requireLogin());
 app.get('/login', (_req, res) => sendPublicFile(res, 'login.html'));
 app.use(express.json({ limit: '1mb' }));
 app.use(servePublic());
-// Rules the job form shares with the hub, compiled from src/naming.ts and
-// src/jobFormRules.ts: the name a blank Name will get, and what a save sends.
-app.get('/shared/:module(naming|jobFormRules).js', (req, res) => sendSharedModule(res, req.params.module!));
+// What the page shares with the hub, compiled from src/: the name a blank Name
+// will get (naming.ts), what a save sends (jobFormRules.ts), and how a log's
+// lines about its run's tools are read back (toolLines.ts).
+app.get('/shared/:module(naming|jobFormRules|toolLines).js', (req, res) => sendSharedModule(res, req.params.module!));
 
 async function checkProject(projectId: string | null, errors: string[]): Promise<void> {
   if (projectId && !(await getProject(projectId))) errors.push('That project no longer exists.');

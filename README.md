@@ -12,6 +12,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - Choose the model per cron, from whatever the installed CLI recognises.
 - [Commands to run before the prompt](docs/ADVANCED.md#commands-before-the-prompt), such as `pnpm install --frozen-lockfile` in a fresh worktree, so setup does not spend Claude's tokens.
 - Every finished run records the model, runtime, tokens and cost that the CLI reported.
+- Every run's log says what Claude had to work with — tools, MCP servers, skills, plugins and agents, the project's own set apart from yours — lists each tool call as it happens, and tallies them at the end. The logs page folds that into one line above the log.
 - An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.
 - Machine stats per node — CPU, memory, storage throughput and disk space, sampled every 5 seconds and charted over 15 minutes on the node's page. The sidebar names them only when one crosses its alert line.

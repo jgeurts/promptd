@@ -2997,6 +2997,113 @@ details.more-options > summary:focus-visible {
   flex: 1;
 }
 
+/* A line of the node's own in the log: a tool call, or under it, a call that failed. */
+.log-tool {
+  color: var(--muted);
+}
+
+.log-tool.failed {
+  color: var(--red);
+}
+
+/*
+ * The run's tools, folded above the log body: one line closed, and open, what
+ * the run used, what its project brought, the user's own, and the built-ins.
+ * Kept short so the log stays in view; the lists scroll inside.
+ */
+.log-tools {
+  flex: none;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-tools > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 13px;
+  min-height: 36px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.log-tools > summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-tools > summary::before {
+  content: '▸';
+  transition: transform 120ms ease-out;
+}
+
+.log-tools[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .log-tools > summary::before {
+    transition: none;
+  }
+}
+
+.log-tools > summary:hover {
+  color: var(--text);
+}
+
+.log-tools > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.log-tools-body {
+  display: grid;
+  gap: 10px;
+  max-height: 34vh;
+  overflow: auto;
+  padding: 2px 13px 12px 30px;
+  font-size: 12.5px;
+}
+
+.log-tools-group h2 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.log-tools-group dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 14px;
+}
+
+.log-tools-row {
+  display: contents;
+}
+
+.log-tools-row dt {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.log-tools-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A status someone can act on. The label says which; the colour only points at it. */
+.log-tools-row.warn dt {
+  color: var(--amber);
+}
+
+.log-tools-row.bad dt {
+  color: var(--red);
+}
+
 .breadcrumb {
   color: var(--muted);
   font-size: 12.5px;

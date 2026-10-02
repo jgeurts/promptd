@@ -610,7 +610,7 @@ This is one path, walked by crons and one-time executions alike.
 2. If it has [Delay for usage](#delaying-a-cron-for-usage) boxes ticked, usage is read; the run waits here while any ticked limit is spent.
 3. If it has **Use worktree** ticked, the default `.worktreeinclude` from the Settings page is written to the main checkout of the git repository the working directory is in, replacing any file already there. Claude Code reads it only from there, even when the session starts in a subfolder or in a linked worktree (a checkout made with `git worktree add`). Nothing is written when the default is empty or the folder is not in a git repository. Every log header carries `Use worktree`, `Cleanup worktree` and `.worktreeinclude` lines just above `command`; the last says where the file was written, why it was not, or the error. When the file is written, its full text follows the header in a `--- .worktreeinclude ---` section, above the prompt.
 4. A job with [commands before the prompt](#commands-before-the-prompt) has them run now, in the worktree promptd makes for it, and one that fails ends the run here; Claude then starts at the top of that tree without `--worktree`. Otherwise, the server spawns `claude -p "<prompt>" --output-format stream-json --verbose --include-partial-messages` in the cron's working directory. With **Use worktree** ticked it adds `--worktree <id>`, so Claude Code runs in `.claude/worktrees/<id>` at the repository root, on a `worktree-<id>` branch; the same id brings every run back to the same worktree until it is cleaned up. Claude Code refuses `--worktree` outside a git repository, and the run fails with its message. The prompt also gets a short worktree notice after the preamble: that it is in a worktree and should keep its changes, commands and subagents there, where the job's folder is when the working directory is a subfolder (a worktree session starts at the top of the repository), that git-ignored files are not copied unless `.worktreeinclude` lists them, and whether the worktree is deleted when the run ends or reused by the next one. The log shows the notice in a `--- worktree notice ---` section above the prompt.
-5. The assistant's text is pulled out of the event stream and written to `logs/<id>/<start time>.txt` as it arrives, so the log reads as plain output and can be tailed mid-run. stderr goes in verbatim, as does any stdout line that is not JSON (a CLI warning, say).
+5. The assistant's text is pulled out of the event stream and written to `logs/<id>/<start time>.txt` as it arrives, so the log reads as plain output and can be tailed mid-run. Lines of promptd's own go in between the paragraphs — a block at the top saying what the session had, one `⏺` line per tool call, a tally at the end; [Tools in the log](#tools-in-the-log) has them. stderr goes in verbatim, as does any stdout line that is not JSON (a CLI warning, say).
 6. On exit, whatever the outcome and stopped runs included, a job with **Clean up worktree after execution** ticked has its worktree cleaned up: the worktree git lists on branch `worktree-<id>` is force-removed, so uncommitted files in it are lost, and the branch is deleted. Claude Code makes it under `.claude/worktrees/<id>` in the main checkout, which for a job running in a linked worktree is a different folder from the one the job runs in. The run holds its slot until this finishes, so its next trigger cannot start into a half-removed folder.
 7. The run's statistics block is written, then a footer records the outcome (`succeeded` / `failed` / `stopped`, duration, exit code). A `Worktree cleanup:` line after `Cost:` says what step 6 removed, why it removed nothing, or the error; the deleted branch's last commit is in it, so work committed only there can be recovered. A run that ended before the CLI reported its statistics gets the line on its own. Logs beyond the newest 50 for that cron are deleted.
 
@@ -648,6 +648,41 @@ Cost: $0.2342
 The numbers come from the `result` event's `modelUsage`, `duration_ms`, `usage` and `total_cost_usd` fields. `Runtime` is the CLI's own measure of the turn, which is shorter than the footer's wall-clock duration because that includes process startup. Cache tokens dominate the token count on short prompts — that is the system prompt and context being read back, and it is what you are billed for.
 
 A run that is stopped or that fails before producing a result event has no statistics block, only the footer.
+
+## Tools in the log
+
+A run's log also says what the session had to work with and what it called, in lines the node writes between Claude's paragraphs. Nothing else is stored: the log is the record, and the logs page reads these lines back out of it.
+
+The output section opens with a block in the header's style, from the CLI's init event:
+
+```
+setup      claude 2.1.287 · claude-opus-5-5 · permissions default
+tools      326 at startup: 34 built-in, 292 from 6 MCP servers
+project    mcp: probe (failed) · skills: probe-skill · agents: reviewer
+global     mcp connected: Neon 113 · Linear 81 · Notion 44 · HubSpot 27 · Slack 19 · Claude Docs 8
+global     mcp needs sign-in (25): Adobe for creativity, Ambient, AskElephant, Canva, … and 13 more
+global     mcp failed (1): Zapier
+global     161 skills · 10 plugins · 10 agents
+built-in   Task, Bash, Read, …
+context    31k tokens in the first request
+```
+
+`project` is what the job's folder brought itself: MCP servers from its `.mcp.json`, and skills and agents found under `.claude/` there or in any folder above it up to the git root — never the home folder or anything above it, which are the user's. It is left out when there is nothing. `global` is the user's own: servers by status, those waiting on a sign-in or failed before the connected ones, then how many skills, plugins and agents came from outside the project. A connected server shows how many tools it added, or `?` when the CLI's tool names could not be matched to it. `context` is what the first request carried, cache included.
+
+Each tool call is one line between the paragraphs: `⏺ Bash  Run the test suite`, `⏺ Read  src/cronService.ts`, `⏺ Linear · save_issue`. A Bash call shows Claude's description of the command and never the command itself — with no description the line is `⏺ Bash` alone; file tools show their path, relative to the run's directory; searches their pattern or query; a fetch where it went. A bare Grep pattern, file name or URL path is shown as given, so it may contain whatever the run searched for. Whatever the tool, what it was given goes through one filter before it is written: cut to a line, a secret keyword's whole value and the usual token shapes blanked, URLs kept to scheme, host and path — or to `scheme://…` when the cut may have taken the host. An MCP tool is named by its server and shows none of its input, and when it fails the log says only that it did, since a server's error can echo what it was sent. A subagent's calls are two spaces in, and a built-in call that failed gets `  ✗ Read failed: File does not exist.` under it: the first line of the reason, cut where a JSON payload starts, through the same filter.
+
+The CLI sends one assistant event per content block, all under one message id, and with partial messages a call also streams in pieces before its block is complete. Calls are kept by their tool-use id and written once, from the complete block. A stdout line that was meant to be JSON but does not parse — the tail of an event cut off when a run was killed — is written as `(unreadable CLI event, N bytes)` rather than as it is, since it could carry a tool's whole input; a plain CLI warning still goes in verbatim.
+
+Before the statistics block, a tally:
+
+```
+tools used 12 calls: Read ×6, Bash ×4, Linear · save_issue ×2
+denied     2 calls: Bash ×2 (permission mode default)
+```
+
+Every item of the tally carries its count, so a server whose name holds a comma still reads unambiguously.
+
+On the logs page these lines fold into a **Tools** line above the log — what was used, then the project's, then the user's own, then the built-ins — and each `⏺` line in the log is set apart from Claude's text. The page takes a log to have these lines only when the block opens its output, within a few lines of `--- output ---` since a CLI warning on stderr can land first, and reads the block and its `context` line from there alone; a block quoted in Claude's text further down changes nothing, the retrospective's section is skipped, and the tally counts only once the closing lines follow it. One limit: while a run is live, a `⏺` line quoted in Claude's own text is styled and counted like a call, and the tally sets the counts right once the run ends. A log from before nodes wrote these lines, or from a CLI that does not report them, looks as it always did.
 
 ## Lifetime totals
 

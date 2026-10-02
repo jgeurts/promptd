@@ -1,5 +1,9 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
+// What a run's log says about its tools, read back by the hub's own build of
+// src/toolLines.ts. Loaded apart from the page, so a hub that cannot serve it
+// still shows every page, and a run's log as plain text with no Tools line.
+const toolLines = await import('/shared/toolLines.js').catch(() => null);
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -4135,6 +4139,8 @@ async function renderLogs(id, kind = 'cron') {
       })
     : el('span', { class: 'log-runtime', text: '' });
 
+  // What the run had and called, folded into one line between the head and the log.
+  const tools = toolsDisclosure();
   const panel = el('div', { class: 'log-panel' }, [
     el('div', { class: 'log-head' }, [
       el('span', { class: 'mono', text: selectedLog ? (fmtDateTime(selectedLog.startedAt) ?? selectedLog.file) : '—' }),
@@ -4150,6 +4156,7 @@ async function renderLogs(id, kind = 'cron') {
           })
         : null,
     ]),
+    tools,
     body,
   ]);
 
@@ -4206,7 +4213,7 @@ async function renderLogs(id, kind = 'cron') {
   const shown = () => {
     if (seq === logsState.paintedSeq && body.isConnected) acknowledgeJob(cron, displayed, newest);
   };
-  if (displayed) openLogStream(id, displayed, body, liveBadge, runtimeEl, base, shown);
+  if (displayed) openLogStream(id, displayed, body, liveBadge, runtimeEl, base, shown, tools);
   else shown();
 }
 
@@ -4243,8 +4250,80 @@ function durationFromLog(text) {
   return last ? Number(last[1]) * 1000 : null;
 }
 
+// ---- the run's tools --------------------------------------------------
+// A node writes what a run had and called into its log as lines of its own:
+// a key-aligned block right after `--- output ---`, a `⏺` line per tool call
+// with a subagent's two spaces in, a `✗` line under a call that failed, and
+// a `tools used` / `denied` tally before the statistics. ToolLinesReader,
+// from the hub's own build of src/toolLines.ts, reads them back line by line
+// as the log streams. A log whose output does not open with the block has
+// none — from an older node, or quoting one — and is shown as it always was.
+
+/**
+ * Wraps each tool line in a text node of the log body in a span, so it reads
+ * apart from Claude's text. The node has to end on a line break: a line still
+ * arriving must not be marked by its first characters.
+ */
+function markToolLines(node) {
+  const lines = node.data.split('\n');
+  if (!lines.some((line) => toolLines.TOOL_LINE.test(line))) return;
+  const parts = [];
+  let plain = '';
+  lines.forEach((line, index) => {
+    const text = index < lines.length - 1 ? `${line}\n` : line;
+    if (!toolLines.TOOL_LINE.test(line)) {
+      plain += text;
+      return;
+    }
+    if (plain) parts.push(plain);
+    plain = '';
+    parts.push(el('span', { class: line.trimStart().startsWith('✗') ? 'log-tool failed' : 'log-tool', text }));
+  });
+  if (plain) parts.push(plain);
+  node.replaceWith(...parts);
+}
+
+/** The disclosure above the log body, closed to one line; hidden until the log says something about its tools. */
+function toolsDisclosure() {
+  return el('details', { class: 'log-tools', hidden: true }, [el('summary', { text: 'Tools' }), el('div', { class: 'log-tools-body' })]);
+}
+
+/**
+ * Draws what the reader has so far into the disclosure: a one-line summary,
+ * and inside it what the run used, then what its project brought, then the
+ * user's own, then the built-ins. A server waiting on a sign-in, or failed,
+ * is listed before the connected ones, since that is what someone can do
+ * something about, and is named by its status as well as coloured.
+ */
+function paintRunTools(details, reader, { live = false } = {}) {
+  details.hidden = !reader.active;
+  if (!reader.active) return;
+  const records = reader.records;
+  details.querySelector('summary').textContent = toolLines.toolsSummary(records, live);
+
+  const row = (label, value, tone = null) =>
+    value ? el('div', { class: `log-tools-row${tone ? ` ${tone}` : ''}` }, [el('dt', { text: label }), el('dd', { text: value })]) : null;
+  const group = (title, rows) => (rows.some(Boolean) ? el('section', { class: 'log-tools-group' }, [el('h2', { text: title }), el('dl', {}, rows)]) : null);
+  const tone = (status) => (status === 'needs sign-in' ? 'warn' : status === 'failed' ? 'bad' : null);
+  const rank = (status) => (status === 'needs sign-in' ? 0 : status === 'failed' ? 1 : status === 'connected' ? 3 : 2);
+  const servers = [...records.servers].sort((a, b) => rank(a.status) - rank(b.status));
+  const label = (server) => `MCP ${server.status}${server.count === null ? '' : ` (${server.count})`}`;
+  details.querySelector('.log-tools-body').replaceChildren(
+    ...[
+      group('Used in this run', [
+        row('Calls', toolLines.callList(records) || `none${live && !records.used ? ' yet' : ''}`),
+        row('Denied', records.denied, 'bad'),
+      ]),
+      group('Project', [row('MCP', records.project?.mcp), row('Skills', records.project?.skills), row('Agents', records.project?.agents)]),
+      group('Global', [...servers.map((server) => row(label(server), server.names, tone(server.status))), row('Installed', records.extras)]),
+      group('Built-in', [row('Tools', records.builtIn)]),
+      group('Session', [row('Claude', records.setup), row('Context', records.context)]),
+    ].filter(Boolean),
+  );
+}
+
 /** Streams one log file into the pre element, appending chunks as they arrive. */
-function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons', onShown = () => {}) {
+function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons', onShown = () => {}, tools = null) {
   closeLogStream();
   body.textContent = '';
   liveBadge.textContent = 'streaming';
@@ -4261,9 +4340,48 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     onShown();
   };
 
+  // What the log says about the run's tools, read from each chunk as it
+  // comes, so a repaint costs the new lines and never the whole log. Null
+  // when the reader could not be loaded, and the log is then plain text.
+  const reader = toolLines ? new toolLines.ToolLinesReader() : null;
+
+  // A chunk ends wherever the file did when it was read, mid-line as often as
+  // not. Whole lines go in as they come, each tool line in a span of its own
+  // once the log is known to have them; the unfinished last line waits in a
+  // node of its own that the next chunk replaces, so it is never marked by
+  // its first characters.
+  let tailNode = null;
+  const append = (text, mark) => {
+    const whole = (tailNode?.data ?? '') + text;
+    const cut = whole.lastIndexOf('\n') + 1;
+    if (!cut) {
+      if (tailNode) tailNode.data = whole;
+      else body.append((tailNode = document.createTextNode(whole)));
+      return;
+    }
+    const complete = document.createTextNode(whole.slice(0, cut));
+    if (tailNode) tailNode.replaceWith(complete);
+    else body.append(complete);
+    tailNode = document.createTextNode(whole.slice(cut));
+    body.append(tailNode);
+    if (mark) markToolLines(complete);
+  };
+
+  // The disclosure is redrawn when the reader has something new, at most
+  // twice a second while chunks stream, and once more when the run is over.
+  let toolsTimer = null;
+  const paintTools = (live) => {
+    clearTimeout(toolsTimer);
+    toolsTimer = null;
+    if (tools && reader) paintRunTools(tools, reader, { live });
+  };
+
   stream.addEventListener('chunk', (event) => {
-    body.append(JSON.parse(event.data).text);
+    const { text } = JSON.parse(event.data);
+    const changed = reader ? reader.feed(text) : false;
+    append(text, Boolean(reader?.active));
     if (logsState.atBottom) body.scrollTop = body.scrollHeight;
+    if (changed && tools && !toolsTimer) toolsTimer = setTimeout(() => paintTools(true), 500);
     show();
   });
 
@@ -4278,8 +4396,17 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     }
     if (!body.textContent) body.textContent = '(empty log)';
     const retro = markRetrospective(body);
-    if (retro && logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
+    if (retro) {
+      // The section is cut from the text, which flattens the spans around it; mark the lines again.
+      if (reader?.active) {
+        for (const node of [...body.childNodes]) {
+          if (node.nodeType === Node.TEXT_NODE) markToolLines(node);
+        }
+      }
+      if (logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
+    }
     logsState.toRetrospective = false;
+    paintTools(false);
     show();
     closeLogStream();
   });
@@ -4287,6 +4414,7 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
   stream.onerror = () => {
     liveBadge.textContent = 'stream lost';
     liveBadge.className = 'pill failed';
+    clearTimeout(toolsTimer);
     closeLogStream();
   };
 }
