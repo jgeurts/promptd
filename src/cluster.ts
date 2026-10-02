@@ -153,10 +153,75 @@ export interface HeaderSummary {
   warnings: HeaderWarning[];
 }
 
+/** One thing wrong, as the sidebar's availability tile words it. */
+export interface AvailabilityAlert {
+  id: 'accounts-near' | 'accounts-reached' | 'machines' | 'offline' | 'waiting-slot' | 'waiting-usage';
+  /** Where on the status page it is explained. */
+  section: HeaderSection;
+  /** `critical` stops work now; `warning` is about to, or is worth a look. */
+  severity: 'critical' | 'warning';
+  text: string;
+}
+
+/** The account with the most room, as the tile draws it. */
+export interface BestAccount {
+  /** `account:<id>`, or `unknown:<nodeId>` for a reading with no account named: the block's anchor on the status page. */
+  key: string;
+  /** The email, or "Account unknown". */
+  title: string;
+  /** The computers signed in to it, which the tile names it by. */
+  nodeNames: string[];
+  status: AccountStatus;
+  /** The limit closest to stopping work on it. */
+  tightest: AccountLimit;
+  /** The session and the weekly all-models limits, plus the tightest when it is another: what the tile draws meters for. */
+  limits: AccountLimit[];
+  checkedAt: string | null;
+  stale: boolean;
+}
+
+/**
+ * Where work can still go, over every account at once: the account with the
+ * most room on its tightest limit, how the other accounts stand, and what is
+ * wrong, worst first.
+ */
+export interface Availability {
+  /** Null when no online computer has a usage reading. */
+  best: BestAccount | null;
+  /** How many accounts have a reading; `best` is the best of these. */
+  accounts: number;
+  /**
+   * The accounts other than the best, by their worst limit. `text` is the
+   * sentence under the meters, "2 other accounts at their weekly limit", or
+   * null when there is no other account; `firstResetAt` is the earliest any of
+   * their reached limits frees, for the page to add in local time.
+   */
+  others: { count: number; reached: number; near: number; text: string | null; firstResetAt: string | null };
+  /**
+   * Limits reached, then jobs held, accounts near a limit, machine trouble and
+   * computers offline. Empty is all clear. The page adds its own on the end:
+   * its connection and an update on offer, which only it knows.
+   */
+  alerts: AvailabilityAlert[];
+}
+
 export interface ClusterSummary {
   nodes: { total: number; online: number; offline: Array<{ id: string; name: string; lastSeenAt: string | null }> };
-  /** Every node, in display order, for the panel to name them by. */
-  computers: Array<{ id: string; name: string; online: boolean; lastSeenAt: string | null }>;
+  /**
+   * Every node, in display order, for the panel to name them by, with what the
+   * sidebar's node list draws: how busy it is, and the key of the account block
+   * its usage is under, or null when it has none to show.
+   */
+  computers: Array<{
+    id: string;
+    name: string;
+    online: boolean;
+    lastSeenAt: string | null;
+    running: number;
+    /** 0 is no limit. */
+    concurrencyLimit: number;
+    accountKey: string | null;
+  }>;
   running: number;
   /** Summed over online nodes; 0 when any of them has no limit. */
   concurrencyLimit: number;
@@ -171,6 +236,7 @@ export interface ClusterSummary {
   exceptions: MachineException[];
   builds: { hubCommit: string | null; differing: string[] };
   header: HeaderSummary;
+  availability: Availability;
 }
 
 const SEVERITY_RANK: Record<UsageWindow['severity'], number> = { normal: 0, warning: 1, critical: 2 };
@@ -429,7 +495,7 @@ function count(n: number, noun: string): string {
  * while there is something to say, and they come in a fixed order so the row
  * does not reshuffle as counts change.
  */
-export function headerSummary(summary: Omit<ClusterSummary, 'header'>): HeaderSummary {
+export function headerSummary(summary: Omit<ClusterSummary, 'availability' | 'header'>): HeaderSummary {
   const { nodes, running, concurrencyLimit, waiting, exceptions } = summary;
   const accounts = { reached: 0, near: 0 };
   for (const entry of [...summary.accounts, ...summary.unknownAccountUsage]) {
@@ -464,26 +530,166 @@ export function headerSummary(summary: Omit<ClusterSummary, 'header'>): HeaderSu
   };
 }
 
+/** A limit in the middle of a sentence: "weekly limit", "session limit", "Fable weekly limit", "credit limit". */
+function limitPhrase(window: UsageWindow): string {
+  switch (kindOf(window)) {
+    case 'session':
+      return 'session limit';
+    case 'weekly_all':
+      return 'weekly limit';
+    case 'weekly_scoped':
+      return window.scope ? `${window.scope} weekly limit` : 'weekly limit';
+    case 'spend':
+      return 'credit limit';
+    default:
+      return 'limit';
+  }
+}
+
+/** One account as `availability` weighs it, from either kind of entry. */
+interface Candidate {
+  key: string;
+  title: string;
+  nodeNames: string[];
+  usage: UsageSummary;
+  tightest: AccountLimit;
+}
+
+/**
+ * "2 accounts at their weekly limit" when every reached limit is the same
+ * one, "2 accounts at a limit" when they differ; `other` puts "other" in.
+ */
+function reachedPhrase(reached: Candidate[], other: boolean): string {
+  const noun = `${other ? 'other ' : ''}account${reached.length === 1 ? '' : 's'}`;
+  const limits = new Set(reached.flatMap((candidate) => candidate.usage.windows.filter((limit) => limit.status === 'reached').map(limitPhrase)));
+  const which = limits.size === 1 ? `${reached.length === 1 ? 'its' : 'their'} ${[...limits][0]}` : 'a limit';
+  return `${reached.length} ${noun} at ${which}`;
+}
+
+function nearPhrase(near: number, other: boolean): string {
+  return `${near} ${other ? 'other ' : ''}account${near === 1 ? '' : 's'} near ${near === 1 ? 'its' : 'a'} limit`;
+}
+
+/**
+ * The best case over every account: the one whose tightest limit has the most
+ * room, named by its computers, then how the rest stand and what is wrong.
+ * Pure over the rest of the summary, so the tile's words are tested here with
+ * the header's.
+ */
+export function availability(summary: Omit<ClusterSummary, 'availability' | 'header'>): Availability {
+  const names = new Map(summary.computers.map((node) => [node.id, node.name]));
+  // An account with no reading has no limit to weigh, so it is not a candidate.
+  const candidate = (key: string, title: string, nodeNames: string[], usage: UsageSummary): Candidate | null => {
+    const tightest = tightestWindow(usage.windows) as AccountLimit | null;
+    return tightest ? { key, title, nodeNames, usage, tightest } : null;
+  };
+  const candidates = [
+    ...summary.accounts.map((account) => candidate(`account:${account.id}`, account.email, account.nodeIds.map((id) => names.get(id) ?? id), account)),
+    ...summary.unknownAccountUsage.map((entry) => candidate(`unknown:${entry.nodeId}`, 'Account unknown', [entry.nodeName], entry)),
+  ]
+    .filter((found): found is Candidate => found !== null)
+    // Most room first; with the same room, the one whose status is better, then by name so the pick holds still.
+    .sort(
+      (a, b) =>
+        b.tightest.usedPercent - a.tightest.usedPercent === 0
+          ? STATUS_RANK[a.usage.status] - STATUS_RANK[b.usage.status] || a.title.localeCompare(b.title)
+          : a.tightest.usedPercent - b.tightest.usedPercent,
+    );
+
+  const [bestOf, ...rest] = candidates;
+  let best: BestAccount | null = null;
+  if (bestOf) {
+    const headline = bestOf.usage.windows.filter((limit) => ['session', 'weekly_all'].includes(kindOf(limit) ?? ''));
+    best = {
+      key: bestOf.key,
+      title: bestOf.title,
+      nodeNames: bestOf.nodeNames,
+      status: bestOf.usage.status,
+      tightest: bestOf.tightest,
+      // In the reading's own order, with the tightest added only when it is not a headline limit already.
+      limits: bestOf.usage.windows.filter((limit) => headline.includes(limit) || limit === bestOf.tightest),
+      checkedAt: bestOf.usage.checkedAt,
+      stale: bestOf.usage.stale,
+    };
+  }
+
+  const reachedOthers = rest.filter((candidate) => candidate.usage.status === 'reached');
+  const nearOthers = rest.filter((candidate) => candidate.usage.status === 'near').length;
+  const resets = reachedOthers
+    .flatMap((candidate) => candidate.usage.windows.filter((limit) => limit.status === 'reached').map((limit) => limit.resetsAt))
+    .filter((at): at is string => Boolean(at))
+    .sort();
+  let othersText: string | null = null;
+  if (reachedOthers.length && nearOthers) othersText = `${reachedPhrase(reachedOthers, true)}, ${nearOthers} near`;
+  else if (reachedOthers.length) othersText = reachedPhrase(reachedOthers, true);
+  else if (nearOthers) othersText = nearPhrase(nearOthers, true);
+  else if (rest.length) othersText = `${rest.length} other account${rest.length === 1 ? '' : 's'} with room`;
+
+  const reached = candidates.filter((candidate) => candidate.usage.status === 'reached');
+  const near = candidates.filter((candidate) => candidate.usage.status === 'near').length;
+  const forUsage = summary.waiting.filter((job) => job.hold === 'usage').length;
+  const forSlot = summary.waiting.length - forUsage;
+  const alerts: AvailabilityAlert[] = [];
+  if (reached.length) alerts.push({ id: 'accounts-reached', section: 'accounts', severity: 'critical', text: reachedPhrase(reached, false) });
+  if (forUsage) alerts.push({ id: 'waiting-usage', section: 'jobs', severity: 'warning', text: `${count(forUsage, 'job')} waiting for account limits` });
+  if (forSlot) alerts.push({ id: 'waiting-slot', section: 'jobs', severity: 'warning', text: `${count(forSlot, 'job')} queued behind the job limit` });
+  if (near) alerts.push({ id: 'accounts-near', section: 'accounts', severity: 'warning', text: nearPhrase(near, false) });
+  if (summary.exceptions.length) {
+    const [worst] = summary.exceptions;
+    alerts.push({
+      id: 'machines',
+      section: 'computers',
+      severity: worst!.severity,
+      text: summary.exceptions.length === 1 ? `${worst!.nodeName}: ${worst!.reading}` : `Machine warnings: ${summary.exceptions.length}`,
+    });
+  }
+  if (!summary.nodes.total) alerts.push({ id: 'offline', section: 'computers', severity: 'critical', text: 'No computers connected' });
+  else if (summary.nodes.offline.length) {
+    alerts.push({ id: 'offline', section: 'computers', severity: 'warning', text: `${count(summary.nodes.offline.length, 'computer')} offline` });
+  }
+
+  return {
+    best,
+    accounts: candidates.length,
+    others: { count: rest.length, reached: reachedOthers.length, near: nearOthers, text: othersText, firstResetAt: resets[0] ?? null },
+    alerts,
+  };
+}
+
 export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): ClusterSummary {
   const online = nodes.filter((node) => node.online);
-  const summary: Omit<ClusterSummary, 'header'> = {
+  const accounts = accountSummaries(nodes);
+  const unknown = unknownAccountUsage(nodes);
+  const accountKey = (node: ClusterNode): string | null => {
+    if (node.account) return `account:${node.account.id}`;
+    return unknown.some((entry) => entry.nodeId === node.id) ? `unknown:${node.id}` : null;
+  };
+  const summary: Omit<ClusterSummary, 'availability' | 'header'> = {
     nodes: {
       total: nodes.length,
       online: online.length,
       offline: nodes.filter((node) => !node.online).map(({ id, name, lastSeenAt }) => ({ id, name, lastSeenAt })),
     },
-    computers: nodes.map(({ id, name, online: up, lastSeenAt }) => ({ id, name, online: up, lastSeenAt })),
+    computers: nodes.map((node) => ({
+      id: node.id,
+      name: node.name,
+      online: node.online,
+      lastSeenAt: node.lastSeenAt,
+      running: node.online ? node.running : 0,
+      concurrencyLimit: node.online ? node.concurrencyLimit : 0,
+      accountKey: accountKey(node),
+    })),
     running: online.reduce((total, node) => total + node.running, 0),
     concurrencyLimit: clusterLimit(online.map((node) => node.concurrencyLimit)),
     waiting: waitingJobs(nodes),
-    accounts: accountSummaries(nodes),
+    accounts,
     unknownAccountNodeIds: nodes.filter((node) => !node.account).map((node) => node.id),
-    unknownAccountUsage: unknownAccountUsage(nodes),
+    unknownAccountUsage: unknown,
     exceptions: machineExceptions(nodes),
     builds: {
       hubCommit,
       differing: online.filter((node) => node.commit && hubCommit && node.commit !== hubCommit).map((node) => node.id),
     },
   };
-  return { ...summary, header: headerSummary(summary) };
+  return { ...summary, header: headerSummary(summary), availability: availability(summary) };
 }
