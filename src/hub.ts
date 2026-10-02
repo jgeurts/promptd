@@ -909,6 +909,8 @@ class Hub {
     cluster: ClusterSummary;
     /** Every run under way, named by its node: the sidebar's Running now list. */
     runningJobs: ConcurrencyInfo['running'];
+    /** The node a job with none of its own runs on, so a form left open follows a change of it. */
+    defaultNodeId: string;
   } {
     const nodes = this.onlineNodes();
     const count = (key: keyof NodeCounts): number => sum(nodes, (node) => node.status.counts?.[key]);
@@ -916,6 +918,7 @@ class Hub {
       scheduled: count('scheduled'),
       running: count('running'),
       runningJobs: this.concurrencyInfo().running,
+      defaultNodeId: this.defaultNodeId(),
       paused: this.isPaused(),
       delayed: count('delayed'),
       queued: count('queued'),

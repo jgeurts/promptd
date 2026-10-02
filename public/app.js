@@ -12,6 +12,8 @@ let updateWatchTimer = null; // polling while an update waits for runs to finish
 // Set by the Settings page so run activity can redraw its queue card without
 // rebuilding the whole page under the user's cursor. Cleared on navigation.
 let repaintQueue = null;
+let disposeView = null; // what the open page holds outside the DOM, let go of on the way to the next: timers, listeners, answers still out
+let routeGeneration = 0; // counts moves between pages, so a page still loading when the next opens can tell it is stale
 // The commit the server reported when this page loaded. If it ever differs, the
 // server has been updated underneath us and this page is running old code.
 let loadedCommit = null;
@@ -1532,6 +1534,8 @@ function directoryPicker(input, { label = 'Working Directory', node = () => '', 
   const accept = (index) => {
     if (!items[index]) return;
     input.value = items[index];
+    // Setting the value fires nothing; whoever listens for the field to settle, as the Node field does, hears this.
+    input.dispatchEvent(new Event('change', { bubbles: true }));
     input.focus();
     // Accepting ends in a slash, so re-querying lists what is inside it.
     lookup();
@@ -2356,10 +2360,6 @@ function followNodeDirectory(input, listing, keep) {
   input.dataset.nodeDefault = next;
 }
 
-/**
- * Which node runs the job. Blank follows the default node, so changing the default moves it.
- * `onChange` gets the listing of the node that would run it, once the nodes load and on every pick.
- */
 /** Hidden until a project exists, so a server that uses none never sees it. */
 function projectPicker(selected) {
   const select = el('select', { class: 'select' });
@@ -2383,46 +2383,224 @@ function projectPicker(selected) {
   return { read: () => select.value, field };
 }
 
-function nodePicker(selected, { onChange = () => {} } = {}) {
-  const select = el('select', { class: 'select mono' });
+/**
+ * Which node runs the job. Blank follows the default node, so changing the default moves it.
+ *
+ * A radio group rather than a menu, so each computer says at a glance how it
+ * stands, in the sidebar's words: online or offline, how many jobs it runs of
+ * its limit, and its account's session and weekly use on the tile's meters.
+ * Computers on one account share one reading, and say so. With a Working
+ * Directory typed, each says whether it has that folder. All of it is
+ * information, none of it a check: an offline computer, or one without the
+ * folder, can still be chosen and saved. The readings follow the sidebar's
+ * health poll, repainted in place so the choice and the focus hold still.
+ *
+ * `onChange` gets the listing of the node that would run it, once the nodes
+ * load and on every pick; `directory` is the Working Directory input.
+ */
+function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
+  const group = uid('node');
+  const list = el('div', { class: 'node-opts' }, [el('span', { class: 'node-meta', text: 'Loading the nodes…' })]);
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
-  const current = selected ?? '';
-  let byId = new Map();
+  const field = el('fieldset', { class: 'field node-field' }, [el('legend', { text: 'Node' }), list, note]);
+  // The stored value: what was saved, until a radio is picked. Held apart from
+  // the radios, so a save before the nodes load, or after they fail to, sends
+  // the job's own node rather than the default.
+  let value = selected ?? '';
+  let byId = new Map(); // the listings /api/nodes gave
   let fallbackId = '';
-  const chosen = () => byId.get(select.value || fallbackId) ?? null;
-  select.addEventListener('change', () => onChange(chosen()));
+  let options = []; // one per radio: { value, listing, name, reading, folder, root, drawn, online, flight, answer }
+  let computers = new Map(); // by node id, from the last cluster summary seen
+  let disposed = false;
+  const chosen = () => byId.get(value || fallbackId) ?? null;
+  const isOnline = (option) => computers.get(option.value)?.online ?? option.listing.online;
 
-  const paint = ({ nodes = [], defaultNodeId = '' }) => {
-    byId = new Map(nodes.map((node) => [node.id, node]));
-    fallbackId = defaultNodeId;
-    const label = (node) => `${node.name}${node.online ? '' : ' (offline)'}`;
-    const fallback = byId.get(defaultNodeId);
-    const options = [
-      { value: '', label: fallback ? `Default node (${label(fallback)})` : 'Default node' },
-      ...nodes.map((node) => ({ value: node.id, label: label(node) })),
+  // ---- the folder check
+  // Each online computer is asked once per settled Working Directory, never per
+  // keystroke: a remote node answers inside its sync, so a burst would hold up
+  // its heartbeat and its commands. The path asked for is the one the field
+  // settled on, not whatever is in it now; one request is out per computer at
+  // a time, numbered so only its own completion clears it; and a card says what
+  // it knows only while the field still shows the path it knows it for.
+  let settledPath = '';
+  let flights = 0;
+  const livePath = () => directory?.value.trim() ?? '';
+  const sayFolder = (option, text, status = '') => {
+    option.folder.textContent = text;
+    option.folder.className = `node-folder${status ? ` ${status}` : ''}`;
+  };
+  const folderWords = (option) => {
+    const live = livePath();
+    if (!live) return null;
+    if (live !== settledPath) return ['Folder not checked yet', ''];
+    if (!isOnline(option)) return ['Offline, so the folder is not checked', ''];
+    if (option.answer?.path === settledPath) return [option.answer.text, option.answer.status];
+    return ['Checking for the folder…', 'pending'];
+  };
+  /** Each card's folder line, from what is known; sends nothing. */
+  const paintFolders = () => {
+    for (const option of options) {
+      if (!option.listing) continue;
+      const words = folderWords(option);
+      option.folder.hidden = !words;
+      if (words) sayFolder(option, ...words);
+    }
+  };
+  const askFolder = (option, path) => {
+    const id = ++flights;
+    option.flight = { id, path };
+    api(`/api/browse?path=${encodeURIComponent(path)}&node=${encodeURIComponent(option.value)}`)
+      .then(
+        (result) => ({ text: result.exists ? 'Folder found' : 'Folder not on this Mac', status: result.exists ? 'ok' : 'warn' }),
+        (err) => ({ text: `Folder not checked: ${err.message}`, status: '' }),
+      )
+      .then((answer) => {
+        if (disposed || option.flight?.id !== id) return;
+        option.flight = null;
+        option.answer = { path, ...answer };
+        // The field settled elsewhere while this was out: ask once more, for where it settled.
+        if (settledPath && path !== settledPath && isOnline(option)) askFolder(option, settledPath);
+        paintFolders();
+      });
+  };
+  /** Asks each online computer that has neither answered for the settled path nor been asked yet, then paints. */
+  const checkFolders = () => {
+    for (const option of options) {
+      if (!option.listing || !settledPath || !isOnline(option)) continue;
+      if (option.answer?.path === settledPath || option.flight) continue;
+      askFolder(option, settledPath);
+    }
+    paintFolders();
+  };
+  /** The field has settled: on leaving it after an edit, on taking a suggestion, on load, and on a pick. */
+  const settle = () => {
+    settledPath = livePath();
+    checkFolders();
+  };
+  directory?.addEventListener('change', settle);
+  // Typing: every card says it does not know yet, and nothing is asked until the field settles.
+  directory?.addEventListener('input', paintFolders);
+
+  // ---- the readings, in the sidebar's vocabulary
+  const andList = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
+  const readingLines = (listing, computer) => {
+    const online = computer ? computer.online : listing.online;
+    const load = !computer ? null : online ? `${computer.running} of ${computer.concurrencyLimit || '∞'} running` : computer.lastSeenAt ? `last seen ${fmtAgo(computer.lastSeenAt)}` : 'not seen yet';
+    const lines = [
+      el('span', { class: `node-state ${online ? 'online' : 'offline'}` }, [
+        el('span', { class: 'glyph', 'aria-hidden': 'true', text: online ? ICONS.online : ICONS.offline }),
+        online ? 'online' : 'offline',
+        load ? ` · ${load}` : null,
+      ]),
     ];
-    if (current && !byId.has(current)) options.push({ value: current, label: `${current} (not connected)` });
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    if (!computer) return lines;
+    const reading = computer.reading;
+    if (reading.limits.length) {
+      // Said before the numbers, as the tile says it, so a reading that could not be refreshed is never taken for a fresh one.
+      if (reading.stale) {
+        lines.push(el('span', { class: 'node-meta stale', text: reading.checkedAt ? `Last known numbers: usage last checked ${fmtAgo(reading.checkedAt)}` : 'Last known numbers: usage could not be refreshed' }));
+      }
+      // The tile's own meters; the reset time only where it matters, to keep each card short.
+      lines.push(el('ul', { class: 'avail-limits', title: reading.stale ? 'Usage out of date' : null }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))));
+    } else {
+      lines.push(el('span', { class: 'node-meta', text: online ? `No usage reading${reading.reason ? `: ${reading.reason}` : ' yet'}` : 'No usage reading while offline' }));
+    }
+    if (reading.account) {
+      lines.push(el('span', { class: 'node-meta' }, [reading.account, reading.sharedWith.length ? ` · same account as ${andList(reading.sharedWith)}` : null]));
+    }
+    return lines;
+  };
+  /** Redraws only the cards whose computer changed, and only their reading, so the radios are never touched. */
+  const paintReadings = (cluster) => {
+    if (!cluster?.computers) return;
+    computers = new Map(cluster.computers.map((computer) => [computer.id, computer]));
+    let flipped = false;
+    for (const option of options) {
+      if (!option.listing) continue;
+      const computer = computers.get(option.value) ?? null;
+      // The minute is in it so "last seen 3 minutes ago" keeps up.
+      const drawn = JSON.stringify([computer, Math.floor(Date.now() / 60000)]);
+      if (drawn === option.drawn) continue;
+      option.drawn = drawn;
+      const online = computer?.online ?? option.listing.online;
+      if (option.online !== undefined && option.online !== online) flipped = true;
+      option.online = online;
+      option.reading.replaceChildren(...readingLines(option.listing, computer));
+    }
+    // A computer that has just come online can now answer for the settled path.
+    if (flipped) checkFolders();
+  };
+  /** The first card names the default node; saving blank follows whatever it is when the job runs, so the name follows the setting. */
+  const paintDefault = (defaultNodeId) => {
+    if (typeof defaultNodeId !== 'string') return;
+    fallbackId = defaultNodeId;
+    const fallback = byId.get(defaultNodeId);
+    const name = fallback ? `Default node — ${fallback.name}` : defaultNodeId ? `Default node — ${defaultNodeId}` : 'Default node';
+    const first = options.find((entry) => entry.value === '' && !entry.listing);
+    if (first && first.name.textContent !== name) first.name.textContent = name;
   };
 
-  paint({});
+  // ---- the cards
+  const option = (optionValue, label, listing) => {
+    const nameId = uid('node-name');
+    const readingId = uid('node-reading');
+    const input = el('input', {
+      type: 'radio',
+      name: group,
+      value: optionValue,
+      checked: optionValue === value,
+      'aria-labelledby': nameId,
+      'aria-describedby': readingId,
+      onchange: () => {
+        value = input.value;
+        onChange(chosen());
+        // A new job's folder follows the node, so the field has settled again once the form has moved it.
+        settle();
+      },
+    });
+    const name = el('span', { class: 'node-opt-name', id: nameId, text: label });
+    const reading = el('span', { class: 'node-reading', id: readingId });
+    const folder = el('span', { class: 'node-folder', hidden: 'hidden' });
+    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [name, reading, folder])]);
+    return { value: optionValue, listing, name, reading, folder, root, drawn: null, online: undefined, flight: null, answer: null };
+  };
+  const paint = ({ nodes = [], defaultNodeId = '' }) => {
+    byId = new Map(nodes.map((node) => [node.id, node]));
+    options = [option('', 'Default node', null), ...nodes.map((node) => option(node.id, node.name, node))];
+    if (value && !byId.has(value)) options.push(option(value, `${value} (not connected)`, null));
+    list.replaceChildren(...options.map((entry) => entry.root));
+    paintDefault(defaultNodeId);
+  };
+
+  // The health poll keeps the cards current until the page lets the form go.
+  const onHealth = (health) => {
+    paintReadings(health.cluster);
+    paintDefault(health.defaultNodeId);
+  };
+  healthListeners.add(onHealth);
+  const dispose = () => {
+    disposed = true;
+    healthListeners.delete(onHealth);
+    directory?.removeEventListener('change', settle);
+    directory?.removeEventListener('input', paintFolders);
+  };
+
   api('/api/nodes')
     .then((state) => {
+      if (disposed) return;
       paint(state);
+      paintReadings(state.cluster);
       onChange(chosen());
+      settle();
     })
     .catch((err) => {
+      if (disposed) return;
+      list.replaceChildren();
       note.textContent = `Could not load the nodes: ${err.message}`;
       note.className = 'hint warn';
     });
 
-  return {
-    read: () => select.value,
-    field: el('div', { class: 'field' }, [el('label', { text: 'Node' }), select, note]),
-  };
+  return { read: () => value, field, dispose };
 }
 
 /**
@@ -2444,6 +2622,7 @@ const NAMING = import('/shared/naming.js').catch(() => null);
  * Save creates a new job instead of writing back to the source.
  */
 async function renderJobForm(kind, id, duplicateOf) {
+  const opened = routeGeneration;
   const oneTime = kind === 'execution';
   const words = oneTime
     ? { noun: 'one-time execution', api: '/api/executions', home: '#/one-time', back: '← All one-time executions', duplicate: '#/one-time/new/', created: 'One-time execution created' }
@@ -2454,6 +2633,8 @@ async function renderJobForm(kind, id, duplicateOf) {
     jobFormSettings(),
     NAMING,
   ]);
+  // The page moved on while this loaded: nothing below may register listeners or claim the view.
+  if (opened !== routeGeneration) return;
   const errorBox = el('div', { class: 'error', role: 'alert', tabindex: '-1', hidden: 'hidden' });
 
   const inputs = {
@@ -2527,6 +2708,7 @@ async function renderJobForm(kind, id, duplicateOf) {
     },
   });
   const node = nodePicker(job?.nodeId ?? '', {
+    directory: inputs.workingDirectory,
     onChange: (listing) => {
       followNodeDirectory(inputs.workingDirectory, listing, Boolean(job));
       settings.followNode(listing);
@@ -2534,6 +2716,7 @@ async function renderJobForm(kind, id, duplicateOf) {
       schedule?.refresh();
     },
   });
+  disposeView = node.dispose;
 
   // ---- when ----
   let schedule = null;
@@ -4161,6 +4344,9 @@ async function route() {
   closeLogStream();
   clearTimeout(logsState.searchTimer);
   repaintQueue = null;
+  disposeView?.();
+  disposeView = null;
+  routeGeneration += 1;
   nodeMachine = null;
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);
@@ -5036,6 +5222,7 @@ const sideUpdateEl = document.getElementById('side-update');
 const announcerEl = document.getElementById('status-announcer');
 
 let healthState = null; // the last /api/health answer
+const healthListeners = new Set(); // told of each answer: the parts of a page that draw from it, such as the job form's Node field
 let healthRefreshTimer = null;
 let statusDrawn = null; // the same for the status page
 let statusBodyEl = null; // the status page's body, while that page is open
@@ -5310,14 +5497,14 @@ function availabilitySentence(availability, alerts, shown, severity) {
   return `${parts.join('. ')}. Opens System status.`;
 }
 
-/** One limit in the tile: name, percentage used, meter, and when it resets. */
-function availLimit(limit) {
+/** One limit in the tile: name, percentage used, meter, and when it resets; `reset: false` leaves that line out where there is no room for it. */
+function availLimit(limit, { reset = true } = {}) {
   const used = Math.max(0, Math.min(100, Number(limit.usedPercent) || 0));
   return el('li', { class: `avail-lim ${limit.status}` }, [
     el('span', { class: 'lim-name', text: limit.name }),
     el('span', { class: 'lim-pct' }, [LIMIT_FLAG[limit.status] ? el('span', { class: 'sr-only', text: `${LIMIT_FLAG[limit.status]}, ` }) : null, `${fmtUsed(used)} used`]),
     el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: `lim-fill ${limit.status}`, style: `width: ${used}%` })]),
-    el('span', { class: 'lim-reset', text: limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported' }),
+    reset ? el('span', { class: 'lim-reset', text: limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported' }) : null,
   ]);
 }
 
@@ -6360,6 +6547,7 @@ async function checkHealth() {
       stream.state = 'connected';
     }
     paintShell();
+    for (const listener of healthListeners) listener(health);
   } catch {
     /* the stream's error handler already reports a lost connection */
   }

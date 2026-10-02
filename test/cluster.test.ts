@@ -10,6 +10,7 @@ import {
   limitName,
   limitStatus,
   machineExceptions,
+  shownLimits,
   tightestWindow,
   unknownAccountUsage,
   waitingJobs,
@@ -270,6 +271,71 @@ describe('clusterSummary', () => {
     const summary = clusterSummary([node({ id: 'mini' }), node({ id: 'air', account: null })], null);
     expect(summary.unknownAccountNodeIds).toEqual(['air']);
     expect(summary.builds.differing).toEqual([]);
+  });
+});
+
+describe("the Node field's reading per computer", () => {
+  const KIM = { id: 'acct-kim', email: 'kim@example.com' };
+  const keys = (summary: ReturnType<typeof clusterSummary>, id: string) => summary.computers.find((computer) => computer.id === id)?.reading.limits.map((limit) => limit.key);
+
+  it('gives computers on one account the same limits, and names the others sharing them', () => {
+    const summary = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 38), usageWindow('weekly_all', 100, 'critical')]) }),
+        node({ id: 'air', name: 'air' }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: reading([usageWindow('session', 12), usageWindow('weekly_all', 21)]) }),
+      ],
+      null,
+    );
+    const [mini, air, studio] = summary.computers;
+    expect(mini?.reading).toMatchObject({ account: 'alex@example.com', sharedWith: ['air'], stale: false, checkedAt: '2026-09-30T12:00:00.000Z' });
+    expect(air?.reading).toMatchObject({ account: 'alex@example.com', sharedWith: ['mini'] });
+    expect(air?.reading.limits).toEqual(mini?.reading.limits);
+    expect(keys(summary, 'mini')).toEqual(['session:0', 'weekly_all:0']);
+    expect(studio?.reading).toMatchObject({ account: 'sam@example.com', sharedWith: [] });
+  });
+
+  it('shows the session and weekly limits, and another only when it is the most used', () => {
+    const windows = (scoped: number) => [usageWindow('session', 38), usageWindow('weekly_all', 61, 'warning'), usageWindow('weekly_scoped', scoped, 'normal', 'Fable')];
+    expect(keys(clusterSummary([node({ usage: reading(windows(95)) })], null), 'mini')).toEqual(['session:0', 'weekly_all:0', 'weekly_scoped:Fable']);
+    expect(keys(clusterSummary([node({ usage: reading(windows(50)) })], null), 'mini')).toEqual(['session:0', 'weekly_all:0']);
+    // The same pick the tile makes.
+    const { availability: found } = clusterSummary([node({ usage: reading(windows(95)) })], null);
+    expect(found.best?.limits.map((limit) => limit.key)).toEqual(['session:0', 'weekly_all:0', 'weekly_scoped:Fable']);
+  });
+
+  it('keeps an offline computer under its account, with the reading its online sibling gives', () => {
+    const summary = clusterSummary(
+      [node({ id: 'galaxy', name: 'galaxy', account: KIM, usage: reading([usageWindow('session', 38), usageWindow('weekly_all', 61)]) }), node({ id: 'mini', account: KIM, online: false })],
+      null,
+    );
+    const mini = summary.computers.find((computer) => computer.id === 'mini');
+    expect(mini).toMatchObject({ online: false, running: 0, reading: { account: 'kim@example.com', sharedWith: ['galaxy'] } });
+    expect(mini?.reading.limits).toHaveLength(2);
+  });
+
+  it('leaves a computer with nothing to show empty, with the reason when the account gives one', () => {
+    const summary = clusterSummary(
+      [
+        node({ id: 'lab', name: 'lab', account: null }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: { ok: false, reason: 'reading usage for the account now signed in', windows: [], checkedAt: null, stale: false } }),
+      ],
+      null,
+    );
+    expect(summary.computers[0]?.reading).toEqual({ account: null, sharedWith: [], limits: [], checkedAt: null, stale: false, reason: null });
+    expect(summary.computers[1]?.reading).toMatchObject({ account: 'sam@example.com', limits: [], reason: 'reading usage for the account now signed in' });
+  });
+
+  it('keeps a computer that has not named its account on its own', () => {
+    const summary = clusterSummary([node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('session', 50)]) })], null);
+    expect(summary.computers[0]?.reading).toMatchObject({ account: 'Account unknown', sharedWith: [] });
+    expect(keys(summary, 'old')).toEqual(['session:0']);
+  });
+
+  it('shownLimits is the tile\'s pick: session, weekly, and the most used when that is another', () => {
+    const limits = clusterSummary([node({ usage: reading([usageWindow('weekly_scoped', 70, 'normal', 'Fable'), usageWindow('session', 38), usageWindow('weekly_all', 61)]) })], null).accounts[0]!.windows;
+    expect(shownLimits(limits).map((limit) => limit.key)).toEqual(['weekly_scoped:Fable', 'session:0', 'weekly_all:0']);
+    expect(shownLimits(limits.filter((limit) => limit.key !== 'weekly_scoped:Fable')).map((limit) => limit.key)).toEqual(['session:0', 'weekly_all:0']);
   });
 });
 
@@ -681,7 +747,7 @@ describe('availability', () => {
       [node({ id: 'mini', running: 2, concurrencyLimit: 4 }), node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('session', 5)]) }), node({ id: 'air', name: 'air', account: null, online: false, running: 3 })],
       null,
     );
-    expect(computers).toEqual([
+    expect(computers).toMatchObject([
       { id: 'mini', name: 'mini', online: true, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 2, concurrencyLimit: 4, accountKey: 'account:acct-alex' },
       { id: 'old', name: 'old', online: true, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 0, concurrencyLimit: 12, accountKey: 'unknown:old' },
       { id: 'air', name: 'air', online: false, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 0, concurrencyLimit: 0, accountKey: null },

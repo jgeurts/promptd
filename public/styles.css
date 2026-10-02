@@ -2631,6 +2631,16 @@ fieldset.when legend {
   grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr);
   gap: 16px;
   align-items: start;
+  container-type: inline-size;
+}
+
+/* Under about 700px of row the Node cards would be narrower than the sidebar
+   tile they borrow from, so the two stack. By the row's own width, since the
+   sidebar takes some of the window's. */
+@container (max-width: 700px) {
+  .where-row > * {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 720px) {
@@ -2641,6 +2651,127 @@ fieldset.when legend {
   .when-hint,
   .when-time {
     margin-left: 0;
+  }
+}
+
+/*
+ * The Node field: one card per computer, a radio with the computer's standing
+ * beside it in the sidebar's words and meters. The whole card is the label,
+ * so anywhere on it picks the node.
+ */
+fieldset.node-field {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.node-field legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.node-opts {
+  display: grid;
+  gap: 8px;
+}
+
+.node-opt {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  background: #12151b;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.node-opt:hover {
+  border-color: var(--control-border);
+}
+
+.node-opt input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.node-opt-body,
+.node-reading {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.node-opt-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.node-state,
+.node-meta,
+.node-folder {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* Online is a filled dot, offline a hollow one, each with its word, as the sidebar draws them. */
+.node-state.online .glyph {
+  color: var(--green);
+}
+
+.node-state.offline .glyph {
+  color: var(--muted);
+}
+
+.node-opt .avail-limits {
+  margin-top: 2px;
+}
+
+.node-meta.stale {
+  color: var(--amber);
+}
+
+.node-folder.ok {
+  color: var(--green);
+}
+
+.node-folder.warn {
+  color: var(--amber);
+}
+
+/* The last answer, while a new one is on its way. */
+.node-folder.pending {
+  opacity: 0.55;
+}
+
+/* The chosen card carries the accent, and the focus ring sits on the card rather than the dot, where the browser can put it there. */
+@supports selector(:has(a)) {
+  .node-opt:has(input:checked) {
+    border-color: var(--accent);
+  }
+
+  .node-opt:has(input:focus-visible) {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .node-opt input:focus-visible {
+    outline: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .node-opt {
+    min-height: 44px;
   }
 }
 
