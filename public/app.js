@@ -965,7 +965,7 @@ function projectLine(job, projects) {
 }
 
 /**
- * The Crons tab: everything the home page showed before the tabs existed. In
+ * The Crons list: everything the home page showed before the lists were split. In
  * the Activity order it is one list, since project headings would split what
  * is running across them; by name it is grouped as it always was. Filtered to
  * one project, it keeps the order asked for and loses the headings, since
@@ -1084,7 +1084,7 @@ function nextRunCell(cron, pause) {
 }
 
 /**
- * The One-time Execution tab: the ten most recent, newest first, and a button
+ * The One-time list: the ten most recent, newest first, and a button
  * that loads ten more.
  *
  * A one-time execution that has run stays here as history. It can be run again
@@ -4591,7 +4591,7 @@ function setServerColor(hex) {
 /**
  * The header's bug and suggestion button. The hub turns what is typed here into
  * a one-time execution, dated now, that has claude file the GitHub issue, so
- * the run is followed like any other on the One-time Execution tab.
+ * the run is followed like any other on the One-time list.
  */
 const feedbackEl = document.getElementById('feedback');
 const feedbackFormEl = document.getElementById('feedback-form');
@@ -5747,13 +5747,18 @@ function paintRunning() {
 
 const STATUS_VIEW_KEY = 'promptd.statusView';
 
-/** How the status block draws each computer, "bars" or "rings": this browser's choice, from Settings. */
-function statusView() {
+/** Read from storage once; held here too, so a browser that blocks storage keeps the choice for the visit. */
+let statusViewChoice = (() => {
   try {
     return localStorage.getItem(STATUS_VIEW_KEY) === 'rings' ? 'rings' : 'bars';
   } catch {
     return 'bars';
   }
+})();
+
+/** How the status block draws each computer, "bars" or "rings": this browser's choice, from Settings. */
+function statusView() {
+  return statusViewChoice;
 }
 
 /** The Settings page's two choices for `statusView`, which redraw the sidebar at once. */
@@ -5763,6 +5768,7 @@ function statusViewPicker() {
     const input = el('input', { type: 'radio', name: 'status-view', value });
     input.checked = value === current;
     input.addEventListener('change', () => {
+      statusViewChoice = value;
       try {
         localStorage.setItem(STATUS_VIEW_KEY, value);
       } catch {
@@ -5811,9 +5817,14 @@ function usedOf(limit) {
   return limit ? Math.max(0, Math.min(100, Number(limit.usedPercent) || 0)) : 0;
 }
 
+/** A reset time to the nearest minute: the account reports 6:59:59 PM for a limit that resets at 7. */
+function toMinute(iso) {
+  return new Date(Math.round(Date.parse(iso) / 60000) * 60000);
+}
+
 /** "4:50 PM" today, "Sat 7 PM" this week, "Oct 12" past it: when a computer is back, as short as it can be said. */
 function fmtBack(iso) {
-  const at = new Date(iso);
+  const at = toMinute(iso);
   const now = new Date();
   const time = at.toLocaleTimeString(undefined, at.getMinutes() ? { hour: 'numeric', minute: '2-digit' } : { hour: 'numeric' });
   if (at.toDateString() === now.toDateString()) return time;
@@ -5823,8 +5834,8 @@ function fmtBack(iso) {
 
 /** "today 6:13 PM", or `fmtWhen`'s "Sat 7:00 PM" and "Oct 12, 3:00 PM" for any other day. */
 function fmtResets(iso) {
-  const at = new Date(iso);
-  return at.toDateString() === new Date().toDateString() ? `today ${at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : fmtWhen(iso);
+  const at = toMinute(iso);
+  return at.toDateString() === new Date().toDateString() ? `today ${at.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : fmtWhen(at.toISOString());
 }
 
 /**
@@ -5837,7 +5848,8 @@ function nodeState(node) {
   const reached = readingWindows(node).filter((limit) => limit.status === 'reached');
   if (!reached.length) return { kind: 'open', text: 'open' };
   const resets = reached.map((limit) => limit.resetsAt).filter(Boolean).sort();
-  return { kind: 'held', text: resets.length === reached.length ? `back ${fmtBack(resets.at(-1))}` : 'used up', at: resets.at(-1) ?? null };
+  const known = resets.length === reached.length;
+  return { kind: 'held', text: known ? `back ${fmtBack(resets.at(-1))}` : 'used up', at: known ? resets.at(-1) : null };
 }
 
 /** The small line under a row, when there is one: when an offline computer was last heard, or why there are no bars. */
@@ -5859,12 +5871,12 @@ function nodeWords(node) {
 
 /** A thin bar for one limit, filling as it is used, the same colour whether or not it is full. */
 function usageBar(limit, kind) {
-  return el('span', { class: 'node-bar' }, [el('i', { class: kind, style: `width: ${usedOf(limit)}%` })]);
+  return el('span', { class: 'sn-bar' }, [el('i', { class: kind, style: `width: ${usedOf(limit)}%` })]);
 }
 
 function runningMark(node) {
   return node.online && node.running
-    ? el('span', { class: 'node-run' }, [el('span', { 'aria-hidden': 'true', text: '▸' }), ` ${node.running} running`])
+    ? el('span', { class: 'sn-run' }, [el('span', { 'aria-hidden': 'true', text: '▸' }), ` ${node.running} running`])
     : null;
 }
 
@@ -5873,20 +5885,20 @@ function nodeBarsRow(node) {
   const state = nodeState(node);
   const windows = readingWindows(node);
   const meta = nodeMeta(node);
-  return el('li', { class: `node-row ${state.kind}` }, [
-    el('a', { class: 'node-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
-      el('span', { class: 'node-head' }, [
-        el('span', { class: 'node-name', text: shortHost(node.name) }),
+  return el('li', { class: `sn-row ${state.kind}` }, [
+    el('a', { class: 'sn-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
+      el('span', { class: 'sn-head' }, [
+        el('span', { class: 'sn-name', text: shortHost(node.name) }),
         runningMark(node),
-        el('span', { class: 'node-state', text: state.text }),
+        el('span', { class: 'sn-state', text: state.text }),
       ]),
       node.online && windows.length
-        ? el('span', { class: 'node-bars', 'aria-hidden': 'true' }, [
+        ? el('span', { class: 'sn-bars', 'aria-hidden': 'true' }, [
             usageBar(windows.find((limit) => limitKind(limit) === 'session'), 'session'),
             usageBar(windows.find((limit) => limitKind(limit) === 'weekly_all'), 'week'),
           ])
         : null,
-      meta ? el('span', { class: 'node-meta', text: meta }) : null,
+      meta ? el('span', { class: 'sn-meta', text: meta }) : null,
       el('span', { class: 'sr-only', text: ` ${nodeWords(node)}` }),
     ]),
   ]);
@@ -5904,7 +5916,7 @@ function ringsSvg(node, state) {
     const cap = used >= 100 ? 'butt' : 'round';
     return `${track}<circle cx="36" cy="36" r="${r}" fill="none" stroke="${color}" stroke-width="6" stroke-linecap="${cap}" stroke-dasharray="${((around * used) / 100).toFixed(1)} ${around.toFixed(1)}" transform="rotate(-90 36 36)"/>`;
   };
-  const back = state.kind === 'held' && state.at ? new Date(state.at) : null;
+  const back = state.kind === 'held' && state.at ? toMinute(state.at) : null;
   const words = back
     ? [
         back.toDateString() === new Date().toDateString() ? 'back' : back.toLocaleDateString(undefined, { weekday: 'short' }),
@@ -5929,11 +5941,11 @@ function ringCaption(node, state) {
 function nodeRingCell(node) {
   const state = nodeState(node);
   const drawn = node.online && readingWindows(node).length;
-  return el('li', { class: `node-cell ${state.kind}` }, [
-    el('a', { class: 'node-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
-      drawn ? el('span', { class: 'node-ring', html: ringsSvg(node, state) }) : el('span', { class: 'node-ring empty', 'aria-hidden': 'true', text: node.online ? 'no reading' : 'offline' }),
-      el('span', { class: 'node-name', text: shortHost(node.name) }),
-      el('span', { class: 'node-state' }, [runningMark(node) ?? ringCaption(node, state)]),
+  return el('li', { class: `sn-cell ${state.kind}` }, [
+    el('a', { class: 'sn-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
+      drawn ? el('span', { class: 'sn-ring', html: ringsSvg(node, state) }) : el('span', { class: 'sn-ring empty', 'aria-hidden': 'true', text: node.online ? 'no reading' : 'offline' }),
+      el('span', { class: 'sn-name', text: shortHost(node.name) }),
+      el('span', { class: 'sn-state' }, [runningMark(node) ?? ringCaption(node, state)]),
       el('span', { class: 'sr-only', text: ` ${state.text}. ${nodeWords(node)}` }),
     ]),
   ]);
@@ -5952,7 +5964,7 @@ function paintNodes() {
   sideOpenEl.textContent = computers.length ? `${open} of ${computers.length} open` : '';
   sideNodesEl.className = `side-nodes ${mode}`;
   if (!computers.length) {
-    sideNodesEl.replaceChildren(el('li', { class: 'node-meta', text: 'No computers connected' }));
+    sideNodesEl.replaceChildren(el('li', { class: 'sn-meta', text: 'No computers connected' }));
     sideKeysEl.hidden = true;
   } else {
     sideNodesEl.replaceChildren(...computers.map(mode === 'rings' ? nodeRingCell : nodeBarsRow));
@@ -5969,7 +5981,7 @@ function paintNodes() {
 // computers' own, its name and the share used above a bar, when it resets
 // beneath. Drawn for the eye; the row's own words carry the same to a screen
 // reader, so this stays out of the accessibility tree.
-const nodeTipEl = el('div', { class: 'node-tip', 'aria-hidden': 'true', hidden: '' });
+const nodeTipEl = el('div', { class: 'sn-tip', 'aria-hidden': 'true', hidden: '' });
 document.body.append(nodeTipEl);
 let nodeTipFor = null; // the computer whose details are showing
 
@@ -6015,15 +6027,25 @@ function showNodeTip(link) {
 }
 
 function hideNodeTip() {
+  clearTimeout(nodeTipLeaving);
   nodeTipFor = null;
   nodeTipEl.hidden = true;
 }
 
+// Leaving the row starts a short wait, so the pointer can cross to the hover and scroll it; reaching the hover cancels it.
+let nodeTipLeaving = null;
+function hideNodeTipSoon() {
+  clearTimeout(nodeTipLeaving);
+  nodeTipLeaving = setTimeout(hideNodeTip, 150);
+}
 sideNodesEl.addEventListener('pointerover', (event) => {
+  clearTimeout(nodeTipLeaving);
   const link = event.target.closest('[data-node-id]');
   if (link && link.dataset.nodeId !== nodeTipFor) showNodeTip(link);
 });
-sideNodesEl.addEventListener('pointerleave', hideNodeTip);
+sideNodesEl.addEventListener('pointerleave', hideNodeTipSoon);
+nodeTipEl.addEventListener('pointerenter', () => clearTimeout(nodeTipLeaving));
+nodeTipEl.addEventListener('pointerleave', hideNodeTipSoon);
 sideNodesEl.addEventListener('focusin', (event) => showNodeTip(event.target.closest('[data-node-id]')));
 sideNodesEl.addEventListener('focusout', hideNodeTip);
 addEventListener('resize', hideNodeTip);
@@ -6047,16 +6069,22 @@ function diskLevel(disk) {
   return disk.value >= DISK_CRITICAL_AT ? 'critical' : 'warning';
 }
 
-/** Which computers' banners were hidden, and at which level, as this browser remembers. */
-function hiddenDisks() {
+/** Which computers' banners were hidden, and at which level: read from storage once, then held here too. */
+let hiddenDiskLevels = (() => {
   try {
-    return JSON.parse(localStorage.getItem(DISK_HIDDEN_KEY) || '{}') ?? {};
+    const stored = JSON.parse(localStorage.getItem(DISK_HIDDEN_KEY) || '{}');
+    return stored && typeof stored === 'object' ? stored : {};
   } catch {
     return {};
   }
+})();
+
+function hiddenDisks() {
+  return { ...hiddenDiskLevels };
 }
 
 function saveHiddenDisks(hidden) {
+  hiddenDiskLevels = { ...hidden };
   try {
     localStorage.setItem(DISK_HIDDEN_KEY, JSON.stringify(hidden));
   } catch {
@@ -6073,6 +6101,14 @@ const diskBannerEl = document.getElementById('disk-banner');
  * it shows again if it fills again.
  */
 function paintDiskBanner() {
+  const focused = diskBannerEl.contains(document.activeElement) ? document.activeElement.dataset.bannerKey : null;
+  paintDiskBannerParts();
+  if (!focused) return;
+  const again = diskBannerEl.hidden ? null : diskBannerEl.querySelector(`[data-banner-key="${focused}"]`);
+  (again ?? view).focus({ preventScroll: true });
+}
+
+function paintDiskBannerParts() {
   const disks = fullDisks();
   const hidden = hiddenDisks();
   const present = new Set(disks.map((disk) => disk.nodeId));
@@ -6097,20 +6133,21 @@ function paintDiskBanner() {
       el('b', { text: `${name}'s disk is ${Math.round(worst.value)}% full.` }),
       ' ',
       el('span', { class: 'banner-why', text: critical ? 'Jobs there will fail when it fills.' : 'Jobs there fail once it fills.' }),
-      shown.length > 1 ? el('a', { class: 'banner-more', href: '#/status/computers', text: ` +${shown.length - 1} more` }) : null,
+      shown.length > 1 ? el('a', { class: 'banner-more', href: '#/status/computers', 'data-banner-key': 'more', text: ` +${shown.length - 1} more` }) : null,
     ]),
-    el('a', { class: 'banner-link', href: `#/nodes/${encodeURIComponent(worst.nodeId)}`, text: `Open ${name}` }),
+    el('a', { class: 'banner-link', href: `#/nodes/${encodeURIComponent(worst.nodeId)}`, 'data-banner-key': 'open', text: `Open ${name}` }),
     el('button', {
       type: 'button',
       class: 'btn small icon banner-close',
       'aria-label': 'Hide until it gets worse',
       title: 'Hide until it gets worse',
+      'data-banner-key': 'close',
       html: '&times;',
       onclick: () => {
         const next = hiddenDisks();
         for (const disk of shown) next[disk.nodeId] = diskLevel(disk);
         saveHiddenDisks(next);
-        paintDiskBanner();
+        paintDiskBannerParts();
         view.focus({ preventScroll: true });
       },
     }),
@@ -6123,6 +6160,12 @@ function syncBannerHeight() {
   document.documentElement.style.setProperty('--banner-h', diskBannerEl.hidden ? '0px' : `${diskBannerEl.offsetHeight}px`);
 }
 addEventListener('resize', syncBannerHeight);
+
+// The banner sticks under the header, which wraps taller than --topbar-h on a phone.
+const topbarEl = document.querySelector('.topbar');
+if (topbarEl && 'ResizeObserver' in window) {
+  new ResizeObserver(() => document.documentElement.style.setProperty('--header-h', `${topbarEl.offsetHeight}px`)).observe(topbarEl);
+}
 
 /** Marks the item for the open page, and the project the list is filtered to. */
 function syncCurrent() {
@@ -6181,7 +6224,7 @@ function paintShell() {
   if (changed('strip', [strip, cluster.nodes.online, cluster.nodes.total])) paintStrip(strip);
   if (changed('running', (healthState.runningJobs ?? []).map((run) => [run.cronId, run.cronName, run.kind, run.nodeId, run.nodeName, run.startedAt]))) paintRunning();
   if (changed('nodes', [cluster.computers, minute, statusView()])) paintNodes();
-  if (changed('banner', [fullDisks().map((disk) => [disk.nodeId, disk.nodeName, Math.round(disk.value)])])) paintDiskBanner();
+  if (changed('banner', [fullDisks().map((disk) => [disk.nodeId, disk.nodeName, Math.round(disk.value), diskLevel(disk)])])) paintDiskBanner();
   syncCurrent();
   if (focused) sidebarEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }

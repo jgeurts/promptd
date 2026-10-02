@@ -239,10 +239,10 @@ a {
   grid-column: 1;
   grid-row: 3;
   position: sticky;
-  top: calc(var(--topbar-h) + var(--banner-h, 0px));
+  top: calc(var(--header-h, var(--topbar-h)) + var(--banner-h, 0px));
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--topbar-h) - var(--banner-h, 0px));
+  height: calc(100vh - var(--header-h, var(--topbar-h)) - var(--banner-h, 0px));
   overflow: hidden;
   padding: 12px 10px 12px;
   border-right: 1px solid var(--border);
@@ -506,11 +506,11 @@ a {
 
 .side-mark.updated::before,
 .side-mark.update::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   background: var(--primary-bg);
-}
-
-.side-mark.update::before {
-  background: var(--warn);
 }
 
 .side-mark[hidden] {
@@ -686,7 +686,7 @@ a {
   gap: 6px 2px;
 }
 
-.node-link {
+.sn-link {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -695,23 +695,23 @@ a {
   color: var(--text);
 }
 
-.node-link:hover {
+.sn-link:hover {
   background: var(--panel-2);
 }
 
-.node-link:focus-visible {
+.sn-link:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
-.node-head {
+.sn-head {
   display: flex;
   align-items: baseline;
   gap: 8px;
   min-width: 0;
 }
 
-.node-name {
+.sn-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -720,14 +720,14 @@ a {
   font-weight: 600;
 }
 
-.node-run {
+.sn-run {
   flex: none;
   color: var(--ok);
   font-size: 11.5px;
   white-space: nowrap;
 }
 
-.node-state {
+.sn-state {
   flex: none;
   margin-left: auto;
   color: var(--text);
@@ -736,27 +736,27 @@ a {
   white-space: nowrap;
 }
 
-.node-row.held .node-state {
+.sn-row.held .sn-state {
   color: var(--text-2);
 }
 
-.node-row.offline .node-name,
-.node-cell.offline .node-name {
+.sn-row.offline .sn-name,
+.sn-cell.offline .sn-name {
   color: var(--muted);
 }
 
-.node-row.offline .node-state,
-.node-cell.offline .node-ring.empty {
+.sn-row.offline .sn-state,
+.sn-cell.offline .sn-ring.empty {
   color: var(--fail);
 }
 
-.node-bars {
+.sn-bars {
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
-.node-bar {
+.sn-bar {
   display: block;
   height: 4px;
   border-radius: 2px;
@@ -764,30 +764,30 @@ a {
   overflow: hidden;
 }
 
-.node-bar i {
+.sn-bar i {
   display: block;
   height: 100%;
   border-radius: 2px;
 }
 
-.node-bar .session,
-.node-keys .session {
+.sn-bar .session,
+.sn-keys .session {
   background: var(--meter-session);
 }
 
-.node-bar .week,
-.node-keys .week {
+.sn-bar .week,
+.sn-keys .week {
   background: var(--meter-week);
 }
 
-.node-meta {
+.sn-meta {
   color: var(--muted);
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 
 /* Which bar is which, said once under the computers. */
-.node-keys {
+.sn-keys {
   display: flex;
   gap: 12px;
   padding: 2px 8px 0;
@@ -795,17 +795,17 @@ a {
   font-size: 11px;
 }
 
-.node-keys[hidden] {
+.sn-keys[hidden] {
   display: none;
 }
 
-.node-keys .key {
+.sn-keys .key {
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
 
-.node-keys i {
+.sn-keys i {
   display: inline-block;
   width: 12px;
   height: 4px;
@@ -813,14 +813,14 @@ a {
 }
 
 /* As rings, three to a row: the week outside, the session inside, the share used or when it is back in the middle. */
-.node-cell .node-link {
+.sn-cell .sn-link {
   align-items: center;
   gap: 2px;
   padding: 6px 2px;
   text-align: center;
 }
 
-.node-ring {
+.sn-ring {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -828,33 +828,33 @@ a {
   height: 64px;
 }
 
-.node-ring svg {
+.sn-ring svg {
   display: block;
 }
 
-.node-ring .ring-num {
+.sn-ring .ring-num {
   fill: var(--text);
   font-size: 13px;
   font-weight: 600;
 }
 
-.node-ring .ring-word {
+.sn-ring .ring-word {
   fill: var(--text-2);
   font-size: 11px;
 }
 
-.node-ring.empty {
+.sn-ring.empty {
   color: var(--muted);
   font-size: 12px;
 }
 
-.node-cell .node-name {
+.sn-cell .sn-name {
   max-width: 100%;
   margin-top: 2px;
   font-size: 12.5px;
 }
 
-.node-cell .node-state {
+.sn-cell .sn-state {
   margin: 0;
   color: var(--muted);
   font-size: 11px;
@@ -862,7 +862,7 @@ a {
 }
 
 /* The hover: each limit as a computer's row is drawn, its name and the share used over a bar, when it resets beneath. */
-.node-tip {
+.sn-tip {
   position: fixed;
   z-index: 70;
   display: grid;
@@ -876,10 +876,12 @@ a {
   color: var(--text);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
-  pointer-events: none;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
-.node-tip[hidden] {
+.sn-tip[hidden] {
   display: none;
 }
 
@@ -909,7 +911,7 @@ a {
   gap: 8px;
 }
 
-.tip-lim .node-bar {
+.tip-lim .sn-bar {
   height: 5px;
 }
 
@@ -936,7 +938,7 @@ a {
   grid-column: 1 / -1;
   grid-row: 2;
   position: sticky;
-  top: var(--topbar-h);
+  top: var(--header-h, var(--topbar-h));
   z-index: 4;
   display: flex;
   flex-wrap: wrap;
@@ -1342,11 +1344,18 @@ a {
     width: 44px;
     height: 44px;
   }
-  .side-alert,
-  .node-link {
+  .side-alert {
     min-height: 44px;
     display: inline-flex;
     align-items: center;
+  }
+  /* A computer's row is a column of name and bars; it only needs the height. */
+  .sn-link {
+    min-height: 44px;
+  }
+  .banner-close {
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -1425,9 +1434,6 @@ a {
   }
   .status-strip {
     display: flex;
-  }
-  .disk-banner {
-    position: static;
   }
   .status-strip[hidden] {
     display: none;

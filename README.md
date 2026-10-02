@@ -18,7 +18,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - A notification centre behind the bell: everything the server announces, kept on disk, sorted by whether it needs you, named by the machine it happened on, with repeats kept to one row and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
-![The Crons tab: five scheduled prompts with their status, last run and next run](docs/images/crons.png)
+![The Crons list: five scheduled prompts with their status, last run and next run](docs/images/crons.png)
 
 ![One run's log: the prompt, Claude's output, and the model, tokens and cost it reported](docs/images/run-log.png)
 
