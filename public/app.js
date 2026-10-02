@@ -1,5 +1,5 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
-import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
+import { isActiveForSave, nodeReadings, scheduledAtForSave } from '/shared/jobFormRules.js';
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -2383,46 +2383,176 @@ function projectPicker(selected) {
   return { read: () => select.value, field };
 }
 
-function nodePicker(selected, { onChange = () => {} } = {}) {
-  const select = el('select', { class: 'select mono' });
+/**
+ * Which node runs the job. Blank follows the default node, so changing the default moves it.
+ *
+ * A radio group rather than a menu, so each computer says at a glance how it
+ * stands, in the sidebar's words: online or offline, how many jobs it runs of
+ * its limit, and its account's session and weekly use on the tile's meters.
+ * Computers on one account share one reading, and say so. With a Working
+ * Directory typed, each says whether it has that folder. All of it is
+ * information, none of it a check: an offline computer, or one without the
+ * folder, can still be chosen and saved. The readings follow the sidebar's
+ * health poll, repainted in place so the choice and the focus hold still.
+ *
+ * `onChange` gets the listing of the node that would run it, once the nodes
+ * load and on every pick; `directory` is the Working Directory input.
+ */
+function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
+  const group = uid('node');
+  const list = el('div', { class: 'node-opts' }, [el('span', { class: 'node-meta', text: 'Loading the nodes…' })]);
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
+  const field = el('fieldset', { class: 'field node-field' }, [el('legend', { text: 'Node' }), list, note]);
   const current = selected ?? '';
-  let byId = new Map();
+  let byId = new Map(); // the listings /api/nodes gave
   let fallbackId = '';
-  const chosen = () => byId.get(select.value || fallbackId) ?? null;
-  select.addEventListener('change', () => onChange(chosen()));
+  let options = []; // one per radio: { value, listing, reading, folder, drawn, online }
+  let readings = new Map(); // by node id, from the last cluster summary seen
+  const read = () => list.querySelector('input:checked')?.value ?? '';
+  const chosen = () => byId.get(read() || fallbackId) ?? null;
 
+  // ---- the folder check: each online computer is asked whether it has the Working Directory
+  let folderTimer = null;
+  let folderAsked = 0;
+  const sayFolder = (option, text, status) => {
+    option.folder.textContent = text;
+    option.folder.className = `node-folder${status ? ` ${status}` : ''}`;
+  };
+  const checkFolders = () => {
+    const path = directory?.value.trim() ?? '';
+    const asked = ++folderAsked;
+    for (const option of options) {
+      if (!option.listing) continue;
+      option.folder.hidden = !path;
+      if (!path) continue;
+      if (!(readings.get(option.value)?.online ?? option.listing.online)) {
+        sayFolder(option, 'Offline, so the folder is not checked', '');
+        continue;
+      }
+      // The last answer stands, dimmed, while the next is on its way, so typing does not flicker.
+      if (!option.folder.textContent) sayFolder(option, 'Checking for the folder…', '');
+      option.folder.classList.add('pending');
+      api(`/api/browse?path=${encodeURIComponent(path)}&node=${encodeURIComponent(option.value)}`)
+        .then((result) => {
+          if (asked === folderAsked) sayFolder(option, result.exists ? 'Folder found' : 'Folder not on this Mac', result.exists ? 'ok' : 'warn');
+        })
+        .catch((err) => {
+          if (asked === folderAsked) sayFolder(option, `Folder not checked: ${err.message}`, '');
+        });
+    }
+  };
+  const scheduleFolders = () => {
+    clearTimeout(folderTimer);
+    folderTimer = setTimeout(checkFolders, 400);
+  };
+  directory?.addEventListener('input', scheduleFolders);
+
+  // ---- the readings, in the sidebar's vocabulary
+  const andList = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
+  const readingLines = (listing, reading) => {
+    const online = reading ? reading.online : listing.online;
+    const load = !reading ? null : online ? `${reading.running} of ${reading.concurrencyLimit || '∞'} running` : reading.lastSeenAt ? `last seen ${fmtAgo(reading.lastSeenAt)}` : 'not seen yet';
+    const lines = [
+      el('span', { class: `node-state ${online ? 'online' : 'offline'}` }, [
+        el('span', { class: 'glyph', 'aria-hidden': 'true', text: online ? ICONS.online : ICONS.offline }),
+        online ? 'online' : 'offline',
+        load ? ` · ${load}` : null,
+      ]),
+    ];
+    if (!reading) return lines;
+    if (reading.limits.length) {
+      // The tile's own meters; the reset time only where it matters, to keep each card short.
+      lines.push(el('ul', { class: 'avail-limits' }, reading.limits.map((limit) => availLimit(limit, { reset: limit.status !== 'ok' }))));
+      if (reading.stale) lines.push(el('span', { class: 'node-meta stale', text: `Usage last checked ${fmtAgo(reading.checkedAt)}, so it may be out of date` }));
+    } else {
+      lines.push(el('span', { class: 'node-meta', text: online ? `No usage reading${reading.reason ? `: ${reading.reason}` : ' yet'}` : 'No usage reading while offline' }));
+    }
+    if (reading.account) {
+      lines.push(el('span', { class: 'node-meta' }, [reading.account, reading.sharedWith.length ? ` · same account as ${andList(reading.sharedWith)}` : null]));
+    }
+    return lines;
+  };
+  /** Redraws only the cards whose reading changed, and only their reading, so the radios are never touched. */
+  const paintReadings = (cluster) => {
+    if (!cluster?.computers) return;
+    readings = nodeReadings(cluster);
+    let flipped = false;
+    for (const option of options) {
+      if (!option.listing) continue;
+      const reading = readings.get(option.value) ?? null;
+      // The minute is in it so "last seen 3 minutes ago" keeps up.
+      const drawn = JSON.stringify([reading, Math.floor(Date.now() / 60000)]);
+      if (drawn === option.drawn) continue;
+      option.drawn = drawn;
+      const online = reading?.online ?? option.listing.online;
+      if (option.online !== undefined && option.online !== online) flipped = true;
+      option.online = online;
+      option.reading.replaceChildren(...readingLines(option.listing, reading));
+    }
+    // A computer that has just come online can now answer for the folder.
+    if (flipped) scheduleFolders();
+  };
+
+  // ---- the cards
+  const option = (value, label, listing) => {
+    const nameId = uid('node-name');
+    const readingId = uid('node-reading');
+    const input = el('input', {
+      type: 'radio',
+      name: group,
+      value,
+      checked: value === current,
+      'aria-labelledby': nameId,
+      'aria-describedby': readingId,
+      onchange: () => {
+        onChange(chosen());
+        // A new job's folder follows the node, so the check runs again after the form has moved it.
+        scheduleFolders();
+      },
+    });
+    const reading = el('span', { class: 'node-reading', id: readingId });
+    const folder = el('span', { class: 'node-folder', hidden: 'hidden' });
+    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [el('span', { class: 'node-opt-name', id: nameId, text: label }), reading, folder])]);
+    return { value, listing, reading, folder, root, drawn: null, online: undefined };
+  };
   const paint = ({ nodes = [], defaultNodeId = '' }) => {
     byId = new Map(nodes.map((node) => [node.id, node]));
     fallbackId = defaultNodeId;
-    const label = (node) => `${node.name}${node.online ? '' : ' (offline)'}`;
     const fallback = byId.get(defaultNodeId);
-    const options = [
-      { value: '', label: fallback ? `Default node (${label(fallback)})` : 'Default node' },
-      ...nodes.map((node) => ({ value: node.id, label: label(node) })),
+    options = [
+      option('', fallback ? `Default node — ${fallback.name}` : 'Default node', null),
+      ...nodes.map((node) => option(node.id, node.name, node)),
     ];
-    if (current && !byId.has(current)) options.push({ value: current, label: `${current} (not connected)` });
-    select.replaceChildren(
-      ...options.map((option) => el('option', { value: option.value, selected: option.value === current }, option.label)),
-    );
-    select.value = current;
+    if (current && !byId.has(current)) options.push(option(current, `${current} (not connected)`, null));
+    list.replaceChildren(...options.map((entry) => entry.root));
   };
 
-  paint({});
+  // The health poll keeps the cards current for as long as the form is on the page.
+  let shown = false;
+  const onHealth = (health) => {
+    if (field.isConnected) shown = true;
+    else if (shown) {
+      healthListeners.delete(onHealth);
+      return;
+    }
+    paintReadings(health.cluster);
+  };
+
   api('/api/nodes')
     .then((state) => {
       paint(state);
+      paintReadings(state.cluster);
+      healthListeners.add(onHealth);
       onChange(chosen());
+      scheduleFolders();
     })
     .catch((err) => {
+      list.replaceChildren();
       note.textContent = `Could not load the nodes: ${err.message}`;
       note.className = 'hint warn';
     });
 
-  return {
-    read: () => select.value,
-    field: el('div', { class: 'field' }, [el('label', { text: 'Node' }), select, note]),
-  };
+  return { read, field };
 }
 
 /**
@@ -2527,6 +2657,7 @@ async function renderJobForm(kind, id, duplicateOf) {
     },
   });
   const node = nodePicker(job?.nodeId ?? '', {
+    directory: inputs.workingDirectory,
     onChange: (listing) => {
       followNodeDirectory(inputs.workingDirectory, listing, Boolean(job));
       settings.followNode(listing);
@@ -5036,6 +5167,7 @@ const sideUpdateEl = document.getElementById('side-update');
 const announcerEl = document.getElementById('status-announcer');
 
 let healthState = null; // the last /api/health answer
+const healthListeners = new Set(); // told of each answer: the parts of a page that draw from it, such as the job form's Node field
 let healthRefreshTimer = null;
 let statusDrawn = null; // the same for the status page
 let statusBodyEl = null; // the status page's body, while that page is open
@@ -5310,14 +5442,14 @@ function availabilitySentence(availability, alerts, shown, severity) {
   return `${parts.join('. ')}. Opens System status.`;
 }
 
-/** One limit in the tile: name, percentage used, meter, and when it resets. */
-function availLimit(limit) {
+/** One limit in the tile: name, percentage used, meter, and when it resets; `reset: false` leaves that line out where there is no room for it. */
+function availLimit(limit, { reset = true } = {}) {
   const used = Math.max(0, Math.min(100, Number(limit.usedPercent) || 0));
   return el('li', { class: `avail-lim ${limit.status}` }, [
     el('span', { class: 'lim-name', text: limit.name }),
     el('span', { class: 'lim-pct' }, [LIMIT_FLAG[limit.status] ? el('span', { class: 'sr-only', text: `${LIMIT_FLAG[limit.status]}, ` }) : null, `${fmtUsed(used)} used`]),
     el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: `lim-fill ${limit.status}`, style: `width: ${used}%` })]),
-    el('span', { class: 'lim-reset', text: limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported' }),
+    reset ? el('span', { class: 'lim-reset', text: limit.resetsAt ? `Resets ${fmtIn(limit.resetsAt)}, ${fmtWhen(limit.resetsAt)}` : 'No reset time reported' }) : null,
   ]);
 }
 
@@ -6360,6 +6492,7 @@ async function checkHealth() {
       stream.state = 'connected';
     }
     paintShell();
+    for (const listener of healthListeners) listener(health);
   } catch {
     /* the stream's error handler already reports a lost connection */
   }
