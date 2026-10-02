@@ -2971,7 +2971,7 @@ details.more-options > summary:focus-visible {
 }
 
 .log-tool.failed {
-  color: var(--red);
+  color: var(--fail);
 }
 
 /*
@@ -3020,7 +3020,7 @@ details.more-options > summary:focus-visible {
 }
 
 .log-tools > summary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: -2px;
 }
 
@@ -3065,11 +3065,11 @@ details.more-options > summary:focus-visible {
 
 /* A status someone can act on. The label says which; the colour only points at it. */
 .log-tools-row.warn dt {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .log-tools-row.bad dt {
-  color: var(--red);
+  color: var(--fail);
 }
 
 .breadcrumb {
