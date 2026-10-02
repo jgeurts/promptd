@@ -885,6 +885,8 @@ async function renderHome(tab = 'crons') {
   let expected = location.hash;
   const { project: projectId } = parseHash();
   const [pause, summary, projects] = await Promise.all([api('/api/pause'), api('/api/job-activity').catch(() => null), api('/api/projects')]);
+  // A newer render, or a move to another page, landed while this one waited: it must touch neither the page nor the address.
+  if (renderId !== homeRenderId || location.hash !== expected) return;
   if (summary) setActivityCounts(summary.counts);
   // The project the sidebar filtered both lists to. One that is gone, or never was, filters nothing, and the address says so.
   const project = projectId ? (projects.find((candidate) => candidate.id === projectId) ?? null) : null;
@@ -927,7 +929,7 @@ async function renderHome(tab = 'crons') {
   const scope = { projects, project };
   const order = tab === 'executions' ? await paintExecutions(panel, pause, sub, unread, scope) : await paintCrons(panel, pause, sub, unread, scope);
 
-  // A newer render, or a move to another page, landed while this one waited.
+  // Checked again: the list's own requests took time too.
   if (renderId !== homeRenderId || location.hash !== expected) return;
   // What is on screen is what a held list holds to; Name and Date hold nothing.
   Object.assign(listOrder, order ?? NO_ORDER);
@@ -5238,9 +5240,13 @@ function closeOverlays() {
 }
 
 menuEl.addEventListener('click', () => (sidebarOpen ? closeSidebar() : openSidebar()));
-// A link to the page already open fires no hashchange, so a drawer link closes the drawer here as well.
+// A link to the page already open fires no hashchange, so a drawer link closes the drawer here as well,
+// and with no new page to land on, focus goes to the heading of the one open rather than nowhere.
 sidebarEl.addEventListener('click', (event) => {
-  if (event.target.closest?.('a[href]')) closeSidebar({ restoreFocus: false });
+  const link = event.target.closest?.('a[href]');
+  if (!link || !sidebarOpen) return;
+  closeSidebar({ restoreFocus: false });
+  if (new URL(link.href, location.href).hash === location.hash) focusPage();
 });
 sidebarCloseEl.addEventListener('click', () => closeSidebar());
 drawerBackdropEl?.addEventListener('click', () => {
@@ -5267,11 +5273,19 @@ document.getElementById('skip-link')?.addEventListener('click', (event) => {
 
 /**
  * The alerts the tile itself shows. With several accounts the line under the
- * meters already says how the accounts stand, so the account alerts are left
- * out here; the tile's severity and where it links still come from all of them.
+ * meters says how the other accounts stand and a flag on a meter says the
+ * best's, so an alert that only counts accounts is left out; one about a
+ * flagged limit the best account's meters leave out is named in its place.
+ * The tile's severity and where it links still come from all of them.
  */
 function tileAlerts(alerts, availability) {
-  return availability.accounts > 1 ? alerts.filter((alert) => alert.id !== 'accounts-reached' && alert.id !== 'accounts-near') : alerts;
+  const { best, accounts } = availability;
+  if (accounts <= 1 || !best) return alerts;
+  return alerts.flatMap((alert) => {
+    if (alert.id !== 'accounts-reached' && alert.id !== 'accounts-near') return [alert];
+    const named = best.unshown.find((entry) => entry.status === (alert.id === 'accounts-reached' ? 'reached' : 'near'));
+    return named ? [{ ...alert, text: named.text }] : [];
+  });
 }
 
 /** "5-hour session 61% used", or for a reading that could not be refreshed, "last known 5-hour session 61% used". */
@@ -5290,7 +5304,7 @@ function availabilitySentence(availability, alerts, shown, severity) {
   const { best, others } = availability;
   if (best) parts.push(`${best.nodeNames.join(', ') || best.title}: ${best.stale ? 'usage out of date, ' : ''}${bottleneckWords(best)}`);
   else parts.push('No usage reading yet');
-  if (others.text) parts.push(others.text);
+  if (others.text) parts.push(othersWords(availability));
   if (shown.length) parts.push(`${shown[0].text}${shown.length > 1 ? `, ${shown.length - 1} more` : ''}`);
   else if (!alerts.length) parts.push(SEVERITY[severity].word);
   return `${parts.join('. ')}. Opens System status.`;
@@ -5310,6 +5324,17 @@ function availLimit(limit) {
 /** "1 reading out of date", "2 readings out of date". */
 function staleWords(n) {
   return `${n} reading${n === 1 ? '' : 's'} out of date`;
+}
+
+/** How many of the other accounts' readings are stale: the best's own staleness is said beside its numbers. */
+function staleOthers({ best, staleAccounts }) {
+  return Math.max(0, staleAccounts - (best?.stale ? 1 : 0));
+}
+
+/** The line on the other accounts, qualified when any of them is compared on old numbers: "2 other accounts at their weekly limit, 1 reading out of date". */
+function othersWords(availability) {
+  const stale = staleOthers(availability);
+  return `${availability.others.text}${stale ? `, ${staleWords(stale)}` : ''}`;
 }
 
 /**
@@ -5370,7 +5395,7 @@ function paintAvailability(alerts) {
       el('span', { class: 'avail-head' }, [glyph, head]),
       el('div', { class: 'avail-who' }, [best.nodeNames.join(', ') || best.title, best.nodeNames.length ? el('span', { class: 'muted', text: ` · ${best.title}` }) : null]),
       el('ul', { class: 'avail-limits' }, best.limits.map(availLimit)),
-      others.text ? el('p', { class: 'avail-others', text: `${others.text}${others.firstResetAt ? ` · first frees ${fmtWhen(others.firstResetAt)}` : ''}` }) : null,
+      others.text ? el('p', { class: 'avail-others', text: `${othersWords(availability)}${others.firstResetAt ? ` · first frees ${fmtWhen(others.firstResetAt)}` : ''}` }) : null,
       best.stale ? el('p', { class: 'avail-checked stale', text: best.checkedAt ? `Last known numbers: usage last checked ${fmtAgo(best.checkedAt)}` : 'Last known numbers: usage could not be refreshed' }) : null,
       alertLine,
     ].filter(Boolean),
@@ -5600,7 +5625,7 @@ function projectsSkeleton() {
  */
 function paintProjects() {
   const { toggle, count, list, add } = projectsSkeleton();
-  const { project: current, kind } = parseHash();
+  const { project: current, kind, section } = parseHash();
   toggle.setAttribute('aria-expanded', String(projectsOpen));
   count.replaceChildren(el('span', { 'aria-hidden': 'true', text: String(projectsState.length) }), el('span', { class: 'sr-only', text: `, ${projectsState.length}` }));
   list.hidden = !projectsOpen;
@@ -5608,7 +5633,8 @@ function paintProjects() {
   if (newProjectOpen && !add.querySelector('form')) add.replaceChildren(newProjectForm());
   else if (!newProjectOpen && !add.querySelector('[data-key="project:new"]')) add.replaceChildren(newProjectButton());
   // The rows are rebuilt only when what they show has changed: a list rebuilt under a pointer loses the click.
-  const drawn = JSON.stringify([projectsState, current, kind]);
+  // The section is in it because a row leads to the list that is open, and from any other page to the crons list.
+  const drawn = JSON.stringify([projectsState, current, kind, section]);
   if (drawn !== projectsDrawn) {
     projectsDrawn = drawn;
     const focused = list.contains(document.activeElement) ? document.activeElement.closest('[data-key]')?.dataset.key : null;

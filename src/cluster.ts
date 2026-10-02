@@ -176,6 +176,12 @@ export interface BestAccount {
   tightest: AccountLimit;
   /** The session and the weekly all-models limits, plus the bottleneck when it is another: what the tile draws meters for. */
   limits: AccountLimit[];
+  /**
+   * Its near or reached limits that `limits` leaves out, in words per status
+   * ("Near the Fable weekly limit"), so the tile names them rather than let a
+   * count of accounts stand for them. Empty when every flagged limit is drawn.
+   */
+  unshown: Array<{ status: 'near' | 'reached'; text: string }>;
   checkedAt: string | null;
   stale: boolean;
 }
@@ -640,14 +646,17 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
   let best: BestAccount | null = null;
   if (bestOf) {
     const headline = bestOf.usage.windows.filter((limit) => ['session', 'weekly_all'].includes(kindOf(limit) ?? ''));
+    // In the reading's own order, with the bottleneck added only when it is not a headline limit already.
+    const limits = bestOf.usage.windows.filter((limit) => headline.includes(limit) || limit === bestOf.tightest);
+    const unshown = bestOf.usage.windows.filter((limit) => !limits.includes(limit) && limit.status !== 'ok');
     best = {
       key: bestOf.key,
       title: bestOf.title,
       nodeNames: bestOf.nodeNames,
       status: bestOf.usage.status,
       tightest: bestOf.tightest,
-      // In the reading's own order, with the bottleneck added only when it is not a headline limit already.
-      limits: bestOf.usage.windows.filter((limit) => headline.includes(limit) || limit === bestOf.tightest),
+      limits,
+      unshown: (['reached', 'near'] as const).filter((status) => unshown.some((limit) => limit.status === status)).map((status) => ({ status, text: namedLimits(unshown, status) })),
       checkedAt: bestOf.usage.checkedAt,
       stale: bestOf.usage.stale,
     };

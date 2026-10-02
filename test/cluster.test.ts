@@ -658,6 +658,24 @@ describe('availability', () => {
     expect(none.others).toMatchObject({ reached: 1, text: '1 other account at its weekly limit', firstResetAt: null });
   });
 
+  it('names a flagged limit the best account\'s meters leave out, and nothing when every flagged limit is drawn', () => {
+    const scoped = (percent: number, severity: UsageWindow['severity'] = 'normal'): UsageWindow => usageWindow('weekly_scoped', percent, severity, 'Fable');
+    // Fable is flagged but at 55% is not the bottleneck, so it has no meter: the tile has to say it in words.
+    const hidden = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 70), usageWindow('weekly_all', 20), scoped(55, 'warning')]) }),
+        node({ id: 'air', name: 'air', account: SAM, usage: reading([usageWindow('session', 90)]) }),
+      ],
+      null,
+    ).availability;
+    expect(hidden.best).toMatchObject({ title: 'alex@example.com', tightest: { name: '5-hour session' } });
+    expect(hidden.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models']);
+    expect(hidden.best?.unshown).toEqual([{ status: 'near', text: 'Near the Fable weekly limit' }]);
+    // At 100% it is the bottleneck, drawn as a meter with its own flag.
+    const drawn = clusterSummary([node({ usage: reading([usageWindow('session', 10), usageWindow('weekly_all', 20), scoped(100, 'critical')]) })], null).availability;
+    expect(drawn.best?.unshown).toEqual([]);
+  });
+
   it('gives each computer its load and the key of the account block its usage is under', () => {
     const { computers } = clusterSummary(
       [node({ id: 'mini', running: 2, concurrencyLimit: 4 }), node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('session', 5)]) }), node({ id: 'air', name: 'air', account: null, online: false, running: 3 })],
