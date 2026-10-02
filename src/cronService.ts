@@ -38,6 +38,8 @@ import {
 import type { PreparedWorktree } from './worktree.js';
 import { PRE_PROMPT_SHELL, PrePromptSetup, prePromptTimeoutMs } from './prePrompt.js';
 import type { SetupOutcome } from './prePrompt.js';
+import { RunTools, projectScope } from './runTools.js';
+import type { CliMessage, InitEvent } from './runTools.js';
 // Every job here comes from the node's cache with its defaults filled in, so
 // these names are the resolved shapes, and each setting is a plain value.
 import type {
@@ -80,15 +82,23 @@ interface CliStreamEvent {
   type?: string;
   content_block?: { type?: string };
   delta?: { type?: string; text?: string };
+  /** On `message_start`: the request's usage, before any of its content. */
+  message?: { usage?: unknown };
 }
 
-interface CliEvent {
+/** The fields read from the CLI's events; an init event's own are in InitEvent. */
+interface CliEvent extends InitEvent {
   type?: string;
   event?: CliStreamEvent;
   result?: unknown;
   is_error?: boolean;
   api_error_status?: string | number | null;
   subtype?: string;
+  /** A complete assistant or user message, with its content blocks. */
+  message?: CliMessage;
+  /** Set on a subagent's events: the Task call it runs under. */
+  parent_tool_use_id?: string | null;
+  permission_denials?: unknown;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -1575,6 +1585,10 @@ class CronService {
 
     // Filled in from the CLI's final result event, when the run gets that far.
     let resultEvent: CliEvent | null = null;
+    // What the run had and what it called, written into the log as it goes and tallied at the end.
+    const runTools = new RunTools(cwd);
+    // The last two characters of output written, to size the break before whatever comes next.
+    let textTail = '';
 
     // Set when this run must not clean up a worktree: it never got one of its
     // own, or something it started may still be writing in it. Clean up
@@ -1603,6 +1617,10 @@ class CronService {
           wroteRetrospective = true;
         }
       }
+      // The tally of tool calls goes above the statistics; a run whose CLI
+      // never said what it had gets none, and its log ends as it always did.
+      const tally = runTools.tally(resultEvent);
+      if (tally.length) stream.write(`${textTail.endsWith('\n') ? '\n' : '\n\n'}${tally.join('\n')}\n`);
       stream.write(resultEvent ? statsBlock(resultEvent, [cleanupLine]) : `\n${cleanupLine}\n`);
       await new Promise<void>((resolve) => {
         stream.end(`\n--- ${status} after ${seconds}s${detail ? ` (${detail})` : ''} ---\n`, resolve);
@@ -1709,18 +1727,38 @@ class CronService {
       run.pid = child.pid as number | null;
       this.handles.set(cron.id, { child, stream, killTimer: null, setup: null });
 
-      // stdout is newline-delimited JSON events; write through only the assistant's
-      // text, so the log reads like plain output and can still be tailed live.
+      // stdout is newline-delimited JSON events; write through the assistant's
+      // text, with a line of promptd's own for what the run had and each tool
+      // it called, so the log reads like plain output and can still be tailed live.
       let pending = '';
       let sawText = false;
-      let textTail = ''; // last two characters of assistant text, to size the break before the next block
       let textBlockOpened = false;
+      let lastWroteLine = false; // the last write was one of promptd's lines, which the next one follows directly
 
-      const writeText = (text: string): void => {
-        sawText = true;
+      // Everything goes through the splitter, so a retrospective is caught
+      // wherever it starts and the log keeps the order things happened in.
+      const push = (text: string): void => {
         textTail = (textTail + text).slice(-2);
         const output = retroSplitter ? retroSplitter.push(text) : text;
         if (output) stream.write(output);
+      };
+
+      /** Puts what comes next on a paragraph of its own: a blank line after whatever is there. */
+      const startParagraph = (): void => {
+        if (textTail && !textTail.endsWith('\n\n')) push(textTail.endsWith('\n') ? '\n' : '\n\n');
+      };
+
+      const writeText = (text: string): void => {
+        sawText = true;
+        lastWroteLine = false;
+        push(text);
+      };
+
+      /** One of promptd's lines — the setup block, a tool call — set off from Claude's text by a blank line, but following another such line directly. */
+      const writeLine = (line: string): void => {
+        if (!(lastWroteLine && textTail.endsWith('\n'))) startParagraph();
+        push(`${line}\n`);
+        lastWroteLine = true;
       };
 
       const handleLine = (line: string): void => {
@@ -1733,8 +1771,17 @@ class CronService {
           stream.write(`${line}\n`); // not JSON (a CLI warning); keep it verbatim
           return;
         }
+        if (event.type === 'system' && event.subtype === 'init') {
+          runTools.init(event).forEach(writeLine);
+          return;
+        }
         if (event.type === 'stream_event') {
           const inner = event.event;
+          // The first request's size is known before any of its content arrives.
+          if (inner?.type === 'message_start') {
+            runTools.context(inner.message?.usage).forEach(writeLine);
+            return;
+          }
           if (inner?.type === 'content_block_start') {
             textBlockOpened = inner.content_block?.type === 'text';
             return;
@@ -1743,15 +1790,29 @@ class CronService {
           if (!text) return;
           // Each text block is a new paragraph: the ones either side of a tool
           // call arrive back to back and would otherwise run into one line.
-          if (textBlockOpened && sawText && !textTail.endsWith('\n\n')) writeText(textTail.endsWith('\n') ? '\n' : '\n\n');
+          if (textBlockOpened) startParagraph();
           textBlockOpened = false;
           writeText(text);
+          return;
+        }
+        // A complete message: its tool calls, once each, as the call streamed
+        // in pieces before it; and, without partial messages, its usage.
+        if (event.type === 'assistant') {
+          runTools.context(event.message?.usage).forEach(writeLine);
+          runTools.uses(event.message, event.parent_tool_use_id ?? null).forEach(writeLine);
+          return;
+        }
+        if (event.type === 'user') {
+          runTools.results(event.message, event.parent_tool_use_id ?? null).forEach(writeLine);
           return;
         }
         if (event.type === 'result') {
           resultEvent = event;
           // No deltas arrived (older CLI, or a non-streaming reply): fall back to the whole result.
-          if (!sawText && typeof event.result === 'string' && event.result) writeText(event.result);
+          if (!sawText && typeof event.result === 'string' && event.result) {
+            startParagraph();
+            writeText(event.result);
+          }
           if (event.is_error) stream.write(`\nCLI reported an error: ${event.api_error_status ?? event.subtype ?? 'unknown'}\n`);
         }
       };
@@ -1834,6 +1895,7 @@ class CronService {
       }
       // Asked to stop just as the last command finished.
       if (run.stopping) return finish('stopped', `killed by ${run.stoppedBy} before claude started`);
+      runTools.withProject(await projectScope(runCwd));
       let child: ChildProcessByStdio<null, Readable, Readable>;
       try {
         child = spawnClaude(runCwd);
@@ -1866,6 +1928,8 @@ class CronService {
       return run;
     }
 
+    // The project's own skills and agents, so the log can tell them from the user's.
+    runTools.withProject(await projectScope(cwd));
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       child = spawnClaude(cwd);
