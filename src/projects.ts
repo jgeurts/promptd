@@ -3,6 +3,42 @@ import { randomUUID } from 'node:crypto';
 import { db } from './db.js';
 import type { Project, ProjectInput } from './types.js';
 
+/** What the sidebar draws beside a project's name. */
+export interface ProjectSummary extends Project {
+  /** Crons and one-time executions in it, together. */
+  jobs: number;
+  /** How many of them are running now. */
+  running: number;
+  /** How many have an update nobody has opened yet. */
+  updated: number;
+}
+
+/** A job as the page lists it, reduced to what the counts need. */
+export interface SummarizedJob {
+  projectId: string | null;
+  isRunning: boolean;
+  activity: { unread: boolean };
+}
+
+/**
+ * Every project with its counts, in name order, judged on the same views the
+ * lists draw so a project says "running" exactly when one of its rows does.
+ * Pure over what the routes already have, so it is tested without a database.
+ */
+export function projectSummaries(projects: Project[], jobs: SummarizedJob[]): ProjectSummary[] {
+  return [...projects]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((project) => {
+      const own = jobs.filter((job) => job.projectId === project.id);
+      return {
+        ...project,
+        jobs: own.length,
+        running: own.filter((job) => job.isRunning).length,
+        updated: own.filter((job) => job.activity.unread).length,
+      };
+    });
+}
+
 export async function listProjects(): Promise<Project[]> {
   const rows = await db().selectFrom('projects').selectAll().execute();
   return rows.sort((a, b) => a.name.localeCompare(b.name));

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   accountStatus,
   accountSummaries,
+  bottleneckWindow,
   clusterLimit,
   clusterSummary,
   headlineWindows,
@@ -465,5 +466,225 @@ describe('header summary', () => {
   it('shows a warning only while it has something to say', () => {
     const { header } = clusterSummary([node({ usage: reading([usageWindow('session', 40)]), samples: minuteOf({ cpu: 30 }) })], null);
     expect(header.warnings).toEqual([]);
+  });
+});
+
+describe('availability', () => {
+  const at = (iso: string, window: UsageWindow): UsageWindow => ({ ...window, resetsAt: iso });
+  const SAT = '2026-10-03T22:59:00.000Z';
+  const SUN = '2026-10-04T18:00:00.000Z';
+  const KIM = { id: 'acct-kim', email: 'kim@example.com' };
+
+  // Three computers on three accounts: two at their weekly limit, one with room.
+  const three = (): ClusterNode[] => [
+    node({ id: 'mini', usage: reading([usageWindow('session', 3), at(SUN, usageWindow('weekly_all', 100, 'critical'))]) }),
+    node({ id: 'studio', name: 'studio', account: SAM, usage: reading([usageWindow('session', 48), at(SAT, usageWindow('weekly_all', 100, 'critical'))]) }),
+    node({ id: 'galaxy', name: 'galaxy', account: KIM, usage: reading([usageWindow('session', 61), usageWindow('weekly_all', 10)]) }),
+  ];
+
+  it('picks the account whose tightest limit has the most room, named by its computers, with the session and weekly meters', () => {
+    const { availability: found } = clusterSummary(three(), null);
+    expect(found.best).toMatchObject({
+      key: 'account:acct-kim',
+      title: 'kim@example.com',
+      nodeNames: ['galaxy'],
+      status: 'ok',
+      tightest: { name: '5-hour session', usedPercent: 61 },
+    });
+    expect(found.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models']);
+    expect(found.accounts).toBe(3);
+  });
+
+  it('sums up the other accounts under one sentence, with the earliest reset among their reached limits', () => {
+    const { availability: found } = clusterSummary(three(), null);
+    expect(found.others).toEqual({ count: 2, reached: 2, near: 0, text: '2 other accounts at their weekly limit', firstResetAt: SAT });
+    expect(found.alerts).toEqual([{ id: 'accounts-reached', section: 'accounts', severity: 'critical', text: '2 accounts at their weekly limit' }]);
+  });
+
+  it('says "a limit" when the reached limits differ, and counts near accounts beside them', () => {
+    const { availability: found } = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 100, 'critical'), usageWindow('weekly_all', 40)]) }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: reading([usageWindow('weekly_all', 100, 'critical')]) }),
+        node({ id: 'air', name: 'air', account: KIM, usage: reading([usageWindow('weekly_all', 84, 'warning')]) }),
+        node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('weekly_all', 12)]) }),
+      ],
+      null,
+    );
+    expect(found.best).toMatchObject({ key: 'unknown:old', title: 'Account unknown', nodeNames: ['old'] });
+    expect(found.others.text).toBe('2 other accounts at a limit, 1 near');
+    expect(found.alerts.map((alert) => alert.text)).toEqual(['2 accounts at a limit', '1 account near its limit']);
+  });
+
+  it('adds a model-scoped weekly limit to the meters only when it is the tightest', () => {
+    const scoped = (percent: number): UsageWindow => usageWindow('weekly_scoped', percent, 'normal', 'Fable');
+    const tight = clusterSummary([node({ usage: reading([usageWindow('session', 20), usageWindow('weekly_all', 30), scoped(70)]) })], null).availability;
+    expect(tight.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models', 'Weekly, Fable']);
+    const loose = clusterSummary([node({ usage: reading([usageWindow('session', 20), usageWindow('weekly_all', 30), scoped(10)]) })], null).availability;
+    expect(loose.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models']);
+    expect(loose.others).toEqual({ count: 0, reached: 0, near: 0, text: null, firstResetAt: null });
+  });
+
+  it('has no best account, and says so, when no online computer has a reading', () => {
+    const { availability: found } = clusterSummary([node({ usage: null }), node({ id: 'air', online: false, usage: reading([usageWindow('session', 5)]) })], null);
+    expect(found.best).toBeNull();
+    expect(found.accounts).toBe(0);
+    expect(found.alerts).toEqual([{ id: 'offline', section: 'computers', severity: 'warning', text: '1 computer offline' }]);
+  });
+
+  it('orders what is wrong: limits reached, jobs held, near a limit, machines, computers offline', () => {
+    const { availability: found } = clusterSummary(
+      [
+        node({
+          id: 'mini',
+          usage: reading([usageWindow('weekly_all', 100, 'critical')]),
+          samples: minuteOf({ cpu: 94 }),
+          waiting: [held({ cronId: 'a' }), held({ cronId: 'b', hold: 'concurrency' })],
+        }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: reading([usageWindow('session', 91, 'warning')]) }),
+        node({ id: 'air', name: 'air', online: false }),
+      ],
+      null,
+    );
+    expect(found.alerts).toEqual([
+      { id: 'accounts-reached', section: 'accounts', severity: 'critical', text: '1 account at its weekly limit' },
+      { id: 'waiting-usage', section: 'jobs', severity: 'warning', text: '1 job waiting for account limits' },
+      { id: 'waiting-slot', section: 'jobs', severity: 'warning', text: '1 job queued behind the job limit' },
+      { id: 'accounts-near', section: 'accounts', severity: 'warning', text: '1 account near its limit' },
+      { id: 'machines', section: 'computers', severity: 'critical', text: 'mini: CPU 94%' },
+      { id: 'offline', section: 'computers', severity: 'warning', text: '1 computer offline' },
+    ]);
+  });
+
+  it('counts several machine warnings rather than naming one, and says when nothing is connected', () => {
+    const busy = clusterSummary([node({ samples: minuteOf({ cpu: 94, memory: 86 }) })], null).availability;
+    expect(busy.alerts).toEqual([{ id: 'machines', section: 'computers', severity: 'critical', text: 'Machine warnings: 2' }]);
+    expect(clusterSummary([], null).availability.alerts).toEqual([{ id: 'offline', section: 'computers', severity: 'critical', text: 'No computers connected' }]);
+  });
+
+  it('ranks by the most used window whatever its severity, and breaks a tie by status, then by name', () => {
+    // A warning at 83% leaves more room than a normal reading at 90%; the API's flag does not move the bottleneck.
+    const flagged = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 90), usageWindow('weekly_all', 83, 'warning')]) }),
+        node({ id: 'air', name: 'air', account: SAM, usage: reading([usageWindow('session', 85), usageWindow('weekly_all', 20)]) }),
+      ],
+      null,
+    ).availability;
+    expect(flagged.best).toMatchObject({ title: 'sam@example.com', tightest: { name: '5-hour session', usedPercent: 85 } });
+    // The same room on both: the account the API has not flagged, then the name.
+    const tied = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 70, 'warning')]) }),
+        node({ id: 'air', name: 'air', account: SAM, usage: reading([usageWindow('session', 70)]) }),
+        node({ id: 'studio', name: 'studio', account: KIM, usage: reading([usageWindow('session', 70)]) }),
+      ],
+      null,
+    ).availability;
+    expect(tied.best).toMatchObject({ title: 'kim@example.com' });
+  });
+
+  it('keeps the severity-first tightest window for the field a tab on the old header reads', () => {
+    const windows = [usageWindow('session', 90), usageWindow('weekly_all', 83, 'warning')];
+    expect(tightestWindow(windows)?.usedPercent).toBe(83);
+    expect(bottleneckWindow(windows)?.usedPercent).toBe(90);
+    expect(bottleneckWindow([])).toBeNull();
+  });
+
+  it('prefers a fresh reading over a stale one, and counts the stale readings', () => {
+    const stale = { ...reading([usageWindow('session', 10)]), stale: true };
+    const { availability: found } = clusterSummary(
+      [node({ id: 'mini', usage: stale }), node({ id: 'air', name: 'air', account: SAM, usage: reading([usageWindow('session', 40)]) })],
+      null,
+    );
+    expect(found.best).toMatchObject({ title: 'sam@example.com', stale: false, tightest: { usedPercent: 40 } });
+    expect(found.staleAccounts).toBe(1);
+    const only = clusterSummary([node({ id: 'mini', usage: stale })], null).availability;
+    expect(only.best).toMatchObject({ title: 'alex@example.com', stale: true });
+    expect(only.staleAccounts).toBe(1);
+  });
+
+  it('treats spent credits as the bottleneck, and names them for a single account', () => {
+    const { availability: found } = clusterSummary([node({ usage: reading([usageWindow('session', 12), usageWindow('spend', 100)]) })], null);
+    expect(found.best?.tightest).toMatchObject({ name: 'Credits', usedPercent: 100, status: 'reached' });
+    expect(found.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Credits']);
+    expect(found.alerts).toEqual([{ id: 'accounts-reached', section: 'accounts', severity: 'critical', text: 'Credit limit reached' }]);
+  });
+
+  it('names the limits of a single account, several exhausted ones together, and the one it is near', () => {
+    const two = clusterSummary(
+      [node({ usage: reading([usageWindow('session', 5), usageWindow('weekly_all', 100, 'critical'), usageWindow('weekly_scoped', 100, 'critical', 'Fable')]) })],
+      null,
+    ).availability;
+    expect(two.alerts.map((alert) => alert.text)).toEqual(['Weekly and Fable weekly limits reached']);
+    const one = clusterSummary([node({ usage: reading([usageWindow('session', 100, 'critical'), usageWindow('weekly_all', 30)]) })], null).availability;
+    expect(one.alerts.map((alert) => alert.text)).toEqual(['Session limit reached']);
+    const near = clusterSummary([node({ usage: reading([usageWindow('session', 20), usageWindow('weekly_all', 96, 'warning')]) })], null).availability;
+    expect(near.alerts.map((alert) => alert.text)).toEqual(['Near the weekly limit']);
+  });
+
+  it('frees an account only when the last of its reached limits resets, and takes the earliest across accounts', () => {
+    const soon = '2026-10-03T01:00:00.000Z';
+    const later = '2026-10-04T18:00:00.000Z';
+    const latest = '2026-10-06T18:00:00.000Z';
+    const { availability: found } = clusterSummary(
+      [
+        node({ id: 'galaxy', name: 'galaxy', account: KIM, usage: reading([usageWindow('session', 10)]) }),
+        // Its session resets soon, but its weekly limit is spent too: it is free only once that resets.
+        node({ id: 'mini', usage: reading([at(soon, usageWindow('session', 100, 'critical')), at(latest, usageWindow('weekly_all', 100, 'critical'))]) }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: reading([at(later, usageWindow('weekly_all', 100, 'critical'))]) }),
+      ],
+      null,
+    );
+    expect(found.others).toMatchObject({ reached: 2, text: '2 other accounts at a limit', firstResetAt: later });
+  });
+
+  it('leaves out an account whose reset time is unknown, and says nothing when none is known', () => {
+    const known = '2026-10-04T18:00:00.000Z';
+    const unknown = (window: UsageWindow): UsageWindow => ({ ...window, resetsAt: null });
+    const some = clusterSummary(
+      [
+        node({ id: 'galaxy', name: 'galaxy', account: KIM, usage: reading([usageWindow('session', 10)]) }),
+        node({ id: 'mini', usage: reading([unknown(usageWindow('weekly_all', 100, 'critical'))]) }),
+        node({ id: 'studio', name: 'studio', account: SAM, usage: reading([at(known, usageWindow('weekly_all', 100, 'critical'))]) }),
+      ],
+      null,
+    ).availability;
+    expect(some.others.firstResetAt).toBe(known);
+    const none = clusterSummary(
+      [node({ id: 'galaxy', name: 'galaxy', account: KIM, usage: reading([usageWindow('session', 10)]) }), node({ id: 'mini', usage: reading([unknown(usageWindow('weekly_all', 100, 'critical'))]) })],
+      null,
+    ).availability;
+    expect(none.others).toMatchObject({ reached: 1, text: '1 other account at its weekly limit', firstResetAt: null });
+  });
+
+  it('names a flagged limit the best account\'s meters leave out, and nothing when every flagged limit is drawn', () => {
+    const scoped = (percent: number, severity: UsageWindow['severity'] = 'normal'): UsageWindow => usageWindow('weekly_scoped', percent, severity, 'Fable');
+    // Fable is flagged but at 55% is not the bottleneck, so it has no meter: the tile has to say it in words.
+    const hidden = clusterSummary(
+      [
+        node({ id: 'mini', usage: reading([usageWindow('session', 70), usageWindow('weekly_all', 20), scoped(55, 'warning')]) }),
+        node({ id: 'air', name: 'air', account: SAM, usage: reading([usageWindow('session', 90)]) }),
+      ],
+      null,
+    ).availability;
+    expect(hidden.best).toMatchObject({ title: 'alex@example.com', tightest: { name: '5-hour session' } });
+    expect(hidden.best?.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models']);
+    expect(hidden.best?.unshown).toEqual([{ status: 'near', text: 'Near the Fable weekly limit' }]);
+    // At 100% it is the bottleneck, drawn as a meter with its own flag.
+    const drawn = clusterSummary([node({ usage: reading([usageWindow('session', 10), usageWindow('weekly_all', 20), scoped(100, 'critical')]) })], null).availability;
+    expect(drawn.best?.unshown).toEqual([]);
+  });
+
+  it('gives each computer its load and the key of the account block its usage is under', () => {
+    const { computers } = clusterSummary(
+      [node({ id: 'mini', running: 2, concurrencyLimit: 4 }), node({ id: 'old', name: 'old', account: null, usage: reading([usageWindow('session', 5)]) }), node({ id: 'air', name: 'air', account: null, online: false, running: 3 })],
+      null,
+    );
+    expect(computers).toEqual([
+      { id: 'mini', name: 'mini', online: true, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 2, concurrencyLimit: 4, accountKey: 'account:acct-alex' },
+      { id: 'old', name: 'old', online: true, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 0, concurrencyLimit: 12, accountKey: 'unknown:old' },
+      { id: 'air', name: 'air', online: false, lastSeenAt: '2026-09-30T12:00:00.000Z', running: 0, concurrencyLimit: 0, accountKey: null },
+    ]);
   });
 });

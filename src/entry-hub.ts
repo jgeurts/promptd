@@ -19,6 +19,7 @@ import {
   createExecution,
   deleteExecution,
   getExecution,
+  listExecutions,
   pageExecutions,
   patchExecution,
   updateExecution,
@@ -26,7 +27,7 @@ import {
 import { readCronForm, readExecutionForm, withEffective } from './jobForms.js';
 import { JobDefaultsError, patchJobDefaults } from './jobDefaults.js';
 import { feedbackExecution, readFeedbackForm } from './feedback.js';
-import { createProject, deleteProject, getProject, listProjects, updateProject } from './projects.js';
+import { createProject, deleteProject, getProject, listProjects, projectSummaries, updateProject } from './projects.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, loadSettings, patchSettings } from './settings.js';
 import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } from './updater.js';
 import { usageDelayOptions } from './usage.js';
@@ -574,6 +575,24 @@ app.get('/api/projects', async (_req, res, next) => {
   }
 });
 
+/**
+ * Every project with what the sidebar draws beside it: how many jobs it has,
+ * how many are running, and how many have an update nobody has opened. Judged
+ * on the same views the two lists draw.
+ */
+app.get('/api/projects/summary', async (_req, res, next) => {
+  try {
+    const [projects, crons, executions, activity] = await Promise.all([listProjects(), listCrons(), listExecutions(), jobActivity.rows()]);
+    const jobs = [
+      ...crons.map((cron) => decorate(cron, activity.get(cron.id))),
+      ...executions.map((execution) => decorateExecution(execution, activity.get(execution.id))),
+    ];
+    res.json(projectSummaries(projects, jobs));
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post('/api/projects', async (req: JsonRequest, res, next) => {
   try {
     const { errors, value } = readProjectForm(req.body);
@@ -609,14 +628,16 @@ app.delete('/api/projects/:id', async (req, res, next) => {
 /**
  * One page of one-time executions, newest first, with the same cursor the
  * notification drawer uses. `?sort=activity` ranks all of them before taking
- * the page, so one with an update rises onto the first page from anywhere.
+ * the page, so one with an update rises onto the first page from anywhere;
+ * `?project=<id>` keeps one project's, likewise before the page is taken.
  */
 app.get('/api/executions', async (req, res, next) => {
   try {
     const before = String(req.query.before ?? '').trim() || null;
+    const project = String(req.query.project ?? '').trim() || null;
     const activity = await jobActivity.rows();
     const order = req.query.sort === 'activity' ? (all: Execution[]) => rankExecutions(all, activity) : undefined;
-    const page = await pageExecutions({ before, limit: req.query.limit ?? EXECUTIONS_PAGE_SIZE, order });
+    const page = await pageExecutions({ before, limit: req.query.limit ?? EXECUTIONS_PAGE_SIZE, order, project });
     res.json({ ...page, items: page.items.map((execution) => decorateExecution(execution, activity.get(execution.id))) });
   } catch (err) {
     next(err);

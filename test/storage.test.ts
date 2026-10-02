@@ -166,6 +166,27 @@ describe.each(targets)('storage on $name', ({ url }) => {
     expect(second.nextBefore).toBeNull();
   });
 
+  it("keeps one project's executions before cutting the page, so the page and its counts are the project's own", async () => {
+    const billing = await projects.createProject({ name: 'Billing', description: '' });
+    const other = await projects.createProject({ name: 'Other', description: '' });
+    const first = await executions.createExecution({ ...cronInput, projectId: billing.id, scheduledAt: '2026-03-01T00:00:00.000Z' });
+    await executions.createExecution({ ...cronInput, projectId: other.id, scheduledAt: '2026-03-02T00:00:00.000Z' });
+    const second = await executions.createExecution({ ...cronInput, projectId: billing.id, scheduledAt: '2026-03-03T00:00:00.000Z' });
+    await executions.createExecution({ ...cronInput, projectId: null, scheduledAt: '2026-03-04T00:00:00.000Z' });
+    await executions.patchExecution(first.id, { status: 'done', firedAt: '2026-03-01T00:00:01.000Z' });
+
+    // Newest first within the project; the other project's and the unfiled one never appear, whatever page is asked for.
+    const page = await executions.pageExecutions({ limit: 1, project: billing.id });
+    expect(page.items.map((item) => item.id)).toEqual([second.id]);
+    expect(page).toMatchObject({ total: 2, scheduled: 1 });
+    const next = await executions.pageExecutions({ before: page.nextBefore, limit: 1, project: billing.id });
+    expect(next.items.map((item) => item.id)).toEqual([first.id]);
+    expect(next.nextBefore).toBeNull();
+    // The filter is applied before another order, not over the page it cuts.
+    const reversed = await executions.pageExecutions({ limit: 1, project: billing.id, order: (all) => [...all].reverse() });
+    expect(reversed.items.map((item) => item.id)).toEqual([first.id]);
+  });
+
   it('ungroups a deleted project\'s jobs rather than deleting them', async () => {
     const project = await projects.createProject({ name: 'Billing', description: '' });
     const cron = await store.createCron({ ...cronInput, projectId: project.id });

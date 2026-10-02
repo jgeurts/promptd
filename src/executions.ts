@@ -158,19 +158,25 @@ export async function deleteExecution(id: string): Promise<boolean> {
  * rather than an offset, for the same reason the notification drawer works that
  * way: records are created while the list is open, and an offset would show one
  * of them a second time.
+ *
+ * `project` keeps only that project's executions, before the page is cut, so a
+ * filtered page is a full page and its counts are the project's own.
  */
 export async function pageExecutions({
   before = null,
   limit = PAGE_SIZE,
   order,
+  project = null,
 }: {
   before?: string | null;
   limit?: unknown;
   /** Another order for the whole list, applied before the page is cut from it. */
   order?: (all: Execution[]) => Execution[];
+  project?: string | null;
 } = {}): Promise<ExecutionPage> {
   const listed = await listExecutions();
-  const all = order ? order(listed) : listed;
+  const kept = project ? listed.filter((execution) => execution.projectId === project) : listed;
+  const all = order ? order(kept) : kept;
   // Generous ceiling: the home page re-reads everything it has already shown in
   // one request whenever a run event redraws it, so the cap has to clear a list
   // the user has paged a long way down.
