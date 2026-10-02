@@ -111,35 +111,76 @@ export function bounded(value: string, max = SUMMARY_MAX): string {
   return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
 }
 
-// Credentials as they tend to appear on a command line. Each keeps the name
-// and drops the value, so the line still says what it was for. Every pattern
-// is anchored on a fixed word, so a long run of letters before it costs one
-// look per character and no more: GITHUB_TOKEN=x keeps GITHUB_ and loses x.
-// A quoted value runs to its closing quote or, when the cut took that, to
-// the end, so a value too long to fit is dropped whole rather than shown
-// up to the cut.
-const VALUE = String.raw`(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s"']+)`;
-const SECRETS: [RegExp, string][] = [
-  [/\b(bearer|basic)\s+[a-z0-9._~+/=-]{8,}/gi, '$1 ***'],
-  [new RegExp(String.raw`((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)${VALUE}`, 'gi'), '$1***'],
-  [new RegExp(String.raw`(--?(?:api-?key|token|secret|password)\s+)${VALUE}`, 'gi'), '$1***'],
+// Credentials as they tend to appear in text. A secret keyword's whole value
+// word goes, and so does whatever follows the usual token prefixes. Every
+// pattern is anchored on a fixed word, so a long run of letters before it
+// costs one look per character and no more: GITHUB_TOKEN=x keeps GITHUB_
+// and loses x. The key may be quoted, as JSON writes it.
+const KEYWORD = /(?:api[_-]?key|token|secret|password|passwd|pwd)["']?\s*[=:]\s*|--?(?:api-?key|token|secret|password)\s+/gi;
+const PREFIXED: [RegExp, string][] = [
+  [/\b(bearer|basic)\s+[^\s"']+/gi, '$1 ***'],
   [/\bsk-[a-z0-9_-]{8,}/gi, 'sk-***'],
   [/\b(gh[pousr]_)[a-z0-9]{8,}/gi, '$1***'],
   [/\b(xox[abprs]-)[a-z0-9-]{8,}/gi, '$1***'],
 ];
 
-/** The text with anything that looks like a credential replaced by `***`. */
-export function redactSecrets(value: string): string {
-  return SECRETS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), value);
+/**
+ * Where the value word that starts at `start` ends: at the next whitespace
+ * outside quotes, with single and double quotes and backslash escapes
+ * honoured the way a shell does, or at the end of the text when a quote
+ * never closes — which is what a value too long for the cut looks like.
+ */
+function valueEnd(text: string, start: number): number {
+  let quote: string | null = null;
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === '\\') i += 2;
+    else if (quote) {
+      if (ch === quote) quote = null;
+      i += 1;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      i += 1;
+    } else if (/\s/.test(ch)) break;
+    else i += 1;
+  }
+  return Math.min(i, text.length);
 }
 
-// A URL keeps its scheme, host and path. Whoever stood before the host, and
-// whatever followed the path — the query, the fragment — is where keys go.
-const URL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/?#@]*@)?([^\s/?#]*)([^\s?#]*)\S*/gi;
+/** The text with anything that looks like a credential replaced by `***`. */
+export function redactSecrets(value: string): string {
+  let out = '';
+  let at = 0;
+  KEYWORD.lastIndex = 0;
+  for (let found = KEYWORD.exec(value); found; found = KEYWORD.exec(value)) {
+    const start = found.index + found[0].length;
+    const end = valueEnd(value, start);
+    out += `${value.slice(at, start)}${end > start ? '***' : ''}`;
+    at = end;
+    KEYWORD.lastIndex = end;
+  }
+  out += value.slice(at);
+  return PREFIXED.reduce((text, [pattern, replacement]) => text.replace(pattern, replacement), out);
+}
 
-/** The text with every URL in it cut down to scheme, host and path. */
-export function stripUrls(value: string): string {
-  return value.replace(URL_PATTERN, '$1$2$3');
+// A URL: its scheme, then everything up to the first slash, question mark or
+// hash — the authority — then the path, then whatever else, which goes.
+const URL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)([^\s/?#]*)([^\s?#]*)\S*/gi;
+
+/**
+ * Every URL in the text kept to scheme, host and path: whoever stood before
+ * the host, and whatever followed the path, is where keys go. An authority
+ * that runs to the end of a text the cut shortened may have lost its end,
+ * and with it the `@` that would show where the host starts; it is not
+ * trusted at all, and the URL becomes `scheme://…`.
+ */
+export function stripUrls(text: string, cut = false): string {
+  return text.replace(URL_PATTERN, (whole: string, scheme: string, authority: string, path: string, offset: number) => {
+    const complete = !cut || offset + scheme.length + authority.length < text.length;
+    if (!complete) return `${scheme}…`;
+    return `${scheme}${authority.slice(authority.lastIndexOf('@') + 1)}${path}`;
+  });
 }
 
 /**
@@ -148,7 +189,8 @@ export function stripUrls(value: string): string {
  * kept to scheme, host and path, and the rest put on one bounded line.
  */
 export function sanitize(value: string): string {
-  return bounded(stripUrls(redactSecrets(value.slice(0, RAW_MAX))));
+  const cut = value.length > RAW_MAX;
+  return bounded(stripUrls(redactSecrets(value.slice(0, RAW_MAX)), cut));
 }
 
 /** The path as the run's directory sees it, when the file is inside; else as given. */
@@ -157,67 +199,6 @@ function relativePath(file: string | null, cwd: string): string {
   if (!path.isAbsolute(file)) return file;
   const relative = path.relative(cwd, file);
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : file;
-}
-
-/**
- * The line's words as the shell would take them: single quotes keep
- * everything, double quotes all but a backslash's escape, a bare backslash
- * the next character. Null when a quote is left open, since then where a
- * word ends cannot be known — the cut may have taken the closing quote.
- */
-function shellWords(line: string): string[] | null {
-  const words: string[] = [];
-  let word = '';
-  let inWord = false;
-  let quote: '"' | "'" | null = null;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i]!;
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else word += ch;
-    } else if (quote === '"') {
-      if (ch === '"') quote = null;
-      else if (ch === '\\' && i + 1 < line.length) word += line[(i += 1)];
-      else word += ch;
-    } else if (ch === '\\') {
-      if (i + 1 < line.length) word += line[(i += 1)];
-      inWord = true;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      inWord = true;
-    } else if (/\s/.test(ch)) {
-      if (inWord) words.push(word);
-      word = '';
-      inWord = false;
-    } else {
-      word += ch;
-      inWord = true;
-    }
-  }
-  if (quote) return null;
-  if (inWord) words.push(word);
-  return words;
-}
-
-/**
- * A command by its program and subcommand alone — `curl …`, `git push …` —
- * never its arguments, which is where paths, payloads and credentials live.
- * The subcommand is shown only when it is a word of lowercase letters alone,
- * which is what `push`, `test` and `install` are and what a value seldom is.
- * Nothing at all for a line whose quoting is left open.
- */
-function commandGist(command: string): string {
-  const words = shellWords(firstLine(command));
-  if (!words) return '';
-  // Leading VAR=value assignments set the environment, as `env` with them does; the program comes after.
-  const assignment = (word: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
-  while (words.length && (assignment(words[0]!) || words[0] === 'env')) words.shift();
-  const [program, next] = words;
-  if (!program) return '';
-  const name = program.includes('/') ? (program.split('/').pop() ?? program) : program;
-  const subcommand = next && /^[a-z]{1,24}$/.test(next) ? next : null;
-  const shown = subcommand ? `${name} ${subcommand}` : name;
-  return words.length > (subcommand ? 2 : 1) ? `${shown} …` : shown;
 }
 
 /** Where a fetch went: scheme, host and path of the URL, and nothing it carried. */
@@ -233,25 +214,24 @@ function urlOnly(url: string | null): string {
 
 /**
  * What one call was about, in a line: enough to follow the run, never the
- * whole input. A Bash call shows its description when it has one, else its
- * program and subcommand; file tools their path, relative to the run's
- * directory when inside it; searches their pattern or query; a fetch where
- * it went; a subagent or skill its name. Whatever the tool, the answer has
- * been through `sanitize`.
+ * whole input. A Bash call shows Claude's description of the command and
+ * never the command, which is where credentials go; file tools their path,
+ * relative to the run's directory when inside it; searches their pattern or
+ * query; a fetch where it went; a subagent or skill its name. Whatever the
+ * tool, the answer has been through `sanitize`, which also does the cut.
  */
 export function summarizeCall(name: string, input: unknown, cwd: string): string {
-  // Cut on the way in, so nothing below looks at more than a line's worth.
   const field = (...keys: string[]): string | null => {
     for (const k of keys) {
       const value = isRecord(input) ? text(input[k]) : null;
-      if (value) return value.slice(0, RAW_MAX);
+      if (value) return value;
     }
     return null;
   };
   const summary = ((): string => {
     switch (name) {
       case 'Bash':
-        return field('description') ?? commandGist(field('command') ?? '');
+        return field('description') ?? '';
       case 'Read':
       case 'Edit':
       case 'MultiEdit':
@@ -299,6 +279,16 @@ function countList(names: string[]): string {
 function someNames(names: string[]): string {
   if (names.length <= NAMES_MAX) return names.join(', ');
   return `${names.slice(0, NAMES_MAX).join(', ')} and ${names.length - NAMES_MAX} more`;
+}
+
+/**
+ * A failure's reason as the log gives it: the first line, cut where a JSON
+ * payload starts, since that is a tool echoing what it was given.
+ */
+function failureReason(content: unknown): string {
+  const line = firstLine(resultText(content));
+  const payload = line.search(/[{[]/);
+  return sanitize(payload < 0 ? line : `${line.slice(0, payload)}…`);
 }
 
 /** The text of a tool result, which comes as a string or as content blocks. */
@@ -512,15 +502,15 @@ export class RunTools {
 
   /**
    * A line for each tool result in a user message that reports an error: the
-   * first line of the reason, sanitized, for a built-in tool; the name alone
-   * for an MCP tool, whose error can echo what it was sent.
+   * first line of the reason, up to any payload and sanitized, for a built-in
+   * tool; the name alone for an MCP tool, whose error can echo what it was sent.
    */
   public results(message: CliMessage | undefined, parentToolUseId: string | null): string[] {
     const lines: string[] = [];
     for (const block of blocks(message)) {
       if (block.type !== 'tool_result' || block.is_error !== true) continue;
       const call = typeof block.tool_use_id === 'string' ? this.calls.get(block.tool_use_id) : undefined;
-      const reason = call?.mcp ? '' : sanitize(firstLine(resultText(block.content).slice(0, RAW_MAX)));
+      const reason = call?.mcp ? '' : failureReason(block.content);
       lines.push(`${parentToolUseId ? '    ' : '  '}${FAIL_GLYPH} ${call?.display ?? 'tool'} failed${reason ? `: ${reason}` : ''}`);
     }
     return lines;

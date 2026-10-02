@@ -150,29 +150,13 @@ describe('a tool call line', () => {
     expect(tools.uses(use('9', 'TodoWrite', { todos: [] }), null)).toEqual(['⏺ TodoWrite']);
   });
 
-  it('shows a Bash command without a description by its program and subcommand alone', () => {
+  it('writes a Bash call with no description by its name alone, never its command', () => {
     const tools = tracker();
     const bash = (id: string, command: string): string[] => tools.uses(use(id, 'Bash', { command }), null);
-    expect(bash('1', 'curl -H "Authorization: Bearer abcdefgh12345678" https://api.example.com/v1?key=1\necho done')).toEqual(['⏺ Bash  curl …']);
-    expect(bash('2', 'git push origin main')).toEqual(['⏺ Bash  git push …']);
-    expect(bash('3', 'npm test')).toEqual(['⏺ Bash  npm test']);
-    expect(bash('4', 'cd /Users/me/secret-client && npm test')).toEqual(['⏺ Bash  cd …']);
-    expect(bash('5', 'FOO=bar BAZ=1 ./scripts/deploy.sh --env prod')).toEqual(['⏺ Bash  deploy.sh …']);
-    expect(bash('6', 'ls')).toEqual(['⏺ Bash  ls']);
-    expect(bash('7', '\n\n  echo sk-abcdefghijklmnop')).toEqual(['⏺ Bash  echo …']);
-  });
-
-  it('reads a command the way the shell does, so a quoted assignment hides nothing and an open quote shows nothing', () => {
-    const tools = tracker();
-    const bash = (id: string, command: string): string[] => tools.uses(use(id, 'Bash', { command }), null);
-    expect(bash('1', "API_TOKEN='alpha supersecret' curl https://example.com")).toEqual(['⏺ Bash  curl …']);
-    expect(bash('2', 'API_TOKEN="alpha supersecret" curl -s https://example.com')).toEqual(['⏺ Bash  curl …']);
-    expect(bash('3', 'MSG="say \\"hi there\\"" echo done')).toEqual(['⏺ Bash  echo done']);
-    expect(bash('4', "NOTE=it\\'s\\ fine git status")).toEqual(['⏺ Bash  git status']);
-    expect(bash('5', 'env A=b cmd -x arg')).toEqual(['⏺ Bash  cmd …']);
-    expect(bash('6', 'env A="two words" B=c cmd')).toEqual(['⏺ Bash  cmd']);
-    expect(bash('7', "echo 'oops")).toEqual(['⏺ Bash']);
-    expect(bash('8', 'echo "open to the end supersecret')).toEqual(['⏺ Bash']);
+    expect(bash('1', 'npm test')).toEqual(['⏺ Bash']);
+    expect(bash('2', 'curl -H "Authorization: Bearer abcdefgh12345678" https://api.example.com/v1?key=1\necho done')).toEqual(['⏺ Bash']);
+    expect(bash('3', "API_TOKEN='alpha C0balt123X' curl https://host")).toEqual(['⏺ Bash']);
+    expect(bash('4', "TOKEN=$(printf 'C0balt123X') curl https://host")).toEqual(['⏺ Bash']);
   });
 
   it('puts every summary through the same filter, whatever the tool', () => {
@@ -348,6 +332,42 @@ describe('the filter every written input goes through', () => {
     tools.results(failure('a', megabyte), null);
     expect(performance.now() - started).toBeLessThan(200);
   });
+});
+
+describe('no credential reaches the log', () => {
+  const SECRET = 'C0balt123X';
+  const tools = (): RunTools => {
+    const tracked = tracker();
+    tracked.init(init());
+    return tracked;
+  };
+  const line = (name: string, input: unknown): string => tools().uses(use('1', name, input), null)[0]!;
+  const failed = (content: string): string => {
+    const tracked = tools();
+    tracked.uses(use('1', 'Bash', { description: 'fetch' }), null);
+    return tracked.results(failure('1', content), null)[0]!;
+  };
+  const url = `https://user:${SECRET}@host/x?token=${SECRET}`;
+  const cases: [string, string, string | RegExp][] = [
+    ['a Bash command with a quoted assignment', line('Bash', { command: `API_TOKEN='alpha ${SECRET}' curl https://host` }), '⏺ Bash'],
+    ['a description whose quoted value the cut leaves open', line('Bash', { description: `password="${SECRET}${'x'.repeat(500)}` }), '⏺ Bash  password=***'],
+    ['a Bash command with a substitution', line('Bash', { command: `TOKEN=$(printf '${SECRET}') curl https://host` }), '⏺ Bash'],
+    ['a description with an escaped quote inside the value', line('Bash', { description: `password="first\\"${SECRET}"` }), '⏺ Bash  password=***'],
+    ['a description whose value runs on past its quotes', line('Bash', { description: `TOKEN='first'${SECRET}` }), '⏺ Bash  TOKEN=***'],
+    ['a Grep pattern written as JSON', line('Grep', { pattern: `"password":"${SECRET}"` }), '⏺ Grep  "password":***'],
+    ['a failure that echoes a payload', failed(`Invalid {"token":"${SECRET}"}`), '  ✗ Bash failed: Invalid …'],
+    ['a URL with a password and a key', line('WebFetch', { url }), '⏺ WebFetch  https://host/x'],
+    ['the same URL in a description', line('Task', { description: `Fetch ${url}` }), '⏺ Task  Fetch https://host/x'],
+    ['the same URL with a long password, which the cut takes the host of', line('Task', { description: `Fetch https://user:${SECRET}${'a'.repeat(450)}@host/x?token=${SECRET}` }), '⏺ Task  Fetch https://…'],
+    ['a file named after a token', line('Read', { file_path: `/repo/token=${SECRET}.txt` }), '⏺ Read  /repo/token=***'],
+    ['a failure quoting an authorization header', failed(`Authorization: Bearer ${SECRET}`), '  ✗ Bash failed: Authorization: Bearer ***'],
+  ];
+  for (const [what, written, expected] of cases) {
+    it(`keeps the secret out of ${what}`, () => {
+      expect(written).not.toContain(SECRET);
+      expect(written).toEqual(expected);
+    });
+  }
 });
 
 describe('bounded and summarizeCall', () => {
