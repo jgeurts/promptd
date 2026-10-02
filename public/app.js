@@ -1,5 +1,7 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
+// What a run's log says about its tools, read back by the hub's own build of src/toolLines.ts.
+import { TOOL_LINE, ToolLinesReader, callList, toolsSummary } from '/shared/toolLines.js';
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -4026,14 +4028,12 @@ function durationFromLog(text) {
 
 // ---- the run's tools --------------------------------------------------
 // A node writes what a run had and called into its log as lines of its own:
-// a key-aligned block after `--- output ---`, a `⏺` line per tool call with
-// a subagent's two spaces in, a `✗` line under a call that failed, and a
-// `tools used` / `denied` tally before the statistics. The page reads them
-// back out of the text; a log without them, from before nodes wrote them,
-// shows nothing extra.
-
-/** A line of the node's own in the output: a tool call or a failure, at either depth. */
-const TOOL_LINE = /^ {0,4}[⏺✗] /;
+// a key-aligned block right after `--- output ---`, a `⏺` line per tool call
+// with a subagent's two spaces in, a `✗` line under a call that failed, and
+// a `tools used` / `denied` tally before the statistics. ToolLinesReader,
+// from the hub's own build of src/toolLines.ts, reads them back line by line
+// as the log streams. A log whose output does not open with the block has
+// none — from an older node, or quoting one — and is shown as it always was.
 
 /**
  * Wraps each tool line in a text node of the log body in a span, so it reads
@@ -4059,86 +4059,41 @@ function markToolLines(node) {
   node.replaceWith(...parts);
 }
 
-/**
- * What the log says about the run's tools, read back from the output section
- * only, so a prompt that happens to hold such lines is not mistaken for them.
- * Null for a log that says nothing.
- */
-function parseRunTools(text) {
-  const start = text.indexOf('\n--- output ---\n');
-  if (start < 0) return null;
-  const info = { setup: null, startup: null, project: null, servers: [], extras: null, builtIn: null, context: null, calls: new Map(), denied: null };
-  let found = false;
-  for (const line of text.slice(start + '\n--- output ---\n'.length).split('\n')) {
-    let m;
-    if ((m = /^ {0,2}⏺ (\S.*)$/.exec(line))) {
-      // The tool's name ends at the two spaces before its summary; an MCP tool has none.
-      const name = m[1].split('  ')[0];
-      info.calls.set(name, (info.calls.get(name) ?? 0) + 1);
-    } else if ((m = /^setup {6}(\S.*)$/.exec(line))) info.setup = m[1];
-    else if ((m = /^tools {6}(\d+) at startup: (\d+) built-in(?:, (\d+) from (\d+) MCP servers?)?$/.exec(line))) info.startup = { tools: Number(m[1]), builtIn: Number(m[2]) };
-    else if ((m = /^project {4}(\S.*)$/.exec(line))) {
-      info.project = {};
-      for (const part of m[1].split(' · ')) {
-        const [, kind, items] = /^(mcp|skills|agents): (.+)$/.exec(part) ?? [];
-        if (kind) info.project[kind] = items;
-      }
-    } else if ((m = /^global {5}mcp ([a-z][a-z -]*?)(?: \((\d+)\))?: (\S.*)$/.exec(line))) info.servers.push({ status: m[1], count: m[2] ? Number(m[2]) : null, names: m[3] });
-    else if ((m = /^global {5}(\S.*)$/.exec(line))) info.extras = m[1];
-    else if ((m = /^built-in {3}(\S.*)$/.exec(line))) info.builtIn = m[1];
-    else if ((m = /^context {4}(\S.*)$/.exec(line))) info.context = m[1];
-    else if ((m = /^denied {5}(\S.*)$/.exec(line))) info.denied = m[1];
-    else continue;
-    found = true;
-  }
-  return found ? info : null;
-}
-
 /** The disclosure above the log body, closed to one line; hidden until the log says something about its tools. */
 function toolsDisclosure() {
   return el('details', { class: 'log-tools', hidden: true }, [el('summary', { text: 'Tools' }), el('div', { class: 'log-tools-body' })]);
 }
 
 /**
- * Draws what the log says so far into the disclosure: a one-line summary, and
- * inside it what the run used, then what its project brought, then the user's
- * own, then the built-ins. A server waiting on a sign-in, or failed, is listed
- * before the connected ones, since that is what someone can do something
- * about, and is named by its status as well as coloured.
+ * Draws what the reader has so far into the disclosure: a one-line summary,
+ * and inside it what the run used, then what its project brought, then the
+ * user's own, then the built-ins. A server waiting on a sign-in, or failed,
+ * is listed before the connected ones, since that is what someone can do
+ * something about, and is named by its status as well as coloured.
  */
-function paintRunTools(details, info, { live = false } = {}) {
-  details.hidden = !info;
-  if (!info) return;
-  const calls = [...info.calls].sort((a, b) => b[1] - a[1]);
-  const callCount = calls.reduce((sum, [, count]) => sum + count, 0);
-  const deniedCount = Number(/^(\d+) call/.exec(info.denied ?? '')?.[1] ?? 0);
-  const n = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
-  details.querySelector('summary').textContent = [
-    'Tools',
-    info.startup && `${info.startup.tools} at startup`,
-    callCount ? `${n(callCount, 'call')} to ${n(calls.length, 'tool')}` : `no calls${live ? ' yet' : ''}`,
-    deniedCount && `${deniedCount} denied`,
-  ]
-    .filter(Boolean)
-    .join(' · ');
+function paintRunTools(details, reader, { live = false } = {}) {
+  details.hidden = !reader.active;
+  if (!reader.active) return;
+  const records = reader.records;
+  details.querySelector('summary').textContent = toolsSummary(records, live);
 
   const row = (label, value, tone = null) =>
     value ? el('div', { class: `log-tools-row${tone ? ` ${tone}` : ''}` }, [el('dt', { text: label }), el('dd', { text: value })]) : null;
   const group = (title, rows) => (rows.some(Boolean) ? el('section', { class: 'log-tools-group' }, [el('h2', { text: title }), el('dl', {}, rows)]) : null);
   const tone = (status) => (status === 'needs sign-in' ? 'warn' : status === 'failed' ? 'bad' : null);
   const rank = (status) => (status === 'needs sign-in' ? 0 : status === 'failed' ? 1 : status === 'connected' ? 3 : 2);
-  const servers = [...info.servers].sort((a, b) => rank(a.status) - rank(b.status));
+  const servers = [...records.servers].sort((a, b) => rank(a.status) - rank(b.status));
   const label = (server) => `MCP ${server.status}${server.count === null ? '' : ` (${server.count})`}`;
   details.querySelector('.log-tools-body').replaceChildren(
     ...[
       group('Used in this run', [
-        row('Calls', calls.length ? calls.map(([name, count]) => (count > 1 ? `${name} ×${count}` : name)).join(' · ') : `none${live ? ' yet' : ''}`),
-        row('Denied', info.denied, 'bad'),
+        row('Calls', callList(records) || `none${live && !records.used ? ' yet' : ''}`),
+        row('Denied', records.denied, 'bad'),
       ]),
-      group('Project', [row('MCP', info.project?.mcp), row('Skills', info.project?.skills), row('Agents', info.project?.agents)]),
-      group('Global', [...servers.map((server) => row(label(server), server.names, tone(server.status))), row('Installed', info.extras)]),
-      group('Built-in', [row('Tools', info.builtIn)]),
-      group('Session', [row('Claude', info.setup), row('Context', info.context)]),
+      group('Project', [row('MCP', records.project?.mcp), row('Skills', records.project?.skills), row('Agents', records.project?.agents)]),
+      group('Global', [...servers.map((server) => row(label(server), server.names, tone(server.status))), row('Installed', records.extras)]),
+      group('Built-in', [row('Tools', records.builtIn)]),
+      group('Session', [row('Claude', records.setup), row('Context', records.context)]),
     ].filter(Boolean),
   );
 }
@@ -4161,12 +4116,17 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     onShown();
   };
 
+  // What the log says about the run's tools, read from each chunk as it
+  // comes, so a repaint costs the new lines and never the whole log.
+  const reader = new ToolLinesReader();
+
   // A chunk ends wherever the file did when it was read, mid-line as often as
-  // not. Whole lines go in as they come, each tool line in a span of its own;
-  // the unfinished last line waits in a node of its own that the next chunk
-  // replaces, so it is never marked by its first characters.
+  // not. Whole lines go in as they come, each tool line in a span of its own
+  // once the log is known to have them; the unfinished last line waits in a
+  // node of its own that the next chunk replaces, so it is never marked by
+  // its first characters.
   let tailNode = null;
-  const append = (text) => {
+  const append = (text, mark) => {
     const whole = (tailNode?.data ?? '') + text;
     const cut = whole.lastIndexOf('\n') + 1;
     if (!cut) {
@@ -4179,22 +4139,24 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     else body.append(complete);
     tailNode = document.createTextNode(whole.slice(cut));
     body.append(tailNode);
-    markToolLines(complete);
+    if (mark) markToolLines(complete);
   };
 
-  // The tools disclosure follows the log: drawn at most twice a second while
-  // chunks stream, and once more from the whole text when the run is over.
+  // The disclosure is redrawn when the reader has something new, at most
+  // twice a second while chunks stream, and once more when the run is over.
   let toolsTimer = null;
   const paintTools = (live) => {
     clearTimeout(toolsTimer);
     toolsTimer = null;
-    if (tools) paintRunTools(tools, parseRunTools(body.textContent), { live });
+    if (tools) paintRunTools(tools, reader, { live });
   };
 
   stream.addEventListener('chunk', (event) => {
-    append(JSON.parse(event.data).text);
+    const { text } = JSON.parse(event.data);
+    const changed = reader.feed(text);
+    append(text, reader.active);
     if (logsState.atBottom) body.scrollTop = body.scrollHeight;
-    if (tools && !toolsTimer) toolsTimer = setTimeout(() => paintTools(true), 500);
+    if (changed && tools && !toolsTimer) toolsTimer = setTimeout(() => paintTools(true), 500);
     show();
   });
 
@@ -4211,8 +4173,10 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     const retro = markRetrospective(body);
     if (retro) {
       // The section is cut from the text, which flattens the spans around it; mark the lines again.
-      for (const node of [...body.childNodes]) {
-        if (node.nodeType === Node.TEXT_NODE) markToolLines(node);
+      if (reader.active) {
+        for (const node of [...body.childNodes]) {
+          if (node.nodeType === Node.TEXT_NODE) markToolLines(node);
+        }
       }
       if (logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
     }

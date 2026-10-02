@@ -7,14 +7,21 @@
  * leaves — the node uploads nothing else — so all of that goes into it as
  * readable lines: a key-aligned block from the init event, one line per call
  * between Claude's paragraphs, and a tally at the end. Nothing here writes;
- * the run feeds events in and writes the lines it gets back.
+ * the run feeds events in and writes the lines it gets back. How the lines
+ * look, and how the page reads them back, is in toolLines.ts.
  */
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
+import { CALL_GLYPH, FAIL_GLYPH, key } from './toolLines.js';
 
-/** The key column's width, the same as the log header's `directory  …` lines. */
-const KEY_WIDTH = 11;
-/** The most one call's summary, or one failure's reason, takes up. */
+/**
+ * How much of any input is looked at, before anything else is done with it.
+ * Enough for a line; little enough that nothing below can take long on it,
+ * since this runs in the stdout handler while the run goes.
+ */
+const RAW_MAX = 400;
+/** The most one call's summary, or one failure's reason, takes up in the log. */
 const SUMMARY_MAX = 100;
 /** How many servers a status line names before "and N more". */
 const NAMES_MAX = 12;
@@ -65,6 +72,14 @@ interface McpServer {
   tools: number;
 }
 
+/** One call the log has a line for. */
+interface Call {
+  /** The name the log shows: the tool's, or `Server · tool`. */
+  display: string;
+  /** An MCP tool's failure is reported without its text, which can echo the input. */
+  mcp: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -75,10 +90,6 @@ function text(value: unknown): string | null {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-}
-
-function key(name: string): string {
-  return name.padEnd(KEY_WIDTH);
 }
 
 function plural(count: number, noun: string): string {
@@ -101,10 +112,12 @@ export function bounded(value: string, max = SUMMARY_MAX): string {
 }
 
 // Credentials as they tend to appear on a command line. Each keeps the name
-// and drops the value, so the line still says what the command was for.
+// and drops the value, so the line still says what it was for. Every pattern
+// is anchored on a fixed word, so a long run of letters before it costs one
+// look per character and no more: GITHUB_TOKEN=x keeps GITHUB_ and loses x.
 const SECRETS: [RegExp, string][] = [
   [/\b(bearer|basic)\s+[a-z0-9._~+/=-]{8,}/gi, '$1 ***'],
-  [/([a-z0-9_-]*(?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1***'],
+  [/((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1***'],
   [/(--?(?:api-?key|token|secret|password)\s+)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1***'],
   [/\bsk-[a-z0-9_-]{8,}/gi, 'sk-***'],
   [/\b(gh[pousr]_)[a-z0-9]{8,}/gi, '$1***'],
@@ -116,6 +129,24 @@ export function redactSecrets(value: string): string {
   return SECRETS.reduce((out, [pattern, replacement]) => out.replace(pattern, replacement), value);
 }
 
+// A URL keeps its scheme, host and path. Whoever stood before the host, and
+// whatever followed the path — the query, the fragment — is where keys go.
+const URL_PATTERN = /\b([a-z][a-z0-9+.-]*:\/\/)(?:[^\s/?#@]*@)?([^\s/?#]*)([^\s?#]*)\S*/gi;
+
+/** The text with every URL in it cut down to scheme, host and path. */
+export function stripUrls(value: string): string {
+  return value.replace(URL_PATTERN, '$1$2$3');
+}
+
+/**
+ * The one way anything a tool was given reaches the log. The text is cut to
+ * RAW_MAX before any pattern sees it, then credentials are blanked, URLs
+ * kept to scheme, host and path, and the rest put on one bounded line.
+ */
+export function sanitize(value: string): string {
+  return bounded(stripUrls(redactSecrets(value.slice(0, RAW_MAX))));
+}
+
 /** The path as the run's directory sees it, when the file is inside; else as given. */
 function relativePath(file: string | null, cwd: string): string {
   if (!file) return '';
@@ -124,57 +155,80 @@ function relativePath(file: string | null, cwd: string): string {
   return relative && !relative.startsWith('..') && !path.isAbsolute(relative) ? relative : file;
 }
 
-/** The URL without its scheme, query or fragment: where a fetch went, not what it carried. */
-function hostAndPath(url: string | null): string {
+/**
+ * A command by its program and subcommand alone — `curl …`, `git push …` —
+ * never its arguments, which is where paths, payloads and credentials live.
+ * The subcommand is shown only when it is a word of lowercase letters alone,
+ * which is what `push`, `test` and `install` are and what a value seldom is.
+ */
+function commandGist(command: string): string {
+  const words = firstLine(command).split(/\s+/).filter(Boolean);
+  // Leading VAR=value assignments set the environment; the program comes after.
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!)) words.shift();
+  const [program, next] = words;
+  if (!program) return '';
+  const name = program.includes('/') ? (program.split('/').pop() ?? program) : program;
+  const subcommand = next && /^[a-z]{1,24}$/.test(next) ? next : null;
+  const shown = subcommand ? `${name} ${subcommand}` : name;
+  return words.length > (subcommand ? 2 : 1) ? `${shown} …` : shown;
+}
+
+/** Where a fetch went: scheme, host and path of the URL, and nothing it carried. */
+function urlOnly(url: string | null): string {
   if (!url) return '';
   try {
     const parsed = new URL(url);
-    return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+    return `${parsed.origin}${parsed.pathname === '/' ? '' : parsed.pathname}`;
   } catch {
-    return url.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split(/[?#]/)[0] ?? '';
+    return url.split(/[?#]/)[0] ?? '';
   }
 }
 
 /**
  * What one call was about, in a line: enough to follow the run, never the
- * whole input. A Bash call shows its description when it has one, else the
- * command's first line with credentials blanked; file tools their path,
- * relative to the run's directory when inside it; searches their pattern or
- * query; a fetch where it went; a subagent or skill its name. Unbounded.
+ * whole input. A Bash call shows its description when it has one, else its
+ * program and subcommand; file tools their path, relative to the run's
+ * directory when inside it; searches their pattern or query; a fetch where
+ * it went; a subagent or skill its name. Whatever the tool, the answer has
+ * been through `sanitize`.
  */
 export function summarizeCall(name: string, input: unknown, cwd: string): string {
+  // Cut on the way in, so nothing below looks at more than a line's worth.
   const field = (...keys: string[]): string | null => {
     for (const k of keys) {
       const value = isRecord(input) ? text(input[k]) : null;
-      if (value) return value;
+      if (value) return value.slice(0, RAW_MAX);
     }
     return null;
   };
-  switch (name) {
-    case 'Bash':
-      return field('description') ?? redactSecrets(firstLine(field('command') ?? ''));
-    case 'Read':
-    case 'Edit':
-    case 'MultiEdit':
-    case 'Write':
-      return relativePath(field('file_path'), cwd);
-    case 'NotebookEdit':
-      return relativePath(field('notebook_path', 'file_path'), cwd);
-    case 'Grep':
-    case 'Glob':
-      return field('pattern') ?? '';
-    case 'WebFetch':
-      return hostAndPath(field('url'));
-    case 'WebSearch':
-      return field('query') ?? '';
-    case 'Task':
-    case 'Agent':
-      return field('description') ?? '';
-    case 'Skill':
-      return field('skill', 'name') ?? '';
-    default:
-      return field('description', 'query') ?? '';
-  }
+  const summary = ((): string => {
+    switch (name) {
+      case 'Bash':
+        return field('description') ?? commandGist(field('command') ?? '');
+      case 'Read':
+      case 'Edit':
+      case 'MultiEdit':
+      case 'Write':
+        return relativePath(field('file_path'), cwd);
+      case 'NotebookEdit':
+        return relativePath(field('notebook_path', 'file_path'), cwd);
+      case 'Grep':
+      case 'Glob':
+        return field('pattern') ?? '';
+      case 'WebFetch':
+        return urlOnly(field('url'));
+      case 'WebSearch':
+        return field('query') ?? '';
+      case 'Task':
+      case 'Agent':
+        return field('description') ?? '';
+      case 'Skill':
+        return field('skill', 'name') ?? '';
+      default:
+        return field('description', 'query') ?? '';
+    }
+  })();
+  return sanitize(summary);
 }
 
 /** Token counts as the context line says them: 950, 1.5k, 31k. */
@@ -256,13 +310,18 @@ async function exists(file: string): Promise<boolean> {
  * The skills and agents the project supplies: `.claude/skills/<name>/SKILL.md`
  * and `.claude/agents/<name>.md` in the run's directory or any folder above it
  * up to the one holding `.git`, which is where Claude Code stops reading
- * project files too. A few directory reads, never a walk down.
+ * project files too. The home folder is the user's, not a project's, and
+ * nothing at or above it is looked at, so a run outside any repository never
+ * has the user's own skills written up as the project's. A few directory
+ * reads, never a walk down.
  */
-export async function projectScope(dir: string): Promise<ProjectScope> {
+export async function projectScope(dir: string, home = os.homedir()): Promise<ProjectScope> {
   const skills = new Set<string>();
   const agents = new Set<string>();
+  const userHome = path.resolve(home);
   let at = path.resolve(dir);
   for (let depth = 0; depth < PROBE_DEPTH; depth += 1) {
+    if (at === userHome || userHome.startsWith(at + path.sep) || at === path.dirname(at)) break;
     const claude = path.join(at, '.claude');
     const [skillDirs, agentFiles] = await Promise.all([
       fsp.readdir(path.join(claude, 'skills'), { withFileTypes: true }).catch(() => []),
@@ -275,9 +334,7 @@ export async function projectScope(dir: string): Promise<ProjectScope> {
       if (entry.isFile() && entry.name.endsWith('.md')) agents.add(entry.name.slice(0, -'.md'.length));
     }
     if (await exists(path.join(at, '.git'))) break;
-    const parent = path.dirname(at);
-    if (parent === at) break;
-    at = parent;
+    at = path.dirname(at);
   }
   return { skills: [...skills], agents: [...agents] };
 }
@@ -286,9 +343,10 @@ export async function projectScope(dir: string): Promise<ProjectScope> {
  * Follows one run's events and answers the lines its log gets. The setup
  * block comes from the first init event, a `context` line from the first
  * request's token count, a `⏺` line from each tool call in a complete
- * assistant message (the same call streams in pieces too, so calls are
- * kept by id and never written twice), a `✗` line from each result that
- * reports an error, and the tally once the run is over.
+ * assistant message (the CLI sends one assistant event per content block
+ * under one message id, and the call streams in pieces before that, so
+ * calls are kept by id and never written twice), a `✗` line from each
+ * result that reports an error, and the tally once the run is over.
  */
 export class RunTools {
   /** For relative paths: where claude ran, which the init event says exactly. */
@@ -298,8 +356,8 @@ export class RunTools {
   private permissionMode: string | null = null;
   private servers: McpServer[] = [];
   private project: ProjectScope = { skills: [], agents: [] };
-  /** Every call so far by its id, with the name the log shows for it, in order. */
-  private readonly calls = new Map<string, string>();
+  /** Every call so far by its id, in order. */
+  private readonly calls = new Map<string, Call>();
 
   constructor(cwd: string) {
     this.cwd = cwd;
@@ -332,6 +390,7 @@ export class RunTools {
     const serverCount = this.servers.filter((server) => server.tools > 0).length + unlisted.size;
     // Only when every MCP tool found its server is a server with none known to have none.
     const everyToolPlaced = this.servers.reduce((sum, server) => sum + server.tools, 0) === mcp.length;
+    const withCount = (server: McpServer): string => `${server.display} ${server.tools || (everyToolPlaced ? 0 : '?')}`;
 
     const lines: string[] = [];
     const version = text(event.claude_code_version);
@@ -349,9 +408,7 @@ export class RunTools {
     const projectAgents = agents.filter((name) => this.project.agents.includes(name));
     const projectServers = this.servers.filter((server) => server.scope === 'project').sort((a, b) => byUrgency(a.status, b.status) || a.display.localeCompare(b.display));
     const project = [
-      projectServers.length
-        ? `mcp: ${projectServers.map((server) => (server.status === 'connected' ? `${server.display} ${server.tools || (everyToolPlaced ? 0 : '?')}` : `${server.display} (${statusLabel(server.status)})`)).join(', ')}`
-        : null,
+      projectServers.length ? `mcp: ${projectServers.map((server) => (server.status === 'connected' ? withCount(server) : `${server.display} (${statusLabel(server.status)})`)).join(', ')}` : null,
       projectSkills.length ? `skills: ${someNames(projectSkills)}` : null,
       projectAgents.length ? `agents: ${someNames(projectAgents)}` : null,
     ].filter(Boolean);
@@ -361,9 +418,7 @@ export class RunTools {
     // how many skills, plugins and agents came from outside the project.
     const global = this.servers.filter((server) => server.scope === 'global');
     const connected = global.filter((server) => server.status === 'connected').sort((a, b) => b.tools - a.tools || a.display.localeCompare(b.display));
-    if (connected.length) {
-      lines.push(`${key('global')}mcp connected: ${connected.map((server) => `${server.display} ${server.tools || (everyToolPlaced ? 0 : '?')}`).join(' · ')}`);
-    }
+    if (connected.length) lines.push(`${key('global')}mcp connected: ${connected.map(withCount).join(' · ')}`);
     const statuses = [...new Set(global.map((server) => server.status))].filter((status) => status !== 'connected').sort(byUrgency);
     for (const status of statuses) {
       const names = sortedNames(global.filter((server) => server.status === status));
@@ -398,23 +453,28 @@ export class RunTools {
     const lines: string[] = [];
     for (const block of blocks(message)) {
       if (block.type !== 'tool_use' || typeof block.id !== 'string' || typeof block.name !== 'string' || this.calls.has(block.id)) continue;
+      const mcp = block.name.startsWith(MCP_PREFIX);
       const display = this.displayName(block.name);
-      this.calls.set(block.id, display);
+      this.calls.set(block.id, { display, mcp });
       // An MCP call's input is the server's business; the tool's name says enough.
-      const summary = block.name.startsWith(MCP_PREFIX) ? '' : bounded(summarizeCall(block.name, block.input, this.cwd));
-      lines.push(`${parentToolUseId ? '  ' : ''}⏺ ${display}${summary ? `  ${summary}` : ''}`);
+      const summary = mcp ? '' : summarizeCall(block.name, block.input, this.cwd);
+      lines.push(`${parentToolUseId ? '  ' : ''}${CALL_GLYPH} ${display}${summary ? `  ${summary}` : ''}`);
     }
     return lines;
   }
 
-  /** A line for each tool result in a user message that reports an error. */
+  /**
+   * A line for each tool result in a user message that reports an error: the
+   * first line of the reason, sanitized, for a built-in tool; the name alone
+   * for an MCP tool, whose error can echo what it was sent.
+   */
   public results(message: CliMessage | undefined, parentToolUseId: string | null): string[] {
     const lines: string[] = [];
     for (const block of blocks(message)) {
       if (block.type !== 'tool_result' || block.is_error !== true) continue;
-      const name = (typeof block.tool_use_id === 'string' && this.calls.get(block.tool_use_id)) || 'tool';
-      const reason = bounded(firstLine(resultText(block.content)));
-      lines.push(`${parentToolUseId ? '    ' : '  '}✗ ${name} failed${reason ? `: ${reason}` : ''}`);
+      const call = typeof block.tool_use_id === 'string' ? this.calls.get(block.tool_use_id) : undefined;
+      const reason = call?.mcp ? '' : sanitize(firstLine(resultText(block.content).slice(0, RAW_MAX)));
+      lines.push(`${parentToolUseId ? '    ' : '  '}${FAIL_GLYPH} ${call?.display ?? 'tool'} failed${reason ? `: ${reason}` : ''}`);
     }
     return lines;
   }
@@ -426,7 +486,8 @@ export class RunTools {
    */
   public tally(result: { permission_denials?: unknown } | null): string[] {
     if (!this.started && this.calls.size === 0) return [];
-    const used = this.calls.size ? `${plural(this.calls.size, 'call')}: ${countList([...this.calls.values()])}` : 'none';
+    const names = [...this.calls.values()].map((call) => call.display);
+    const used = names.length ? `${plural(names.length, 'call')}: ${countList(names)}` : 'none';
     const lines = [`${key('tools used')}${used}`];
     const denied = Array.isArray(result?.permission_denials)
       ? result.permission_denials.filter(isRecord).map((denial) => this.displayName(text(denial.tool_name) ?? 'tool'))

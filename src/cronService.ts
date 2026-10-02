@@ -1735,17 +1735,23 @@ class CronService {
       let textBlockOpened = false;
       let lastWroteLine = false; // the last write was one of promptd's lines, which the next one follows directly
 
-      // Everything goes through the splitter, so a retrospective is caught
-      // wherever it starts and the log keeps the order things happened in.
+      // Claude's prose goes through the splitter, which watches it for the
+      // retrospective marker and holds back a tail that might be its start.
+      // textTail follows what the log got, not what was pushed, so a gap is
+      // sized by the line the log is actually on.
       const push = (text: string): void => {
-        textTail = (textTail + text).slice(-2);
         const output = retroSplitter ? retroSplitter.push(text) : text;
-        if (output) stream.write(output);
+        if (!output) return;
+        textTail = (textTail + output).slice(-2);
+        stream.write(output);
       };
 
-      /** Puts what comes next on a paragraph of its own: a blank line after whatever is there. */
+      /** The break that puts what comes next on a paragraph of its own; nothing when the log is already there. */
+      const paragraphGap = (): string => (!textTail || textTail.endsWith('\n\n') ? '' : textTail.endsWith('\n') ? '\n' : '\n\n');
+
       const startParagraph = (): void => {
-        if (textTail && !textTail.endsWith('\n\n')) push(textTail.endsWith('\n') ? '\n' : '\n\n');
+        const gap = paragraphGap();
+        if (gap) push(gap);
       };
 
       const writeText = (text: string): void => {
@@ -1754,10 +1760,23 @@ class CronService {
         push(text);
       };
 
-      /** One of promptd's lines — the setup block, a tool call — set off from Claude's text by a blank line, but following another such line directly. */
+      /**
+       * One of promptd's lines — the setup block, a tool call — set off from
+       * Claude's text by a blank line, but following another such line
+       * directly. It goes to the log straight, never through the splitter:
+       * a pattern quoting the marker must not start a retrospective, and a
+       * call made during one belongs in the output, not in it. Prose the
+       * splitter still holds back goes out first, so the order holds.
+       */
       const writeLine = (line: string): void => {
-        if (!(lastWroteLine && textTail.endsWith('\n'))) startParagraph();
-        push(`${line}\n`);
+        const held = retroSplitter?.flush() ?? '';
+        if (held) {
+          textTail = (textTail + held).slice(-2);
+          stream.write(held);
+        }
+        const gap = lastWroteLine && textTail.endsWith('\n') ? '' : paragraphGap();
+        stream.write(`${gap}${line}\n`);
+        textTail = `${line}\n`.slice(-2);
         lastWroteLine = true;
       };
 
@@ -1768,7 +1787,10 @@ class CronService {
         try {
           event = JSON.parse(trimmed) as CliEvent;
         } catch {
-          stream.write(`${line}\n`); // not JSON (a CLI warning); keep it verbatim
+          // Not JSON — a CLI warning — is kept as it is. A line that was meant
+          // to be JSON is not: the tail of an event cut off when the run was
+          // killed could carry a tool's whole input.
+          stream.write(trimmed.startsWith('{') ? `(unreadable CLI event, ${Buffer.byteLength(line)} bytes)\n` : `${line}\n`);
           return;
         }
         if (event.type === 'system' && event.subtype === 'init') {
@@ -1893,9 +1915,9 @@ class CronService {
         const failure = setupFailure(outcome, setupCommands.length, setupTimeoutMs, run.stoppedBy);
         return finish(outcome.why === 'stopped' ? 'stopped' : 'failed', failure.detail, failure.reason);
       }
-      // Asked to stop just as the last command finished.
-      if (run.stopping) return finish('stopped', `killed by ${run.stoppedBy} before claude started`);
       runTools.withProject(await projectScope(runCwd));
+      // Asked to stop just as the last command finished, or while the project was looked at.
+      if (run.stopping) return finish('stopped', `killed by ${run.stoppedBy} before claude started`);
       let child: ChildProcessByStdio<null, Readable, Readable>;
       try {
         child = spawnClaude(runCwd);
@@ -1930,6 +1952,13 @@ class CronService {
 
     // The project's own skills and agents, so the log can tell them from the user's.
     runTools.withProject(await projectScope(cwd));
+    // Asked to stop while the project was looked at: nothing has started, so nothing does.
+    if (run.stopping) {
+      writeHeader(null);
+      emit('run:started', run);
+      await finish('stopped', `killed by ${run.stoppedBy} before claude started`);
+      return run;
+    }
     let child: ChildProcessByStdio<null, Readable, Readable>;
     try {
       child = spawnClaude(cwd);

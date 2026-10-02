@@ -663,9 +663,11 @@ built-in   Task, Bash, Read, …
 context    31k tokens in the first request
 ```
 
-`project` is what the job's folder brought itself: MCP servers from its `.mcp.json`, and skills and agents found under `.claude/` there or in any folder above it up to the git root. It is left out when there is nothing. `global` is the user's own: servers by status, those waiting on a sign-in or failed before the connected ones, then how many skills, plugins and agents came from outside the project. A connected server shows how many tools it added, or `?` when the CLI's tool names could not be matched to it. `context` is what the first request carried, cache included.
+`project` is what the job's folder brought itself: MCP servers from its `.mcp.json`, and skills and agents found under `.claude/` there or in any folder above it up to the git root — never the home folder or anything above it, which are the user's. It is left out when there is nothing. `global` is the user's own: servers by status, those waiting on a sign-in or failed before the connected ones, then how many skills, plugins and agents came from outside the project. A connected server shows how many tools it added, or `?` when the CLI's tool names could not be matched to it. `context` is what the first request carried, cache included.
 
-Each tool call is one line between the paragraphs: `⏺ Bash  Run the test suite`, `⏺ Read  src/cronService.ts`, `⏺ Linear · save_issue`. A Bash call shows its description, or the first line of its command with anything that looks like a credential blanked; file tools their path, relative to the run's directory; searches their pattern or query; a fetch where it went. An MCP tool is named by its server and shows none of its input. A subagent's calls are two spaces in, and a call that failed gets `  ✗ Read failed: File does not exist.` under it.
+Each tool call is one line between the paragraphs: `⏺ Bash  Run the test suite`, `⏺ Read  src/cronService.ts`, `⏺ Linear · save_issue`. A Bash call shows its description, or else its program and subcommand alone — `curl …`, `git push …` — never its arguments; file tools their path, relative to the run's directory; searches their pattern or query; a fetch where it went. Whatever the tool, what it was given goes through one filter before it is written: cut to a line, anything that looks like a credential blanked, URLs kept to scheme, host and path. An MCP tool is named by its server and shows none of its input, and when it fails the log says only that it did, since a server's error can echo what it was sent. A subagent's calls are two spaces in, and a built-in call that failed gets `  ✗ Read failed: File does not exist.` under it, the first line of the reason through the same filter.
+
+The CLI sends one assistant event per content block, all under one message id, and with partial messages a call also streams in pieces before its block is complete. Calls are kept by their tool-use id and written once, from the complete block. A stdout line that was meant to be JSON but does not parse — the tail of an event cut off when a run was killed — is written as `(unreadable CLI event, N bytes)` rather than as it is, since it could carry a tool's whole input; a plain CLI warning still goes in verbatim.
 
 Before the statistics block, a tally:
 
@@ -674,7 +676,7 @@ tools used 12 calls: Read ×6, Bash ×4, Linear · save_issue ×2
 denied     2 calls: Bash ×2 (permission mode default)
 ```
 
-On the logs page these lines fold into a **Tools** line above the log — what was used, then the project's, then the user's own, then the built-ins — and each `⏺` line in the log is set apart from Claude's text. A log from before nodes wrote these lines, or from a CLI that does not report them, looks as it always did.
+On the logs page these lines fold into a **Tools** line above the log — what was used, then the project's, then the user's own, then the built-ins — and each `⏺` line in the log is set apart from Claude's text. The page takes a log to have these lines only when the block opens its output, right after `--- output ---`, and reads the block from there alone; a `⏺` or a block quoted in Claude's text further down is not mistaken for one, and once the `tools used` tally is written, that is what the page counts. A log from before nodes wrote these lines, or from a CLI that does not report them, looks as it always did.
 
 ## Lifetime totals
 

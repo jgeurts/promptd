@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { describe, expect, it } from 'vitest';
 
-import { RunTools, bounded, projectScope, redactSecrets, summarizeCall } from '../src/runTools.js';
+import { RunTools, bounded, projectScope, redactSecrets, sanitize, stripUrls, summarizeCall } from '../src/runTools.js';
 
 const CWD = '/Users/me/work/app';
 
@@ -51,6 +52,7 @@ function tracker(): RunTools {
 }
 
 const use = (id: string, name: string, input: unknown = {}): { content: unknown[] } => ({ content: [{ type: 'tool_use', id, name, input }] });
+const failure = (id: string, content: unknown): { content: unknown[] } => ({ content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content }] });
 
 describe('the setup block', () => {
   it('says what the session had, the project first, then the user, servers by status', () => {
@@ -141,23 +143,37 @@ describe('a tool call line', () => {
     expect(tools.uses(use('2', 'Read', { file_path: `${CWD}/src/cronService.ts` }), null)).toEqual(['⏺ Read  src/cronService.ts']);
     expect(tools.uses(use('3', 'Edit', { file_path: '/etc/hosts' }), null)).toEqual(['⏺ Edit  /etc/hosts']);
     expect(tools.uses(use('4', 'Grep', { pattern: 'TODO', path: CWD }), null)).toEqual(['⏺ Grep  TODO']);
-    expect(tools.uses(use('5', 'WebFetch', { url: 'https://example.com/docs/api?key=secret#top' }), null)).toEqual(['⏺ WebFetch  example.com/docs/api']);
+    expect(tools.uses(use('5', 'WebFetch', { url: 'https://example.com/docs/api?key=secret#top' }), null)).toEqual(['⏺ WebFetch  https://example.com/docs/api']);
     expect(tools.uses(use('6', 'WebSearch', { query: 'vitest fake timers' }), null)).toEqual(['⏺ WebSearch  vitest fake timers']);
     expect(tools.uses(use('7', 'Task', { description: 'Review the diff', prompt: 'long…' }), null)).toEqual(['⏺ Task  Review the diff']);
     expect(tools.uses(use('8', 'Skill', { skill: 'tdd' }), null)).toEqual(['⏺ Skill  tdd']);
     expect(tools.uses(use('9', 'TodoWrite', { todos: [] }), null)).toEqual(['⏺ TodoWrite']);
   });
 
-  it('shows a Bash command by its first line, with credentials blanked, when it has no description', () => {
+  it('shows a Bash command without a description by its program and subcommand alone', () => {
     const tools = tracker();
-    expect(tools.uses(use('1', 'Bash', { command: 'curl -H "Authorization: Bearer abcdefgh12345678" https://api.example.com\necho done' }), null)).toEqual([
-      '⏺ Bash  curl -H "Authorization: Bearer ***" https://api.example.com',
-    ]);
+    const bash = (id: string, command: string): string[] => tools.uses(use(id, 'Bash', { command }), null);
+    expect(bash('1', 'curl -H "Authorization: Bearer abcdefgh12345678" https://api.example.com/v1?key=1\necho done')).toEqual(['⏺ Bash  curl …']);
+    expect(bash('2', 'git push origin main')).toEqual(['⏺ Bash  git push …']);
+    expect(bash('3', 'npm test')).toEqual(['⏺ Bash  npm test']);
+    expect(bash('4', 'cd /Users/me/secret-client && npm test')).toEqual(['⏺ Bash  cd …']);
+    expect(bash('5', 'FOO=bar BAZ=1 ./scripts/deploy.sh --env prod')).toEqual(['⏺ Bash  deploy.sh …']);
+    expect(bash('6', 'ls')).toEqual(['⏺ Bash  ls']);
+    expect(bash('7', '\n\n  echo sk-abcdefghijklmnop')).toEqual(['⏺ Bash  echo …']);
+  });
+
+  it('puts every summary through the same filter, whatever the tool', () => {
+    const tools = tracker();
+    expect(tools.uses(use('1', 'Bash', { description: 'Deploy with token=abc123 to https://user:pw@host/x?y=1' }), null)).toEqual(['⏺ Bash  Deploy with token=*** to https://host/x']);
+    expect(tools.uses(use('2', 'Grep', { pattern: 'password=hunter2' }), null)).toEqual(['⏺ Grep  password=***']);
+    expect(tools.uses(use('3', 'WebSearch', { query: 'ghp_abcdefghijklmnop leaked?' }), null)).toEqual(['⏺ WebSearch  ghp_*** leaked?']);
+    expect(tools.uses(use('4', 'Task', { description: 'Check https://api.example.com/v1/items?api_key=zzz' }), null)).toEqual(['⏺ Task  Check https://api.example.com/v1/items']);
+    expect(tools.uses(use('5', 'Read', { file_path: `${CWD}/notes/token=abc.md` }), null)).toEqual(['⏺ Read  notes/token=***']);
   });
 
   it('keeps a summary to one bounded line', () => {
     const tools = tracker();
-    const [line] = tools.uses(use('1', 'Bash', { command: `echo ${'x'.repeat(200)}` }), null);
+    const [line] = tools.uses(use('1', 'Bash', { description: 'x'.repeat(200) }), null);
     expect(line?.length).toBeLessThanOrEqual('⏺ Bash  '.length + 100);
     expect(line?.endsWith('…')).toBe(true);
     expect(tools.uses(use('2', 'Bash', { description: 'first\nsecond' }), null)).toEqual(['⏺ Bash  first second']);
@@ -193,9 +209,10 @@ describe('a tool call line', () => {
 });
 
 describe('a failed tool result', () => {
-  it('names the call it answers and gives the first line of the reason', () => {
+  it('names the call it answers and gives the first line of the reason, filtered', () => {
     const tools = tracker();
     tools.uses(use('a', 'Read', { file_path: 'missing.ts' }), null);
+    tools.uses(use('b', 'Bash', { description: 'fetch' }), null);
     const message = {
       content: [
         { type: 'tool_result', tool_use_id: 'a', is_error: true, content: 'File does not exist.\nMore detail.' },
@@ -203,17 +220,26 @@ describe('a failed tool result', () => {
       ],
     };
     expect(tools.results(message, null)).toEqual(['  ✗ Read failed: File does not exist.']);
+    expect(tools.results(failure('b', '401 from https://api.example.com/v1?token=abc with Bearer abcdefgh12345678'), null)).toEqual([
+      '  ✗ Bash failed: 401 from https://api.example.com/v1 with Bearer ***',
+    ]);
   });
 
   it('reads the reason out of content blocks, and indents under a subagent', () => {
     const tools = tracker();
     tools.uses(use('a', 'Bash', { description: 'build' }), 'task-1');
-    const message = { content: [{ type: 'tool_result', tool_use_id: 'a', is_error: true, content: [{ type: 'text', text: 'Exit code 1' }] }] };
-    expect(tools.results(message, 'task-1')).toEqual(['    ✗ Bash failed: Exit code 1']);
+    expect(tools.results(failure('a', [{ type: 'text', text: 'Exit code 1' }]), 'task-1')).toEqual(['    ✗ Bash failed: Exit code 1']);
+  });
+
+  it("says only that an MCP call failed, since a server's error can echo its input", () => {
+    const tools = tracker();
+    tools.init(init());
+    tools.uses(use('l', 'mcp__claude_ai_Linear__save_issue', { title: 'Private title' }), null);
+    expect(tools.results(failure('l', 'Validation failed for title "Private title"'), null)).toEqual(['  ✗ Linear · save_issue failed']);
   });
 
   it('still reports a failure whose call it never saw', () => {
-    expect(tracker().results({ content: [{ type: 'tool_result', tool_use_id: 'zz', is_error: true, content: '' }] }, null)).toEqual(['  ✗ tool failed']);
+    expect(tracker().results(failure('zz', ''), null)).toEqual(['  ✗ tool failed']);
   });
 });
 
@@ -260,7 +286,7 @@ describe('the tally', () => {
   });
 });
 
-describe('redactSecrets', () => {
+describe('the filter every written input goes through', () => {
   it('blanks the usual shapes of a credential and keeps what it was for', () => {
     expect(redactSecrets('curl -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.abc" x')).toBe('curl -H "Authorization: Bearer ***" x');
     expect(redactSecrets('GITHUB_TOKEN=ghp_abcdefghijklmnop npm publish')).toBe('GITHUB_TOKEN=*** npm publish');
@@ -270,9 +296,36 @@ describe('redactSecrets', () => {
     expect(redactSecrets('echo sk-abcdefghijklmnop ghp_abcdefghijklmnop xoxb-1234-abcdefgh')).toBe('echo sk-*** ghp_*** xoxb-***');
   });
 
-  it('leaves ordinary commands alone', () => {
+  it('leaves ordinary text alone', () => {
     expect(redactSecrets('git commit -m "Fix the token parser"')).toBe('git commit -m "Fix the token parser"');
     expect(redactSecrets('npm test -- --reporter=dot')).toBe('npm test -- --reporter=dot');
+  });
+
+  it('keeps a URL to its scheme, host and path', () => {
+    expect(stripUrls('fetch https://user:pw@host.example/path/to?x=1&token=2#frag now')).toBe('fetch https://host.example/path/to now');
+    expect(stripUrls('see http://h/ and https://a.b/c?d')).toBe('see http://h/ and https://a.b/c');
+    expect(stripUrls('no url here')).toBe('no url here');
+  });
+
+  it('cuts the input first, then filters, then bounds the line', () => {
+    const line = sanitize(`${'a'.repeat(1_000_000)} token=x`);
+    expect(line.length).toBe(100);
+    expect(line.endsWith('…')).toBe(true);
+    expect(sanitize('a\n\n  b   token=c  ')).toBe('a b token=***');
+  });
+
+  it('takes no longer on a megabyte of argument than on a line', () => {
+    const megabyte = `${'a'.repeat(1_000_000)} password=x`;
+    const started = performance.now();
+    summarizeCall('Bash', { command: `echo ${megabyte}` }, CWD);
+    summarizeCall('Bash', { description: megabyte }, CWD);
+    summarizeCall('Grep', { pattern: megabyte }, CWD);
+    summarizeCall('Read', { file_path: `/x/${megabyte}` }, CWD);
+    sanitize(megabyte);
+    const tools = tracker();
+    tools.uses(use('a', 'Read', { file_path: 'x' }), null);
+    tools.results(failure('a', megabyte), null);
+    expect(performance.now() - started).toBeLessThan(200);
   });
 });
 
@@ -292,17 +345,19 @@ describe('bounded and summarizeCall', () => {
 
   it('shows where a fetch went even when the URL does not parse', () => {
     expect(summarizeCall('WebFetch', { url: 'example.com/path?x=1' }, CWD)).toBe('example.com/path');
-    expect(summarizeCall('WebFetch', { url: 'https://example.com/' }, CWD)).toBe('example.com');
+    expect(summarizeCall('WebFetch', { url: 'https://example.com/' }, CWD)).toBe('https://example.com');
   });
 });
 
 describe('projectScope', () => {
+  const tree = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-scope-'));
+  const write = (file: string): void => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, '');
+  };
+
   it('finds the skills and agents under .claude from the directory up to the git root, and no further', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-scope-'));
-    const write = (file: string): void => {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, '');
-    };
+    const root = tree();
     write(path.join(root, '.claude', 'skills', 'above-root', 'SKILL.md'));
     const repo = path.join(root, 'repo');
     write(path.join(repo, '.git'));
@@ -314,14 +369,30 @@ describe('projectScope', () => {
     write(path.join(sub, '.claude', 'skills', 'web-skill', 'SKILL.md'));
     write(path.join(sub, '.claude', 'agents', 'designer.md'));
 
-    const scope = await projectScope(sub);
+    const scope = await projectScope(sub, path.join(root, 'elsewhere'));
     expect(scope.skills.sort()).toEqual(['repo-skill', 'web-skill']);
     expect(scope.agents.sort()).toEqual(['designer', 'reviewer']);
   });
 
+  it("never reads the home folder's own skills as a project's, with no git root below it", async () => {
+    const home = tree();
+    write(path.join(home, '.claude', 'skills', 'personal', 'SKILL.md'));
+    write(path.join(home, '.claude', 'agents', 'me.md'));
+    const app = path.join(home, 'projects', 'app');
+    write(path.join(app, '.claude', 'skills', 'own', 'SKILL.md'));
+
+    expect(await projectScope(app, home)).toEqual({ skills: ['own'], agents: [] });
+  });
+
+  it('answers nothing for a run in the home folder itself', async () => {
+    const home = tree();
+    write(path.join(home, '.claude', 'skills', 'personal', 'SKILL.md'));
+    expect(await projectScope(home, home)).toEqual({ skills: [], agents: [] });
+  });
+
   it('answers nothing for a folder with no .claude anywhere up to the root', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-scope-empty-'));
+    const dir = tree();
     fs.writeFileSync(path.join(dir, '.git'), '');
-    expect(await projectScope(dir)).toEqual({ skills: [], agents: [] });
+    expect(await projectScope(dir, path.join(dir, 'home'))).toEqual({ skills: [], agents: [] });
   });
 });
