@@ -15,7 +15,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - Every run's log says what Claude had to work with — tools, MCP servers, skills, plugins and agents, the project's own set apart from yours — lists each tool call as it happens, and tallies them at the end. The logs page folds that into one line above the log.
 - An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.
-- Machine stats per node — CPU, memory, storage throughput and disk space, sampled every 5 seconds and charted over 15 minutes on the node's page. The sidebar names them only when one crosses its alert line.
+- Machine stats per node — CPU, memory, storage throughput and disk space, sampled every 5 seconds and charted over 15 minutes on the node's page. The sidebar's status block names them only when one crosses its alert line.
 - A notification centre behind the bell: everything the server announces, kept on disk, sorted by whether it needs you, named by the machine it happened on, with repeats kept to one row and a drawer that marks what you have actually read.
 - Alerts when the machine is in trouble — CPU, memory, unusual disk throughput, low disk space — each one naming the crons that were running at the time.
 
@@ -51,7 +51,7 @@ With [Tailscale](https://tailscale.com) on every Mac, the nodes reach the hub by
 
    If `tailscale` is not found, it lives at `/Applications/Tailscale.app/Contents/MacOS/Tailscale`.
 
-2. Open Settings (at the foot of the sidebar) → Nodes on the hub's page, and press **Add a Mac**. It shows a command with the hub's tailnet address and a join code.
+2. Open Settings (the gear at the right of the header) → Nodes on the hub's page, and press **Add a Mac**. It shows a command with the hub's tailnet address and a join code.
 
 3. Run that command in a terminal on the other Mac. It installs promptd from the hub itself, not from GitHub:
 

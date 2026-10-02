@@ -24,6 +24,18 @@
           <span id="brand-name">promptd</span>
         </a>
         <div class="topbar-right">
+          <button id="feedback-open" class="btn small icon" type="button" title="Report a bug or suggestion" aria-label="Report a bug or suggestion">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" />
+              <path d="M8 5.4v2.2" />
+              <path d="M8 9.1v.01" />
+            </svg>
+          </button>
+          <a id="settings-open" class="btn small icon settings" href="#/settings" title="Settings" aria-label="Settings">
+            &#9881;
+            <!-- Lit while an update is on offer; the label says so in words. -->
+            <span id="update-dot" class="update-dot" aria-hidden="true" hidden></span>
+          </a>
           <button id="bell" class="btn small icon bell" type="button" title="Notifications" aria-label="Notifications" aria-controls="drawer" aria-expanded="false">
             <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 6.6a4 4 0 0 1 8 0c0 3 .9 4 1.4 4.5H2.6C3.1 10.6 4 9.6 4 6.6Z" />
@@ -37,65 +49,37 @@
           <span id="bell-status" class="sr-only" role="status" aria-atomic="true"></span>
           <span id="activity-status" class="sr-only" role="status" aria-atomic="true"></span>
         </div>
-        <!-- On a phone the one availability display stays in view without opening the menu. -->
+        <!-- On a phone the status line stays in view without opening the menu. -->
         <a id="status-strip" class="status-strip" href="#/status" hidden></a>
         <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       </header>
 
       <!--
-        The sidebar. One display of where work can still go, what is running,
-        the jobs, each project, each computer, then Settings and feedback. A
-        rail with the words hidden when collapsed; a drawer on a phone.
+        The sidebar: what is running, the jobs and each project at the top,
+        and one status block pinned to the bottom with the worst current issue
+        and each computer's standing. A drawer off the left edge below 1024px.
       -->
       <aside id="sidebar" class="sidebar" aria-label="Sidebar">
         <div class="sidebar-head">
-          <button id="sidebar-toggle" class="btn small icon side-toggle" type="button" aria-expanded="true" aria-controls="sidebar" aria-label="Collapse sidebar" title="Collapse sidebar">
-            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <path d="M10 3 5 8l5 5" />
-            </svg>
-          </button>
           <button id="sidebar-close" class="btn small icon side-close" type="button" aria-label="Close menu" title="Close menu">&times;</button>
         </div>
-        <a id="avail" class="avail" href="#/status">
-          <span class="avail-rail" aria-hidden="true"></span>
-          <span class="avail-body"></span>
-          <span class="side-tip" role="tooltip" id="avail-tip"></span>
-        </a>
         <nav class="side-nav" aria-label="Main">
-          <section class="side-group running" aria-labelledby="side-running-title">
-            <h2 id="side-running-title" class="side-title"><span class="side-label">Running now</span></h2>
+          <section class="side-group" aria-labelledby="side-running-title">
+            <h2 id="side-running-title" class="side-title">Running now</h2>
             <ul id="side-running" class="side-list"></ul>
           </section>
           <section class="side-group" aria-labelledby="side-jobs-title">
-            <h2 id="side-jobs-title" class="side-title"><span class="side-label">Jobs</span></h2>
+            <h2 id="side-jobs-title" class="side-title">Jobs</h2>
             <ul id="side-jobs" class="side-list"></ul>
             <!-- When the Memory page lands here, its item goes after One-time, before the projects: add it to SIDE_PAGES in app.js. -->
             <div id="side-projects" class="side-projects"></div>
           </section>
-          <section class="side-group" aria-labelledby="side-nodes-title">
-            <h2 id="side-nodes-title" class="side-title"><span class="side-label">Nodes</span></h2>
-            <ul id="side-nodes" class="side-list"></ul>
-          </section>
         </nav>
-        <div class="side-foot">
-          <a id="side-settings" class="side-item" href="#/settings" data-route="settings">
-            <span class="side-icon" aria-hidden="true">&#9881;</span>
-            <span class="side-label">Settings</span>
-            <span id="side-update" class="side-mark update" hidden><span class="sr-only">, update available</span></span>
-            <span class="side-tip" role="tooltip">Settings</span>
-          </a>
-          <button id="feedback-open" class="side-item" type="button">
-            <span class="side-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" />
-                <path d="M8 5.4v2.2" />
-                <path d="M8 9.1v.01" />
-              </svg>
-            </span>
-            <span class="side-label">Report a bug</span>
-            <span class="side-tip" role="tooltip">Report a bug or suggestion</span>
-          </button>
-        </div>
+        <section class="side-status" aria-labelledby="side-status-title">
+          <h2 class="side-title"><a id="side-status-title" class="side-status-link" href="#/status" data-route="status">Status</a></h2>
+          <a id="side-alert" class="side-alert" href="#/status"></a>
+          <ul id="side-nodes" class="side-nodes"></ul>
+        </section>
       </aside>
 
       <main id="view" class="view" tabindex="-1"></main>

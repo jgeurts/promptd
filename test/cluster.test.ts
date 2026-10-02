@@ -10,6 +10,7 @@ import {
   limitName,
   limitStatus,
   machineExceptions,
+  readingLimits,
   shownLimits,
   tightestWindow,
   unknownAccountUsage,
@@ -740,6 +741,21 @@ describe('availability', () => {
     // At 100% it is the bottleneck, drawn as a meter with its own flag.
     const drawn = clusterSummary([node({ usage: reading([usageWindow('session', 10), usageWindow('weekly_all', 20), scoped(100, 'critical')]) })], null).availability;
     expect(drawn.best?.unshown).toEqual([]);
+  });
+
+  it("keeps every near or reached limit in a computer's reading, not only the session, the weekly and the bottleneck", () => {
+    const scoped = (percent: number, severity: UsageWindow['severity'] = 'normal'): UsageWindow => usageWindow('weekly_scoped', percent, severity, 'Fable');
+    // Fable at 55% is flagged but not the bottleneck: the row still has to draw it.
+    const { computers } = clusterSummary([node({ usage: reading([usageWindow('session', 70), usageWindow('weekly_all', 20), scoped(55, 'warning')]) })], null);
+    expect(computers[0]!.reading.limits.map((limit) => [limit.name, limit.status])).toEqual([
+      ['5-hour session', 'ok'],
+      ['Weekly, all models', 'ok'],
+      ['Weekly, Fable', 'near'],
+    ]);
+    // Fine and not the bottleneck: left out, as before.
+    const quiet = clusterSummary([node({ usage: reading([usageWindow('session', 70), usageWindow('weekly_all', 20), scoped(5)]) })], null);
+    expect(quiet.computers[0]!.reading.limits.map((limit) => limit.name)).toEqual(['5-hour session', 'Weekly, all models']);
+    expect(readingLimits([])).toEqual([]);
   });
 
   it('gives each computer its load and the key of the account block its usage is under', () => {
