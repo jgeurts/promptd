@@ -13,13 +13,21 @@
    * includes a limit reached, since that is a hold rather than a failure; red
    * is failure and error alone. Every state colour comes with a glyph and a word.
    */
-  --primary-bg: #e7e3de;
-  --primary-ink: #161e24;
-  --primary-hover: #f6f2ee;
-  --selected-bg: var(--panel-2);
+  --primary-bg: #cee8e9;
+  --primary-ink: #132027;
+  --primary-hover: #e3f1f1;
+  --selected-bg: #1b2730;
   --selected-edge: var(--text);
-  --meter: #81adcc;
-  --meter-soft: rgba(129, 173, 204, 0.16);
+  --text-2: #c9ced8;
+  --meter: #9bc3cb;
+  --meter-soft: rgba(155, 195, 203, 0.16);
+  /* A computer's two bars: the session lighter, the week deeper, so they differ in lightness and not hue alone. */
+  --meter-session: #d6ecee;
+  --meter-week: #7fa9b5;
+  --track: #252a34;
+  /* The hover over a computer's row. */
+  --tip-bg: #20242d;
+  --tip-border: #343a47;
   --focus: #aad7ed;
   --focus-soft: rgba(170, 215, 237, 0.18);
   --ok: #57ad82;
@@ -29,6 +37,10 @@
   --fail: #ff6161;
   --fail-soft: rgba(255, 97, 97, 0.12);
   --fail-edge: rgba(255, 97, 97, 0.4);
+  /* The disk banner past 95%: a dark red ground, and light red words that read 4.5:1 on it. */
+  --fail-bg: #2a1a1d;
+  --fail-ink: #ffd9d9;
+  --fail-ink-2: #e9c3c3;
   /* Decoration that is not a state: project folders, a run's retrospective, a tool call. */
   --quiet: #9283a8;
   /* The tint and the edge of a row with news. */
@@ -67,7 +79,7 @@ a {
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -138,7 +150,7 @@ a {
   margin-left: auto;
 }
 
-/* An update on offer: an amber dot on the Settings button's corner, as the bell's marks sit on its. */
+/* An update on offer: a dot on the Settings button's corner, as the bell's marks sit on its. */
 .btn.settings {
   position: relative;
   overflow: visible;
@@ -152,7 +164,7 @@ a {
   height: 9px;
   border: 2px solid var(--panel);
   border-radius: 50%;
-  background: var(--warn);
+  background: var(--primary-bg);
 }
 
 .update-dot[hidden] {
@@ -225,12 +237,12 @@ a {
  */
 .sidebar {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   position: sticky;
-  top: var(--topbar-h);
+  top: calc(var(--header-h, var(--topbar-h)) + var(--banner-h, 0px));
   display: flex;
   flex-direction: column;
-  height: calc(100vh - var(--topbar-h));
+  height: calc(100vh - var(--header-h, var(--topbar-h)) - var(--banner-h, 0px));
   overflow: hidden;
   padding: 12px 10px 12px;
   border-right: 1px solid var(--border);
@@ -275,6 +287,56 @@ a {
   list-style: none;
 }
 
+/* `display: grid` above outranks the hidden attribute, which is how "No projects yet" once showed with the list folded. */
+.side-list[hidden] {
+  display: none;
+}
+
+/* A section heading with a control or a count at its end: Projects and its +, Status and how many computers are open. */
+.side-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding-right: 2px;
+}
+
+.side-title-row .side-title {
+  margin: 0;
+}
+
+.side-head-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.side-head-btn:hover,
+.side-head-btn[aria-expanded='true'] {
+  background: var(--selected-bg);
+  color: var(--text);
+}
+
+.side-head-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.side-open {
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .side-empty {
   padding: 4px 8px;
   color: var(--muted);
@@ -283,8 +345,8 @@ a {
 
 /*
  * One item: an icon, a label and whatever marks it carries, as a link or a
- * button. The current page is the accent edge and a heavier label, never a
- * colour on its own.
+ * button. The current page is a soft fill and a heavier label, never a colour
+ * on its own.
  */
 .side-item {
   position: relative;
@@ -311,7 +373,6 @@ a {
 
 .side-item[aria-current='page'] {
   background: var(--selected-bg);
-  box-shadow: inset 2px 0 0 var(--selected-edge);
   font-weight: 600;
 }
 
@@ -368,6 +429,7 @@ a {
 }
 
 .side-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -413,6 +475,16 @@ a {
   color: var(--muted);
 }
 
+.side-count.side-dot {
+  min-width: 0;
+  width: 7px;
+  height: 7px;
+  margin-left: auto;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--primary-bg);
+}
+
 .side-count[hidden] {
   display: none;
 }
@@ -441,27 +513,16 @@ a {
   background: var(--primary-bg);
 }
 
-.side-mark.update::before {
-  background: var(--warn);
-}
-
 .side-mark[hidden] {
   display: none;
 }
 
-/* The projects fold away under one row that counts them. */
+/* Projects: its heading and +, the New project form, then the projects once there are any. */
 .side-projects {
   margin-top: 2px;
 }
 
-.side-disclose .side-chevron {
-  display: inline-flex;
-  transition: transform 150ms ease;
-}
 
-.side-disclose[aria-expanded='true'] .side-chevron {
-  transform: rotate(90deg);
-}
 
 .side-projects .side-list,
 .side-add {
@@ -575,6 +636,10 @@ a {
   overflow-wrap: anywhere;
 }
 
+.side-alert[hidden] {
+  display: none;
+}
+
 .side-alert:hover {
   background: var(--panel-2);
 }
@@ -602,95 +667,343 @@ a {
   white-space: nowrap;
 }
 
+/*
+ * The computers, the hub's own first and the rest A to Z. As bars, each row is
+ * the name, how busy it is and its state, over two thin bars: the session,
+ * then the week. A used-up limit keeps its colour and fills its bar; the row's
+ * "back Sat 7 PM" says the rest. Offline is the one state in the failure colour.
+ */
 .side-nodes {
   display: grid;
-  gap: 8px;
+  gap: 2px;
   margin: 0;
-  padding: 0 8px;
+  padding: 0;
   list-style: none;
 }
 
-.side-node {
-  display: grid;
-  gap: 5px;
-  padding-top: 8px;
-  border-top: 1px dashed var(--border);
-  font-size: 12px;
+.side-nodes.rings {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 2px;
 }
 
-.side-node:first-child {
-  padding-top: 0;
-  border-top: none;
-}
-
-/* The row's first line: the glyph, the name, and how busy it is, with the state's word in the load. */
-.side-node-head {
+.sn-link {
   display: flex;
-  align-items: center;
-  gap: 7px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--text);
+}
+
+.sn-link:hover {
+  background: var(--panel-2);
+}
+
+.sn-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+
+.sn-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
 }
 
-.side-node-head .side-icon {
-  width: auto;
-  font-size: 12px;
-}
-
-.side-node-name {
+.sn-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text);
 }
 
-.side-node-name:hover {
-  text-decoration: underline;
-}
-
-.side-node-name:focus-visible,
-.side-alert:focus-visible,
-.side-status-link:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-}
-
-.side-node-load {
-  margin-left: auto;
+.sn-run {
   flex: none;
-  color: var(--muted);
+  color: var(--ok);
   font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.sn-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--text);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-.side-node .avail-limits {
-  gap: 5px;
+.sn-row.held .sn-state {
+  color: var(--text-2);
 }
 
-.side-node .avail-lim {
-  font-size: 11.5px;
+.sn-row.offline .sn-name,
+.sn-cell.offline .sn-name {
+  color: var(--muted);
 }
 
-.side-node .avail-lim .lim-meter {
+.sn-row.offline .sn-state,
+.sn-cell.offline .sn-ring.empty {
+  color: var(--fail);
+}
+
+.sn-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sn-bar {
+  display: block;
   height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  overflow: hidden;
 }
 
-.side-node .avail-lim .lim-reset {
-  font-size: 11px;
+.sn-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
 }
 
-/* "same account as mini", "No usage reading", "last known · checked 3 hours ago". */
-.side-node-meta {
+.sn-bar .session,
+.sn-keys .session {
+  background: var(--meter-session);
+}
+
+.sn-bar .week,
+.sn-keys .week {
+  background: var(--meter-week);
+}
+
+.sn-meta {
   color: var(--muted);
   font-size: 11.5px;
   overflow-wrap: anywhere;
 }
 
-.side-node-meta.stale {
+/* Which bar is which, said once under the computers. */
+.sn-keys {
+  display: flex;
+  gap: 12px;
+  padding: 2px 8px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sn-keys[hidden] {
+  display: none;
+}
+
+.sn-keys .key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sn-keys i {
+  display: inline-block;
+  width: 12px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+/* As rings, three to a row: the week outside, the session inside, the share used or when it is back in the middle. */
+.sn-cell .sn-link {
+  align-items: center;
+  gap: 2px;
+  padding: 6px 2px;
+  text-align: center;
+}
+
+.sn-ring {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+}
+
+.sn-ring svg {
+  display: block;
+}
+
+.sn-ring .ring-num {
+  fill: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sn-ring .ring-word {
+  fill: var(--text-2);
+  font-size: 11px;
+}
+
+.sn-ring.empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sn-cell .sn-name {
+  max-width: 100%;
+  margin-top: 2px;
+  font-size: 12.5px;
+}
+
+.sn-cell .sn-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: normal;
+}
+
+/* The hover: each limit as a computer's row is drawn, its name and the share used over a bar, when it resets beneath. */
+.sn-tip {
+  position: fixed;
+  z-index: 70;
+  display: grid;
+  gap: 10px;
+  width: 264px;
+  padding: 12px 14px;
+  border: 1px solid var(--tip-border);
+  border-radius: 10px;
+  background: var(--tip-bg);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.sn-tip[hidden] {
+  display: none;
+}
+
+.tip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tip-head b {
+  font-size: 13px;
+}
+
+.tip-head span {
+  color: var(--text-2);
+}
+
+.tip-lim {
+  display: grid;
+  gap: 5px;
+}
+
+.tip-lim-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tip-lim .sn-bar {
+  height: 5px;
+}
+
+.tip-reset {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.tip-notes {
+  display: grid;
+  gap: 3px;
+  padding-top: 8px;
+  border-top: 1px solid var(--tip-border);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/*
+ * The banner under the header for a disk past 90% full: a warning glyph and
+ * plain words, which turn red on a red ground past 95%. It stays under the
+ * header while the page scrolls; the sidebar sits below both.
+ */
+.disk-banner {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  position: sticky;
+  top: var(--header-h, var(--topbar-h));
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-height: 40px;
+  padding: 4px 12px 4px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-2);
+  font-size: 13px;
+}
+
+.disk-banner[hidden] {
+  display: none;
+}
+
+.banner-glyph {
+  display: inline-flex;
+  flex: none;
   color: var(--warn);
+}
+
+.banner-text b {
+  font-weight: 600;
+}
+
+.banner-why,
+.banner-more {
+  color: var(--muted);
+}
+
+.banner-link {
+  color: var(--focus);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.banner-close {
+  margin-left: auto;
+}
+
+.banner-link:focus-visible,
+.banner-more:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.disk-banner.critical {
+  border-bottom-color: var(--fail-edge);
+  background: var(--fail-bg);
+}
+
+.disk-banner.critical .banner-glyph {
+  color: var(--fail);
+}
+
+.disk-banner.critical .banner-text b,
+.disk-banner.critical .banner-link {
+  color: var(--fail-ink);
+}
+
+.disk-banner.critical .banner-why,
+.disk-banner.critical .banner-more {
+  color: var(--fail-ink-2);
 }
 
 /* One limit on its own line: the name, the percentage used, a meter, and when it resets. Also the job form's Node field. */
@@ -720,23 +1033,6 @@ a {
   font-size: 11.5px;
 }
 
-.avail-lim.near .lim-name,
-.avail-lim.near .lim-pct {
-  color: var(--warn);
-}
-
-.avail-lim.reached .lim-name,
-.avail-lim.reached .lim-pct {
-  color: var(--warn);
-}
-
-.lim-fill.near {
-  background: var(--warn);
-}
-
-.lim-fill.reached {
-  background: var(--warn);
-}
 
 
 .hdr-icon {
@@ -933,11 +1229,11 @@ a {
 }
 
 .acct-status.reached {
-  color: var(--warn);
+  color: var(--text);
 }
 
 .acct-status.near {
-  color: var(--warn);
+  color: var(--text);
 }
 
 .acct-status.ok {
@@ -995,18 +1291,6 @@ a {
   text-transform: uppercase;
 }
 
-.lim.near .lim-name,
-.lim.near .lim-flag-cell,
-.lim.near .lim-pct {
-  color: var(--warn);
-}
-
-.lim.reached .lim-name,
-.lim.reached .lim-flag-cell,
-.lim.reached .lim-pct {
-  color: var(--warn);
-}
-
 .lim-meter {
   display: block;
   height: 6px;
@@ -1022,13 +1306,7 @@ a {
   background: var(--meter);
 }
 
-.lim.near .lim-fill {
-  background: var(--warn);
-}
 
-.lim.reached .lim-fill {
-  background: var(--warn);
-}
 
 .lim-reset {
   color: var(--muted);
@@ -1040,7 +1318,7 @@ a {
 }
 
 .acct-meta.stale {
-  color: var(--warn);
+  color: var(--muted);
 }
 
 /* The Settings page's Nodes card, scrolled to from the status page, clears the sticky header. */
@@ -1050,6 +1328,11 @@ a {
 
 /* A touch screen gets full-size targets wherever the shell is drawn. */
 @media (pointer: coarse) {
+  .side-head-btn {
+    width: 44px;
+    height: 44px;
+  }
+
   .side-item,
   .side-new input,
   .side-new .btn {
@@ -1061,11 +1344,18 @@ a {
     width: 44px;
     height: 44px;
   }
-  .side-alert,
-  .side-node-name {
+  .side-alert {
     min-height: 44px;
     display: inline-flex;
     align-items: center;
+  }
+  /* A computer's row is a column of name and bars; it only needs the height. */
+  .sn-link {
+    min-height: 44px;
+  }
+  .banner-close {
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -1159,9 +1449,6 @@ a {
   .sidebar.open {
     transition: visibility 0s;
   }
-  .side-disclose .side-chevron {
-    transition: none;
-  }
 }
 
 /*
@@ -1188,7 +1475,7 @@ a {
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--warn);
+  background: var(--primary-bg);
   color: var(--primary-ink);
   font-size: 10px;
   font-weight: 700;
@@ -1637,7 +1924,7 @@ a {
  */
 .view {
   grid-column: 2;
-  grid-row: 2;
+  grid-row: 3;
   width: 100%;
   max-width: 1320px;
   margin: 0 auto;
@@ -2705,7 +2992,7 @@ fieldset.node-field {
 }
 
 .node-meta.stale {
-  color: var(--warn);
+  color: var(--muted);
 }
 
 .node-folder.ok {

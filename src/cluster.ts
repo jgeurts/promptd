@@ -17,6 +17,8 @@ import type { ClaudeAccount, DelayEntry, JobKind, SystemSample, UsageReading, Us
 export interface ClusterNode {
   id: string;
   name: string;
+  /** Started with the hub on its machine: the sidebar lists it first. */
+  isHub?: boolean;
   online: boolean;
   lastSeenAt: string | null;
   commit: string | null;
@@ -104,6 +106,8 @@ export interface NodeReading {
   sharedWith: string[];
   /** The limits drawn for it; see `readingLimits`. */
   limits: AccountLimit[];
+  /** Every limit the reading has, in its own order: what the sidebar's hover lists. */
+  windows: AccountLimit[];
   checkedAt: string | null;
   stale: boolean;
   /** Why there is no reading, when the account has none. */
@@ -248,6 +252,8 @@ export interface ClusterSummary {
   computers: Array<{
     id: string;
     name: string;
+    /** The hub's own computer. */
+    isHub: boolean;
     online: boolean;
     lastSeenAt: string | null;
     running: number;
@@ -774,6 +780,7 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
       account: account ? account.email : own ? 'Account unknown' : null,
       sharedWith: account ? account.nodeIds.filter((id) => id !== node.id).map((id) => names.get(id) ?? id) : [],
       limits: usage ? readingLimits(usage.windows) : [],
+      windows: usage ? usage.windows : [],
       checkedAt: usage?.checkedAt ?? null,
       stale: Boolean(usage?.stale),
       reason: usage?.reason ?? null,
@@ -788,6 +795,7 @@ export function clusterSummary(nodes: ClusterNode[], hubCommit: string | null): 
     computers: nodes.map((node) => ({
       id: node.id,
       name: node.name,
+      isHub: Boolean(node.isHub),
       online: node.online,
       lastSeenAt: node.lastSeenAt,
       running: node.online ? node.running : 0,
