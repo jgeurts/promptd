@@ -192,8 +192,8 @@ describe('a run from a CLI that reports its tools', () => {
         '',
         'Done.',
         '',
-        'tools used 5 calls: Bash, Read, Task, Grep, Linear · save_issue',
-        'denied     1 call: Bash (permission mode default)',
+        'tools used 5 calls: Bash ×1, Read ×1, Task ×1, Grep ×1, Linear · save_issue ×1',
+        'denied     1 call: Bash ×1 (permission mode default)',
         '',
       ].join('\n'),
     );

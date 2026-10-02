@@ -676,7 +676,9 @@ tools used 12 calls: Read ×6, Bash ×4, Linear · save_issue ×2
 denied     2 calls: Bash ×2 (permission mode default)
 ```
 
-On the logs page these lines fold into a **Tools** line above the log — what was used, then the project's, then the user's own, then the built-ins — and each `⏺` line in the log is set apart from Claude's text. The page takes a log to have these lines only when the block opens its output, right after `--- output ---`, and reads the block from there alone; a `⏺` or a block quoted in Claude's text further down is not mistaken for one, and once the `tools used` tally is written, that is what the page counts. A log from before nodes wrote these lines, or from a CLI that does not report them, looks as it always did.
+Every item of the tally carries its count, so a server whose name holds a comma still reads unambiguously.
+
+On the logs page these lines fold into a **Tools** line above the log — what was used, then the project's, then the user's own, then the built-ins — and each `⏺` line in the log is set apart from Claude's text. The page takes a log to have these lines only when the block opens its output, within a few lines of `--- output ---` since a CLI warning on stderr can land first, and reads the block and its `context` line from there alone; a block quoted in Claude's text further down changes nothing, the retrospective's section is skipped, and the tally counts only once the closing lines follow it. One limit: while a run is live, a `⏺` line quoted in Claude's own text is styled and counted like a call, and the tally sets the counts right once the run ends. A log from before nodes wrote these lines, or from a CLI that does not report them, looks as it always did.
 
 ## Lifetime totals
 

@@ -13,7 +13,7 @@
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { CALL_GLYPH, FAIL_GLYPH, key } from './toolLines.js';
+import { CALL_GLYPH, FAIL_GLYPH, key, tallyItem } from './toolLines.js';
 
 /**
  * How much of any input is looked at, before anything else is done with it.
@@ -115,10 +115,14 @@ export function bounded(value: string, max = SUMMARY_MAX): string {
 // and drops the value, so the line still says what it was for. Every pattern
 // is anchored on a fixed word, so a long run of letters before it costs one
 // look per character and no more: GITHUB_TOKEN=x keeps GITHUB_ and loses x.
+// A quoted value runs to its closing quote or, when the cut took that, to
+// the end, so a value too long to fit is dropped whole rather than shown
+// up to the cut.
+const VALUE = String.raw`(?:"[^"]*(?:"|$)|'[^']*(?:'|$)|[^\s"']+)`;
 const SECRETS: [RegExp, string][] = [
   [/\b(bearer|basic)\s+[a-z0-9._~+/=-]{8,}/gi, '$1 ***'],
-  [/((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1***'],
-  [/(--?(?:api-?key|token|secret|password)\s+)(?:"[^"]*"|'[^']*'|[^\s"']+)/gi, '$1***'],
+  [new RegExp(String.raw`((?:api[_-]?key|token|secret|password|passwd|pwd)\s*[=:]\s*)${VALUE}`, 'gi'), '$1***'],
+  [new RegExp(String.raw`(--?(?:api-?key|token|secret|password)\s+)${VALUE}`, 'gi'), '$1***'],
   [/\bsk-[a-z0-9_-]{8,}/gi, 'sk-***'],
   [/\b(gh[pousr]_)[a-z0-9]{8,}/gi, '$1***'],
   [/\b(xox[abprs]-)[a-z0-9-]{8,}/gi, '$1***'],
@@ -156,15 +160,58 @@ function relativePath(file: string | null, cwd: string): string {
 }
 
 /**
+ * The line's words as the shell would take them: single quotes keep
+ * everything, double quotes all but a backslash's escape, a bare backslash
+ * the next character. Null when a quote is left open, since then where a
+ * word ends cannot be known — the cut may have taken the closing quote.
+ */
+function shellWords(line: string): string[] | null {
+  const words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i]!;
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else word += ch;
+    } else if (quote === '"') {
+      if (ch === '"') quote = null;
+      else if (ch === '\\' && i + 1 < line.length) word += line[(i += 1)];
+      else word += ch;
+    } else if (ch === '\\') {
+      if (i + 1 < line.length) word += line[(i += 1)];
+      inWord = true;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      inWord = true;
+    } else if (/\s/.test(ch)) {
+      if (inWord) words.push(word);
+      word = '';
+      inWord = false;
+    } else {
+      word += ch;
+      inWord = true;
+    }
+  }
+  if (quote) return null;
+  if (inWord) words.push(word);
+  return words;
+}
+
+/**
  * A command by its program and subcommand alone — `curl …`, `git push …` —
  * never its arguments, which is where paths, payloads and credentials live.
  * The subcommand is shown only when it is a word of lowercase letters alone,
  * which is what `push`, `test` and `install` are and what a value seldom is.
+ * Nothing at all for a line whose quoting is left open.
  */
 function commandGist(command: string): string {
-  const words = firstLine(command).split(/\s+/).filter(Boolean);
-  // Leading VAR=value assignments set the environment; the program comes after.
-  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]!)) words.shift();
+  const words = shellWords(firstLine(command));
+  if (!words) return '';
+  // Leading VAR=value assignments set the environment, as `env` with them does; the program comes after.
+  const assignment = (word: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*=/.test(word);
+  while (words.length && (assignment(words[0]!) || words[0] === 'env')) words.shift();
   const [program, next] = words;
   if (!program) return '';
   const name = program.includes('/') ? (program.split('/').pop() ?? program) : program;
@@ -244,7 +291,7 @@ function countList(names: string[]): string {
   for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
   return [...counts]
     .sort((a, b) => b[1] - a[1])
-    .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
+    .map(([name, count]) => tallyItem(name, count))
     .join(', ');
 }
 

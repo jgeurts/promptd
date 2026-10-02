@@ -1,7 +1,9 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
-// What a run's log says about its tools, read back by the hub's own build of src/toolLines.ts.
-import { TOOL_LINE, ToolLinesReader, callList, toolsSummary } from '/shared/toolLines.js';
+// What a run's log says about its tools, read back by the hub's own build of
+// src/toolLines.ts. Loaded apart from the page, so a hub that cannot serve it
+// still shows every page, and a run's log as plain text with no Tools line.
+const toolLines = await import('/shared/toolLines.js').catch(() => null);
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -4042,12 +4044,12 @@ function durationFromLog(text) {
  */
 function markToolLines(node) {
   const lines = node.data.split('\n');
-  if (!lines.some((line) => TOOL_LINE.test(line))) return;
+  if (!lines.some((line) => toolLines.TOOL_LINE.test(line))) return;
   const parts = [];
   let plain = '';
   lines.forEach((line, index) => {
     const text = index < lines.length - 1 ? `${line}\n` : line;
-    if (!TOOL_LINE.test(line)) {
+    if (!toolLines.TOOL_LINE.test(line)) {
       plain += text;
       return;
     }
@@ -4075,7 +4077,7 @@ function paintRunTools(details, reader, { live = false } = {}) {
   details.hidden = !reader.active;
   if (!reader.active) return;
   const records = reader.records;
-  details.querySelector('summary').textContent = toolsSummary(records, live);
+  details.querySelector('summary').textContent = toolLines.toolsSummary(records, live);
 
   const row = (label, value, tone = null) =>
     value ? el('div', { class: `log-tools-row${tone ? ` ${tone}` : ''}` }, [el('dt', { text: label }), el('dd', { text: value })]) : null;
@@ -4087,7 +4089,7 @@ function paintRunTools(details, reader, { live = false } = {}) {
   details.querySelector('.log-tools-body').replaceChildren(
     ...[
       group('Used in this run', [
-        row('Calls', callList(records) || `none${live && !records.used ? ' yet' : ''}`),
+        row('Calls', toolLines.callList(records) || `none${live && !records.used ? ' yet' : ''}`),
         row('Denied', records.denied, 'bad'),
       ]),
       group('Project', [row('MCP', records.project?.mcp), row('Skills', records.project?.skills), row('Agents', records.project?.agents)]),
@@ -4117,8 +4119,9 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
   };
 
   // What the log says about the run's tools, read from each chunk as it
-  // comes, so a repaint costs the new lines and never the whole log.
-  const reader = new ToolLinesReader();
+  // comes, so a repaint costs the new lines and never the whole log. Null
+  // when the reader could not be loaded, and the log is then plain text.
+  const reader = toolLines ? new toolLines.ToolLinesReader() : null;
 
   // A chunk ends wherever the file did when it was read, mid-line as often as
   // not. Whole lines go in as they come, each tool line in a span of its own
@@ -4148,13 +4151,13 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
   const paintTools = (live) => {
     clearTimeout(toolsTimer);
     toolsTimer = null;
-    if (tools) paintRunTools(tools, reader, { live });
+    if (tools && reader) paintRunTools(tools, reader, { live });
   };
 
   stream.addEventListener('chunk', (event) => {
     const { text } = JSON.parse(event.data);
-    const changed = reader.feed(text);
-    append(text, reader.active);
+    const changed = reader ? reader.feed(text) : false;
+    append(text, Boolean(reader?.active));
     if (logsState.atBottom) body.scrollTop = body.scrollHeight;
     if (changed && tools && !toolsTimer) toolsTimer = setTimeout(() => paintTools(true), 500);
     show();
@@ -4173,7 +4176,7 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons',
     const retro = markRetrospective(body);
     if (retro) {
       // The section is cut from the text, which flattens the spans around it; mark the lines again.
-      if (reader.active) {
+      if (reader?.active) {
         for (const node of [...body.childNodes]) {
           if (node.nodeType === Node.TEXT_NODE) markToolLines(node);
         }

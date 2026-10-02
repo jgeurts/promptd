@@ -162,6 +162,19 @@ describe('a tool call line', () => {
     expect(bash('7', '\n\n  echo sk-abcdefghijklmnop')).toEqual(['⏺ Bash  echo …']);
   });
 
+  it('reads a command the way the shell does, so a quoted assignment hides nothing and an open quote shows nothing', () => {
+    const tools = tracker();
+    const bash = (id: string, command: string): string[] => tools.uses(use(id, 'Bash', { command }), null);
+    expect(bash('1', "API_TOKEN='alpha supersecret' curl https://example.com")).toEqual(['⏺ Bash  curl …']);
+    expect(bash('2', 'API_TOKEN="alpha supersecret" curl -s https://example.com')).toEqual(['⏺ Bash  curl …']);
+    expect(bash('3', 'MSG="say \\"hi there\\"" echo done')).toEqual(['⏺ Bash  echo done']);
+    expect(bash('4', "NOTE=it\\'s\\ fine git status")).toEqual(['⏺ Bash  git status']);
+    expect(bash('5', 'env A=b cmd -x arg')).toEqual(['⏺ Bash  cmd …']);
+    expect(bash('6', 'env A="two words" B=c cmd')).toEqual(['⏺ Bash  cmd']);
+    expect(bash('7', "echo 'oops")).toEqual(['⏺ Bash']);
+    expect(bash('8', 'echo "open to the end supersecret')).toEqual(['⏺ Bash']);
+  });
+
   it('puts every summary through the same filter, whatever the tool', () => {
     const tools = tracker();
     expect(tools.uses(use('1', 'Bash', { description: 'Deploy with token=abc123 to https://user:pw@host/x?y=1' }), null)).toEqual(['⏺ Bash  Deploy with token=*** to https://host/x']);
@@ -276,13 +289,13 @@ describe('the tally', () => {
           { tool_name: 'Bash', tool_use_id: '7', tool_input: {} },
         ],
       }),
-    ).toEqual(['tools used 6 calls: Read ×3, Linear · save_issue ×2, Bash', 'denied     3 calls: Bash ×2, Linear · save_issue (permission mode default)']);
+    ).toEqual(['tools used 6 calls: Read ×3, Linear · save_issue ×2, Bash ×1', 'denied     3 calls: Bash ×2, Linear · save_issue ×1 (permission mode default)']);
   });
 
   it('leaves the permission mode out when the init never said it', () => {
     const tools = tracker();
     tools.uses(use('1', 'Bash', {}), null);
-    expect(tools.tally({ permission_denials: [{ tool_name: 'Bash' }] })).toEqual(['tools used 1 call: Bash', 'denied     1 call: Bash']);
+    expect(tools.tally({ permission_denials: [{ tool_name: 'Bash' }] })).toEqual(['tools used 1 call: Bash ×1', 'denied     1 call: Bash ×1']);
   });
 });
 
@@ -305,6 +318,14 @@ describe('the filter every written input goes through', () => {
     expect(stripUrls('fetch https://user:pw@host.example/path/to?x=1&token=2#frag now')).toBe('fetch https://host.example/path/to now');
     expect(stripUrls('see http://h/ and https://a.b/c?d')).toBe('see http://h/ and https://a.b/c');
     expect(stripUrls('no url here')).toBe('no url here');
+  });
+
+  it('drops a quoted value whole when the cut took its closing quote', () => {
+    expect(sanitize(`password="${'x'.repeat(500)}`)).toBe('password=***');
+    expect(sanitize(`token='${'y'.repeat(500)}' rest`)).toBe('token=***');
+    expect(sanitize(`--password "${'z'.repeat(500)}`)).toBe('--password ***');
+    expect(sanitize(`api_key=${'q'.repeat(500)}`)).toBe('api_key=***');
+    expect(sanitize('password="short" rest')).toBe('password=*** rest');
   });
 
   it('cuts the input first, then filters, then bounds the line', () => {

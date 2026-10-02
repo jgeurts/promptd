@@ -116,7 +116,7 @@ interface KindStore {
 }
 
 interface RunHandle {
-  /** Null while the commands before the prompt run, and Claude has not started. */
+  /** Null until claude has started: while the commands before the prompt run, and while the project is looked at. */
   child: ChildProcess | null;
   stream: fs.WriteStream;
   killTimer: NodeJS.Timeout | null;
@@ -1950,6 +1950,9 @@ class CronService {
       return run;
     }
 
+    // A handle before anything is awaited, so a Stop that lands while the
+    // project is looked at finds the run and marks it; the check below ends it.
+    this.handles.set(cron.id, { child: null, stream, killTimer: null, setup: null });
     // The project's own skills and agents, so the log can tell them from the user's.
     runTools.withProject(await projectScope(cwd));
     // Asked to stop while the project was looked at: nothing has started, so nothing does.

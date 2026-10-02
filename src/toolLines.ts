@@ -14,14 +14,27 @@ export const KEY_WIDTH = 11;
 export const CALL_GLYPH = '⏺';
 /** Opens the line under a call that failed: `  ✗ Read failed: …`. */
 export const FAIL_GLYPH = '✗';
-/** The heading the output section starts under. The setup block follows it directly. */
+/** The heading the output section starts under. The setup block follows it, after at most a few stray lines. */
 export const OUTPUT_HEADING = '--- output ---';
 /** A tool call's line or a failure's, at the main agent's depth or a subagent's. */
 export const TOOL_LINE = /^ {0,4}[⏺✗] /;
+/** How many lines after the output heading the setup block may take to start: a CLI warning on stderr lands there. */
+const BLOCK_WAIT_LINES = 50;
+
+/** The retrospective's section, which the reader skips; kept in step with src/retrospective.ts. */
+const RETRO_HEADING = '--- retrospective ---';
+const RETRO_END = '--- end of retrospective ---';
+/** The run's closing lines, which the tally sits right above: the statistics box, or the clean-up line alone when the CLI gave no statistics. */
+const CLOSING = /^(?:=-+=|Worktree cleanup: )/;
 
 /** A key padded to the column, as every record line starts. */
 export function key(name: string): string {
   return name.padEnd(KEY_WIDTH);
+}
+
+/** One item of the tally: the name, then its count. Every item carries one, so a name may hold a comma. */
+export function tallyItem(name: string, count: number): string {
+  return `${name} ×${count}`;
 }
 
 /** What a log says about its run's tools. Strings are the lines' values as written. */
@@ -60,12 +73,15 @@ const DENIED = /^denied {5}(\S.*)$/;
 /**
  * Reads a log as it streams and keeps what it says about the run's tools.
  *
- * Only a log whose output opens with the setup block has tool records. One
- * from an older node, or whose CLI reported nothing, is left alone from its
- * first output line on, however much of a `⏺` it quotes later, and costs
- * nothing more to feed. The block is read once, from the top of the output,
- * so a quoted block further down changes nothing; `⏺` lines are counted
- * anywhere in the output after it, and the tally at the end takes over.
+ * Only a log whose output opens with the setup block has tool records. The
+ * block may come after a few stray lines — a CLI warning arrives on stderr
+ * and is piped into the same log — but once it starts its keys run on
+ * without a break, and it is read once; a block quoted further down changes
+ * nothing. A log from an older node, or whose CLI reported nothing, is left
+ * alone and soon costs nothing more to feed. `⏺` lines are counted anywhere
+ * in the output after the block, except inside the retrospective's section,
+ * and the tally counts for the run once it is written — which is known only
+ * when the closing lines follow it, so a tally quoted in prose does not.
  */
 export class ToolLinesReader {
   public readonly records: ToolRecords = {
@@ -81,14 +97,16 @@ export class ToolLinesReader {
     denied: null,
   };
 
-  private state: 'header' | 'block' | 'output' | 'none' = 'header';
-  private blockLines = 0;
+  private state: 'header' | 'wait' | 'block' | 'output' | 'retro' | 'closed' | 'none' = 'header';
+  private waited = 0;
+  /** A tally seen but not yet followed by the closing lines, which is what makes it the run's. */
+  private pending: { used: string; denied: string | null } | null = null;
   /** The unfinished last line, until the rest of it comes. */
   private rest = '';
 
   /** Whether the log has tool records: its output opened with the setup block. */
   public get active(): boolean {
-    return this.state === 'block' || this.state === 'output';
+    return this.state === 'block' || this.state === 'output' || this.state === 'retro' || this.state === 'closed';
   }
 
   /** Whether the log is known to say nothing, so there is nothing left to read. */
@@ -115,18 +133,25 @@ export class ToolLinesReader {
   private line(line: string): boolean {
     switch (this.state) {
       case 'header':
-        if (line === OUTPUT_HEADING) this.state = 'block';
+        if (line === OUTPUT_HEADING) this.state = 'wait';
         return false;
-      case 'block':
+      case 'wait':
         if (this.blockLine(line)) {
-          this.blockLines += 1;
+          this.state = 'block';
           return true;
         }
-        // The block is over — or never came, and then the log has no records.
-        this.state = this.blockLines ? 'output' : 'none';
-        return this.state === 'output' && this.outputLine(line);
+        this.waited += 1;
+        if (this.waited >= BLOCK_WAIT_LINES) this.state = 'none';
+        return false;
+      case 'block':
+        if (this.blockLine(line)) return true;
+        this.state = 'output';
+        return this.outputLine(line);
       case 'output':
         return this.outputLine(line);
+      case 'retro':
+        if (line === RETRO_END) this.state = 'output';
+        return false;
       default:
         return false;
     }
@@ -157,25 +182,43 @@ export class ToolLinesReader {
     return false;
   }
 
-  /** One line of the output after the block: a call, the context line when it came late, or the tally. */
+  /**
+   * One line of the output after the block: a call, the retrospective's
+   * heading, or the tally — held until the closing lines confirm it, with
+   * only blank lines allowed in between.
+   */
   private outputLine(line: string): boolean {
     const records = this.records;
+    if (line === RETRO_HEADING) {
+      this.state = 'retro';
+      this.pending = null;
+      return false;
+    }
     let m: RegExpExecArray | null;
     if ((m = CALL.exec(line))) {
+      this.pending = null;
       // The tool's name ends at the two spaces before its summary; an MCP tool has none.
       const name = m[1]!.split('  ')[0]!;
       records.calls.set(name, (records.calls.get(name) ?? 0) + 1);
       return true;
     }
-    if ((m = BLOCK.context.exec(line))) return records.context === null && Boolean((records.context = m[1]!));
     if ((m = USED.exec(line))) {
-      records.used = parseTally(m[1]!);
+      this.pending = { used: m[1]!, denied: null };
+      return false;
+    }
+    if ((m = DENIED.exec(line)) && this.pending && this.pending.denied === null) {
+      this.pending.denied = m[1]!;
+      return false;
+    }
+    if (line === '') return false;
+    if (CLOSING.test(line) && this.pending) {
+      records.used = parseTally(this.pending.used);
+      records.denied = this.pending.denied;
+      this.pending = null;
+      this.state = 'closed';
       return true;
     }
-    if ((m = DENIED.exec(line))) {
-      records.denied = m[1]!;
-      return true;
-    }
+    this.pending = null;
     return false;
   }
 }
@@ -185,10 +228,9 @@ function parseTally(value: string): Map<string, number> {
   const counts = new Map<string, number>();
   const list = /^\d+ calls?: (.+)$/.exec(value);
   if (!list) return counts;
-  for (const item of list[1]!.split(', ')) {
-    const found = /^(.+?)(?: ×(\d+))?$/.exec(item);
-    if (found) counts.set(found[1]!, Number(found[2] ?? 1));
-  }
+  // Every item ends in its count, so the count is what separates one from the
+  // next, and a name may hold a comma.
+  for (const item of list[1]!.matchAll(/(.+?) ×(\d+)(?:, |$)/g)) counts.set(item[1]!, Number(item[2]));
   return counts;
 }
 
