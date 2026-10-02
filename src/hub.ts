@@ -14,7 +14,7 @@ import { applyInferredTitle, listCrons, logPath, patchCron, pruneLogs } from './
 import { STATUSES, getExecution, listExecutions, patchExecution } from './executions.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, patchSettings } from './settings.js';
 import { effectiveNodeConfig, patchNodeConfig, readNodeConfig } from './nodeConfig.js';
-import { readJobDefaults, resolveJob } from './jobDefaults.js';
+import { PRE_PROMPT_COMMANDS_FEATURE, readJobDefaults, resolveJob } from './jobDefaults.js';
 import { TITLE_PROMPT_LIMIT, cleanTitle } from './naming.js';
 import type { EffectiveNodeConfig } from './nodeConfig.js';
 import { browseDirectories } from './browse.js';
@@ -96,6 +96,8 @@ export interface HubNode {
   account: ClaudeAccount | null;
   samples: SystemSample[];
   commands: NodeCommand[];
+  /** What the node's build says it can do, from its last report. A node from before this list sends none. */
+  features?: string[];
 }
 
 export type OnlineHubNode = HubNode & { status: NodeStatus };
@@ -351,6 +353,22 @@ class Hub {
 
   private nodeIdFor(job: Cron | Execution): string {
     return job.nodeId || this.defaultNodeId();
+  }
+
+  private runsPrePromptCommands(node: HubNode): boolean {
+    return Boolean(node.features?.includes(PRE_PROMPT_COMMANDS_FEATURE));
+  }
+
+  /**
+   * Why a job is not being sent to its node, or null when it is. A node built
+   * before commands ran ahead of the prompt would run the job without them,
+   * so a job with any is held back from it until it is updated.
+   */
+  public withheld(job: Cron | Execution): string | null {
+    const node = this.nodes.get(this.nodeIdFor(job));
+    if (!this.isOnline(node) || this.runsPrePromptCommands(node)) return null;
+    if (!resolveJob(job, this.nodeConfig(node.id).jobDefaults).prePromptCommands.length) return null;
+    return `Node "${node.name}" runs a promptd too old to run commands before the prompt, so this job is not sent to it. Update the node, or give the job no commands.`;
   }
 
   public jobView(job: Cron | Execution): JobView | null {
@@ -617,6 +635,7 @@ class Hub {
       startedAt: (identity!.startedAt ?? null) as string | null,
       processors: Number(identity!.processors) || null,
       timezone: typeof identity!.timezone === 'string' && identity!.timezone ? identity!.timezone : null,
+      features: Array.isArray(identity!.features) ? identity!.features.filter((feature): feature is string => typeof feature === 'string') : [],
       instance,
       lastSeenAt: now,
     });
@@ -745,7 +764,9 @@ class Hub {
    * to the defaults already filled in from this node's, so a node runs exactly
    * what it is sent, whatever version it is: one from before job defaults
    * existed would read a null as off. The stored nulls stay in the database
-   * and the API; a changed default reaches the node as changed jobs.
+   * and the API; a changed default reaches the node as changed jobs. A job
+   * with commands before the prompt is left out for a node that cannot run
+   * them, which disarms it there rather than running it without them.
    */
   private async work(nodeId: string, instance: string): Promise<{
     node: { id: string; isDefault: boolean };
@@ -763,11 +784,13 @@ class Hub {
     const { crons, executions } = await this.allJobs();
     const mine = (job: Cron | Execution): boolean => this.nodeIdFor(job) === node.id;
     const config = this.nodeConfig(node.id);
+    // An older node would ignore a job's commands and run it without them; see `withheld`.
+    const runnable = (job: RunnableCron | RunnableExecution): boolean => !job.prePromptCommands.length || this.runsPrePromptCommands(node);
     const commands = node.commands.slice();
     return {
       node: { id: node.id, isDefault: node.id === this.defaultNodeId() },
-      crons: crons.filter(mine).map((cron) => resolveJob(cron, config.jobDefaults)),
-      executions: executions.filter(mine).map((execution) => resolveJob(execution, config.jobDefaults)),
+      crons: crons.filter(mine).map((cron) => resolveJob(cron, config.jobDefaults)).filter(runnable),
+      executions: executions.filter(mine).map((execution) => resolveJob(execution, config.jobDefaults)).filter(runnable),
       settings: {
         maxConcurrentJobs: node.config.maxConcurrentJobs ?? null,
         usageDelayThresholds: config.usageDelayThresholds,

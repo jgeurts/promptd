@@ -28,6 +28,8 @@ interface JobColumns {
   effort: Setting<string>;
   /** JSON, one key per Delay for usage box; a key missing or null follows the defaults. */
   usageDelay: string;
+  /** A JSON list of commands to run before the prompt; null follows the defaults, and [] runs none. */
+  prePromptCommands: Setting<string>;
   prompt: string;
   isActive: Flag;
   nodeId: string;
@@ -374,6 +376,15 @@ const MIGRATIONS: Record<string, Migration> = {
     async up(db: Kysely<unknown>): Promise<void> {
       for (const table of ['crons', 'executions']) {
         await db.schema.alterTable(table).addColumn('name_inferred', 'integer', (col) => col.notNull().defaultTo(0)).execute();
+      }
+    },
+  },
+  // Commands run before the prompt, as a JSON list. Every job there already
+  // follows the defaults, which start empty, so it runs as it did.
+  '20261001_001_pre_prompt_commands': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      for (const table of ['crons', 'executions']) {
+        await db.schema.alterTable(table).addColumn('pre_prompt_commands', 'text').execute();
       }
     },
   },

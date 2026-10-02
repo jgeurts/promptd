@@ -30,6 +30,11 @@ export interface JobSettings {
   model: string;
   effort: string;
   usageDelay: UsageDelay;
+  /**
+   * Shell commands promptd runs, in order, in the run's folder before Claude
+   * starts, such as an install. Empty runs nothing.
+   */
+  prePromptCommands: string[];
 }
 
 /** The cluster's defaults for those settings, and so what a node falls back to. */
@@ -48,6 +53,8 @@ export interface JobSettingOverrides {
   model: string | null;
   effort: string | null;
   usageDelay: UsageDelayOverride;
+  /** Null follows the defaults; an empty list is the job's own choice to run nothing. */
+  prePromptCommands: string[] | null;
 }
 
 /** What every job carries, whichever kind it is. */
@@ -108,6 +115,7 @@ export type CronInput = Pick<
   | 'model'
   | 'name'
   | 'nodeId'
+  | 'prePromptCommands'
   | 'projectId'
   | 'prompt'
   | 'retrospective'
@@ -360,6 +368,8 @@ export interface NodeIdentity {
   startedAt: string;
   processors: number;
   timezone: string;
+  /** What this node's build can do that an older one cannot, so the hub sends it only work it can run. */
+  features?: string[];
 }
 
 export interface JobPatch {

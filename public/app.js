@@ -206,6 +206,11 @@ function nodeOfflinePill(node) {
   ]);
 }
 
+/** A job with commands before the prompt, on a node too old to run them, which is not sent it. */
+function withheldPill(reason) {
+  return el('span', { class: 'pill warn', title: reason }, [el('span', { class: 'led' }), 'node too old']);
+}
+
 /**
  * A live run keeps its running badge through a pause and picks up the paused
  * badge when it finishes. A deactivated cron stays deactivated: a pause does
@@ -218,6 +223,7 @@ function statusPill(cron, pause) {
   }
   if (!cron.isActive) return el('span', { class: 'pill paused' }, [el('span', { class: 'led' }), 'deactivated']);
   if (cron.node && !cron.node.online) return nodeOfflinePill(cron.node);
+  if (cron.withheld) return withheldPill(cron.withheld);
   if (pause?.paused) {
     return el(
       'span',
@@ -242,6 +248,7 @@ function executionPill(execution, pause) {
   }
   if (!execution.isActive) return el('span', { class: 'pill paused' }, [el('span', { class: 'led' }), 'deactivated']);
   if (execution.status === 'scheduled' && execution.node && !execution.node.online) return nodeOfflinePill(execution.node);
+  if (execution.status === 'scheduled' && execution.withheld) return withheldPill(execution.withheld);
   if (execution.status === 'cancelled') {
     return el('span', { class: 'pill warn', title: `Dropped by ${execution.stoppedBy ?? 'the user'} before it ran.` }, [
       el('span', { class: 'led' }),
@@ -1686,8 +1693,100 @@ function retrospectivePicker({ own = null, inherited = false, follow = JOB_FOLLO
   };
 }
 
+/** A commands box's text as the API takes it: a command a line, trimmed, with blank lines dropped. */
+function commandLines(text) {
+  return String(text ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** "1 command", "3 commands", or "none". */
+function commandCount(commands) {
+  return commands.length ? `${commands.length} command${commands.length === 1 ? '' : 's'}` : 'none';
+}
+
 /**
- * The six job defaults as a block of their own: the Settings page's New job
+ * The commands run before the prompt, in one box with a command on each line.
+ * Like the other settings that can follow a default, the box shows the
+ * commands in force: while they follow, the ones they follow, marked so; once
+ * edited, they are this level's own, with the way back beside them. Emptying
+ * the box is a choice of its own, to run nothing.
+ *
+ * `own` is null while following; `follow` is null on the Settings page, where
+ * there is nothing above to follow. `onInput` hears every keystroke and
+ * `onChange` each finished edit and each reset, as the list or null.
+ */
+function prePromptPicker({ own = null, inherited = [], follow = JOB_FOLLOW, label = 'Before the prompt', scope = null, onInput = () => {}, onChange = () => {} } = {}) {
+  let value = follow ? own : (own ?? inherited);
+  let fallback = [...inherited];
+  const id = uid('pre-prompt');
+  const box = el('textarea', {
+    id,
+    class: 'compact mono commands-input',
+    wrap: 'off',
+    spellcheck: 'false',
+    autocomplete: 'off',
+    autocapitalize: 'off',
+    placeholder: 'For example: pnpm install --frozen-lockfile',
+    'aria-describedby': `${id}-hint`,
+  });
+  const marker = el('span', { class: 'setting-default', text: follow?.marker ?? '' });
+  const reset = el('button', { type: 'button', class: 'setting-reset', text: follow?.reset ?? '', 'aria-label': `${follow?.reset ?? ''}: ${label}` });
+  const tag = follow ? el('span', { class: 'setting-tag' }, [marker, reset]) : null;
+
+  const paintTag = () => {
+    marker.hidden = value !== null;
+    reset.hidden = value === null;
+  };
+  const show = () => {
+    box.value = (value ?? fallback).join('\n');
+    paintTag();
+  };
+  box.addEventListener('input', () => {
+    value = commandLines(box.value);
+    paintTag();
+    onInput(value);
+  });
+  box.addEventListener('change', () => {
+    value = commandLines(box.value);
+    onChange(value);
+  });
+  reset.addEventListener('click', () => {
+    value = null;
+    show();
+    onInput(null);
+    onChange(null);
+    box.focus();
+  });
+  show();
+
+  return {
+    marker,
+    reset,
+    read: () => value,
+    effective: () => value ?? fallback,
+    /** New commands to follow, when the job moves to another node. */
+    follow: (next) => {
+      fallback = [...(next ?? [])];
+      if (value === null) show();
+    },
+    field: el('div', { class: 'field' }, [
+      el('span', { class: 'setting-row' }, [el('label', { for: id, text: label }), tag]),
+      box,
+      el('div', { class: 'hint', id: `${id}-hint` }, [
+        scope === 'cluster' ? 'Every job that leaves its commands alone runs these, unless its node sets its own. ' : '',
+        scope === 'node' ? 'Jobs on this node that leave their commands alone run these. ' : '',
+        "Each runs in the job's folder, or its worktree when it has one, before the prompt: one command per line, in order. ",
+        'A command that fails stops the run before Claude starts. They are plain shell, so they use no tokens.',
+      ]),
+      el('div', { class: 'hint warn', text: "They run as the node's user, outside Claude's permission rules and sandbox." }),
+    ]),
+  };
+}
+
+/**
+ * The job defaults as a block of their own: the Settings page's New job
  * defaults, and each node's own version of them. `own` is what is set here and
  * `inherited` what shows through where nothing is; `save` gets one change at a
  * time, shaped as the API takes it.
@@ -1716,7 +1815,14 @@ function jobDefaultsParts({ own = {}, inherited = {}, follow = null, save }) {
     brief: true,
     onChange: (value) => save({ retrospective: value }),
   });
-  return { usageDelay, parts: [worktree.field, model.field, effort.field, usageDelay.field, retrospective.field] };
+  const commands = prePromptPicker({
+    own: own.prePromptCommands ?? null,
+    inherited: inherited.prePromptCommands ?? [],
+    follow,
+    scope: follow ? 'node' : 'cluster',
+    onChange: (value) => save({ prePromptCommands: value }),
+  });
+  return { usageDelay, parts: [worktree.field, model.field, effort.field, usageDelay.field, retrospective.field, commands.field] };
 }
 
 /**
@@ -1815,10 +1921,45 @@ function scheduledAtPicker(input) {
 }
 
 /**
- * The six settings a job can leave to its node's defaults, each showing what it
+ * The job forms' Before the prompt section, folded away ahead of More
+ * options. Its line says which commands the job runs: its node's or the
+ * cluster's while it follows them, its own, or none, and how many. Picking
+ * another node shows that node's, for a job that follows them.
+ */
+function prePromptSection(own, inherited) {
+  // Whose commands a job that follows them gets: the node's own, or the cluster's through it.
+  let source = 'cluster';
+  const summary = el('span', { class: 'more-summary' });
+  const paint = () => {
+    const mine = picker.read();
+    const whose = source === 'node' ? "this node's" : "the cluster's";
+    if (mine === null) summary.textContent = `Uses ${whose} commands · ${commandCount(picker.effective())}`;
+    else summary.textContent = mine.length ? `Custom · ${commandCount(mine)}` : 'Runs nothing';
+    picker.reset.textContent = `Use ${whose} commands`;
+    picker.reset.setAttribute('aria-label', `Use ${whose} commands before the prompt`);
+  };
+  const picker = prePromptPicker({ own, inherited, label: 'Commands', onInput: paint, onChange: paint });
+  paint();
+  return {
+    read: () => picker.read(),
+    follow: (listing, next) => {
+      source = Object.hasOwn(listing?.jobDefaultOverrides ?? {}, 'prePromptCommands') ? 'node' : 'cluster';
+      picker.follow(next);
+      paint();
+    },
+    section: el('details', { class: 'more-options' }, [
+      el('summary', {}, [el('span', { class: 'more-title', text: 'Before the prompt' }), summary]),
+      el('div', { class: 'more-body' }, [picker.field]),
+    ]),
+  };
+}
+
+/**
+ * The settings a job can leave to its node's defaults, each showing what it
  * will use. What the job has not set follows the node it runs on, so picking
  * another node moves them with it; `followNode` takes that node's listing.
- * `onChange` hears any change, so the More options line can keep up.
+ * `onChange` hears any change, so the More options line can keep up. The
+ * commands before the prompt have a section of their own, with its own line.
  */
 function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, onChange = () => {} } = {}) {
   const own = job ?? {};
@@ -1828,6 +1969,7 @@ function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, o
   const effort = effortPicker({ own: own.effort ?? null, inherited: inherited.effort ?? '', onChange });
   const usageDelay = usageDelayPicker({ own: own.usageDelay ?? {}, inherited: inherited.usageDelay ?? {}, onChange });
   const retrospective = retrospectivePicker({ own: own.retrospective ?? null, inherited: Boolean(inherited.retrospective), onChange });
+  const prePrompt = prePromptSection(own.prePromptCommands ?? null, inherited.prePromptCommands ?? []);
   const onOff = (value) => (value ? 'on' : 'off');
   return {
     worktree,
@@ -1835,6 +1977,7 @@ function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, o
     effort,
     usageDelay,
     retrospective,
+    prePrompt,
     followNode: (listing) => {
       const next = listing?.config?.jobDefaults ?? clusterDefaults;
       worktree.follow(next);
@@ -1842,6 +1985,7 @@ function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, o
       effort.follow(next.effort ?? '');
       usageDelay.follow(next.usageDelay ?? {});
       retrospective.follow(Boolean(next.retrospective));
+      prePrompt.follow(listing, next.prePromptCommands ?? []);
       usageDelay.setThresholds(listing?.config?.usageDelayThresholds);
       onChange();
     },
@@ -1861,6 +2005,7 @@ function jobSettingPickers(job, clusterDefaults, { id = null, oneTime = false, o
       effort: effort.read(),
       usageDelay: usageDelay.read(),
       ...retrospective.read(),
+      prePromptCommands: prePrompt.read(),
     }),
   };
 }
@@ -2209,6 +2354,7 @@ async function renderJobForm(kind, id, duplicateOf) {
       el('div', { class: 'where-row', role: 'group', 'aria-label': 'Where' }, [node.field, directory.field]),
       gitNote,
       field('Name (optional)', inputs.name, 'Left blank, it is named from the prompt, then given a short title by Claude.'),
+      settings.prePrompt.section,
       more,
       el('div', { class: 'form-actions' }, [
         el('button', { class: 'btn primary', type: 'submit', text: 'Save' }),
@@ -3719,11 +3865,9 @@ function connectEvents() {
       const named = payload.kind === 'execution' ? `one-time "${payload.cronName}"` : `"${payload.cronName}"`;
       // Matches the drawer: a run with no footer has no duration to report.
       if (type === 'run:finished') {
-        toast(
-          Number.isFinite(payload.seconds)
-            ? `${named} ${payload.status} in ${payload.seconds}s`
-            : `${named} ${payload.status}`,
-        );
+        const ended = Number.isFinite(payload.seconds) ? `${named} ${payload.status} in ${payload.seconds}s` : `${named} ${payload.status}`;
+        // A run that never reached claude says what stopped it, as the drawer does.
+        toast(payload.reason ? `${ended}: ${payload.reason}` : ended);
       }
       if (type === 'run:delayed') {
         if (payload.hold === 'concurrency') {

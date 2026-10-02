@@ -80,6 +80,7 @@ describe('the work a node is sent', () => {
       model: null,
       effort: 'low',
       usageDelay: { session: null, weekly: null, fable: null, credits: false },
+      prePromptCommands: null,
       prompt: 'Tidy up.',
       isActive: true,
       nodeId: '',
@@ -110,5 +111,60 @@ describe('the work a node is sent', () => {
 
   it('sends no defaults of its own, so a node needs none to run its jobs', async () => {
     expect(Object.keys((await work()).settings).sort()).toEqual(['defaultWorktreeInclude', 'maxConcurrentJobs', 'retrospectivePrompt', 'usageDelayThresholds']);
+  });
+});
+
+describe('a node too old for commands before the prompt', () => {
+  const job = {
+    description: '',
+    cron: '0 9 * * *',
+    timezone: '',
+    workingDirectory: '~/',
+    useWorktree: null,
+    cleanupWorktree: null,
+    retrospective: null,
+    model: null,
+    effort: null,
+    usageDelay: { session: null, weekly: null, fable: null, credits: null },
+    prompt: 'Build it.',
+    isActive: true,
+    nodeId: '',
+    projectId: null,
+  };
+  const names = async (): Promise<string[]> => (await work()).crons.map((cron) => cron.name);
+
+  it('is not sent a job with commands, and the job says why, while one with none still goes', async () => {
+    await setClusterDefaults({ prePromptCommands: null });
+    const own = await store.createCron({ ...job, name: 'Has its own', prePromptCommands: ['pnpm install'] });
+    const none = await store.createCron({ ...job, name: 'Runs none', prePromptCommands: [] });
+    const follows = await store.createCron({ ...job, name: 'Follows the cluster', prePromptCommands: null });
+    hub.jobsChanged();
+
+    expect(await names()).toEqual(expect.arrayContaining(['Runs none', 'Follows the cluster']));
+    expect(await names()).not.toContain('Has its own');
+    expect(hub.withheld(own)).toContain('Node "mini" runs a promptd too old to run commands before the prompt');
+    expect(hub.withheld(none)).toBeNull();
+    expect(hub.withheld(follows)).toBeNull();
+
+    // A cluster default with commands holds back the job that follows it, too.
+    await setClusterDefaults({ prePromptCommands: ['make'] });
+    expect(await names()).not.toContain('Follows the cluster');
+    expect(await names()).toContain('Runs none');
+    expect(hub.withheld(follows)).not.toBeNull();
+  });
+
+  it('is sent them, with the commands filled in, once it says it can run them', async () => {
+    const report = await fetch(`${base}/report`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ node: { id: 'mini', name: 'mini', instance: 'one', processors: 4, features: ['prePromptCommands'] }, status: { counts: {} } }),
+    });
+    expect(report.status).toBe(200);
+    const sent = (await work()).crons;
+    expect(sent.find((cron) => cron.name === 'Has its own')?.prePromptCommands).toEqual(['pnpm install']);
+    expect(sent.find((cron) => cron.name === 'Follows the cluster')?.prePromptCommands).toEqual(['make']);
+    expect(sent.find((cron) => cron.name === 'Runs none')?.prePromptCommands).toEqual([]);
+    const own = (await store.listCrons()).find((cron) => cron.name === 'Has its own')!;
+    expect(hub.withheld(own)).toBeNull();
   });
 });

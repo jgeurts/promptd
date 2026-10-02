@@ -3,10 +3,15 @@ import { describe, expect, it } from 'vitest';
 import {
   BUILT_IN_JOB_DEFAULTS,
   JobDefaultsError,
+  MAX_PRE_PROMPT_COMMANDS,
   effectiveJobDefaults,
   effectiveJobSettings,
+  jobSettingOverrides,
+  parsePrePromptCommands,
   patchJobDefaults,
+  patchJobDefaultsOverride,
   readJobDefaults,
+  readJobDefaultsOverride,
 } from '../src/jobDefaults.js';
 import type { JobSettingOverrides } from '../src/types.js';
 
@@ -17,6 +22,7 @@ const leavesAll: JobSettingOverrides = {
   model: null,
   effort: null,
   usageDelay: { session: null, weekly: null, fable: null, credits: null },
+  prePromptCommands: null,
 };
 
 describe('cluster job defaults', () => {
@@ -28,6 +34,7 @@ describe('cluster job defaults', () => {
       model: '',
       effort: '',
       usageDelay: { session: true, weekly: false, fable: false, credits: false },
+      prePromptCommands: [],
     });
   });
 
@@ -71,5 +78,58 @@ describe('a job\'s settings', () => {
 
   it('treat a blank model as the job\'s own choice of the CLI default, not as following', () => {
     expect(effectiveJobSettings({ ...leavesAll, model: '' }, { ...BUILT_IN_JOB_DEFAULTS, model: 'opus' }).model).toBe('');
+  });
+});
+
+describe('commands before the prompt', () => {
+  const install = ['pnpm install --frozen-lockfile'];
+
+  it('are a list of single lines, trimmed and in order, with blank ones dropped', () => {
+    expect(parsePrePromptCommands([' pnpm install ', '', '  ', 'pnpm build'])).toEqual({ commands: ['pnpm install', 'pnpm build'] });
+    expect(parsePrePromptCommands([])).toEqual({ commands: [] });
+    for (const bad of ['pnpm install', [1], ['a\nb'], ['a\rb'], ['a\u0000b'], Array(MAX_PRE_PROMPT_COMMANDS + 1).fill('true'), ['x'.repeat(5000)]]) {
+      expect(parsePrePromptCommands(bad)).toHaveProperty('error');
+    }
+  });
+
+  it('start empty on the cluster, and a stored set from before them reads as empty', () => {
+    expect(BUILT_IN_JOB_DEFAULTS.prePromptCommands).toEqual([]);
+    expect(readJobDefaults({ model: 'opus' }).prePromptCommands).toEqual([]);
+    expect(readJobDefaults({ prePromptCommands: 'not a list' }).prePromptCommands).toEqual([]);
+  });
+
+  it('change on the cluster when a save sends them, and null puts them back to none', () => {
+    const set = patchJobDefaults(BUILT_IN_JOB_DEFAULTS, { prePromptCommands: install });
+    expect(set.prePromptCommands).toEqual(install);
+    expect(patchJobDefaults(set, { model: 'opus' }).prePromptCommands).toEqual(install);
+    expect(patchJobDefaults(set, { prePromptCommands: null }).prePromptCommands).toEqual([]);
+    expect(() => patchJobDefaults(set, { prePromptCommands: ['a\nb'] })).toThrow(JobDefaultsError);
+  });
+
+  it('follow the cluster on a node that sets none, and an empty list on a node is its own', () => {
+    const cluster = { ...BUILT_IN_JOB_DEFAULTS, prePromptCommands: install };
+    expect(effectiveJobDefaults(cluster, {}).prePromptCommands).toEqual(install);
+    expect(effectiveJobDefaults(cluster, { prePromptCommands: [] }).prePromptCommands).toEqual([]);
+    expect(effectiveJobDefaults(cluster, { prePromptCommands: ['make'] }).prePromptCommands).toEqual(['make']);
+
+    const none = patchJobDefaultsOverride({}, { prePromptCommands: [] });
+    expect(none).toEqual({ prePromptCommands: [] });
+    expect(readJobDefaultsOverride(none)).toEqual({ prePromptCommands: [] });
+    expect(patchJobDefaultsOverride(none, { prePromptCommands: null })).toEqual({});
+    expect(() => patchJobDefaultsOverride({}, { prePromptCommands: 'make' })).toThrow(JobDefaultsError);
+  });
+
+  it('follow the node for a job that leaves them null, and an empty list on a job runs nothing', () => {
+    const defaults = { ...BUILT_IN_JOB_DEFAULTS, prePromptCommands: install };
+    expect(effectiveJobSettings(leavesAll, defaults).prePromptCommands).toEqual(install);
+    expect(effectiveJobSettings({ ...leavesAll, prePromptCommands: [] }, defaults).prePromptCommands).toEqual([]);
+    expect(effectiveJobSettings({ ...leavesAll, prePromptCommands: ['make'] }, defaults).prePromptCommands).toEqual(['make']);
+  });
+
+  it('are stored as the job gave them: missing or null follows, and a list is kept, empty or not', () => {
+    expect(jobSettingOverrides({}).prePromptCommands).toBeNull();
+    expect(jobSettingOverrides({ prePromptCommands: null }).prePromptCommands).toBeNull();
+    expect(jobSettingOverrides({ prePromptCommands: [] }).prePromptCommands).toEqual([]);
+    expect(jobSettingOverrides({ prePromptCommands: install }).prePromptCommands).toEqual(install);
   });
 });

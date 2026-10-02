@@ -10,6 +10,7 @@ A lightweight web UI to schedule, manage, and run Claude prompts, either as a cr
 - A one-time execution survives a restart. If its moment passed while the server was down, it runs as soon as the server is back.
 - Hold a cron until your Claude usage resets, per limit, instead of firing it into a spent quota.
 - Choose the model per cron, from whatever the installed CLI recognises.
+- [Commands to run before the prompt](docs/ADVANCED.md#commands-before-the-prompt), such as `pnpm install --frozen-lockfile` in a fresh worktree, so setup does not spend Claude's tokens.
 - Every finished run records the model, runtime, tokens and cost that the CLI reported.
 - An optional retrospective per job, off by default. Claude reviews the run at the end, using a prompt set in Settings. A retrospective with something in it gets its own section in the log, a sub-item in the run list, and a notification.
 - Lifetime totals per cron — runs completed, what they cost, how long they took, and the average of each.

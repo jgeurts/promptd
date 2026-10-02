@@ -7,9 +7,11 @@ import type * as JobCache from '../src/jobCache.js';
 import type { RunnableCron as Cron, RunnableExecution as Execution } from '../src/types.js';
 
 let cache: typeof JobCache;
+let nodeHome: string;
 
 beforeAll(async () => {
-  process.env.PROMPTD_NODE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-node-'));
+  nodeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-node-'));
+  process.env.PROMPTD_NODE_HOME = nodeHome;
   cache = await import('../src/jobCache.js');
 });
 
@@ -27,6 +29,7 @@ function execution(overrides: Partial<Execution> = {}): Execution {
     model: '',
     effort: '',
     usageDelay: { credits: false, fable: false, session: false, weekly: false },
+    prePromptCommands: [],
     prompt: 'x',
     isActive: true,
     projectId: null,
@@ -78,5 +81,17 @@ describe('jobCache', () => {
   it('adds nothing to lifetime counters the hub has not backfilled', async () => {
     const withoutCounters = { ...execution(), kind: 'execution' as const };
     expect(await cache.countRun(withoutCounters, { status: 'succeeded', seconds: 1, costUsd: 0 })).toEqual({});
+  });
+
+  it('reads a job saved or sent before commands ran ahead of the prompt as running none', async () => {
+    const { prePromptCommands: _, ...legacy } = execution({ id: 'old' });
+    fs.writeFileSync(path.join(nodeHome, 'state.json'), JSON.stringify({ crons: [], executions: [legacy], settings, outbox: [] }));
+    expect(await cache.loadJobCache()).toBe(true);
+    expect((await cache.getExecution('old'))?.prePromptCommands).toEqual([]);
+
+    cache.replaceJobs({ crons: [], executions: [legacy as Execution], settings });
+    expect((await cache.getExecution('old'))?.prePromptCommands).toEqual([]);
+    cache.replaceJobs({ crons: [], executions: [execution({ id: 'old', prePromptCommands: ['make'] })], settings });
+    expect((await cache.getExecution('old'))?.prePromptCommands).toEqual(['make']);
   });
 });

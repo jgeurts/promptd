@@ -37,6 +37,14 @@ let settings: Partial<NodeSettings> = {};
 let outbox: JobPatch[] = [];
 let saveTimer: NodeJS.Timeout | null = null;
 
+/**
+ * A job as this node holds it. One cached, or sent by a hub, from before
+ * commands ran ahead of the prompt has no list, and runs none.
+ */
+function withCommands<T extends Cron | Execution>(job: T): T {
+  return Array.isArray(job.prePromptCommands) ? job : { ...job, prePromptCommands: [] };
+}
+
 function clone<T extends object>(value: T): T;
 function clone<T extends object>(value: T | undefined): T | null;
 function clone<T extends object>(value: T | undefined): T | null {
@@ -110,8 +118,8 @@ export function replaceJobs(work: Partial<Pick<NodeWork, 'crons' | 'executions' 
   settingsChanged: boolean;
 } {
   const next: JobRecords = {
-    cron: new Map((work.crons ?? []).map((job) => [job.id, job])),
-    execution: new Map((work.executions ?? []).map((job) => [job.id, job])),
+    cron: new Map((work.crons ?? []).map((job) => [job.id, withCommands(job)])),
+    execution: new Map((work.executions ?? []).map((job) => [job.id, withCommands(job)])),
   };
   for (const entry of outbox) {
     const existing = next[entry.kind].get(entry.id);
@@ -135,8 +143,8 @@ function snapshot(): string {
 export async function loadJobCache(): Promise<boolean> {
   try {
     const saved = JSON.parse(await fsp.readFile(STATE_FILE, 'utf8')) as SavedState;
-    records.cron = new Map((saved.crons ?? []).map((job) => [job.id, job]));
-    records.execution = new Map((saved.executions ?? []).map((job) => [job.id, job]));
+    records.cron = new Map((saved.crons ?? []).map((job) => [job.id, withCommands(job)]));
+    records.execution = new Map((saved.executions ?? []).map((job) => [job.id, withCommands(job)]));
     settings = saved.settings ?? {};
     outbox = Array.isArray(saved.outbox) ? (saved.outbox as JobPatch[]) : [];
     return true;

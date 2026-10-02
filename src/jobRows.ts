@@ -1,5 +1,5 @@
 import type { CronTable, ExecutionTable } from './db.js';
-import { readUsageDelayOverride } from './jobDefaults.js';
+import { readCommandsOverride, readUsageDelayOverride } from './jobDefaults.js';
 import type { Cron, Execution, ExecutionStatus, JobBase, RunStatus } from './types.js';
 
 type JobColumns = Omit<CronTable, 'cron' | 'timezone'>;
@@ -21,6 +21,16 @@ function parseUsageDelay(text: string): JobBase['usageDelay'] {
   }
 }
 
+/** Null stays null; a list, empty included, is the job's own. Unreadable text follows the defaults. */
+function parseCommands(text: string | null): string[] | null {
+  if (text === null || text === undefined) return null;
+  try {
+    return readCommandsOverride(JSON.parse(text));
+  } catch {
+    return null;
+  }
+}
+
 function toColumns(job: JobBase): JobColumns {
   return {
     id: job.id,
@@ -34,6 +44,7 @@ function toColumns(job: JobBase): JobColumns {
     model: job.model ?? null,
     effort: job.effort ?? null,
     usageDelay: JSON.stringify(readUsageDelayOverride(job.usageDelay)),
+    prePromptCommands: job.prePromptCommands === null || job.prePromptCommands === undefined ? null : JSON.stringify(job.prePromptCommands),
     prompt: job.prompt ?? '',
     isActive: job.isActive ? 1 : 0,
     nodeId: job.nodeId ?? '',
@@ -65,6 +76,7 @@ function fromColumns(row: JobColumns): JobBase {
     model: row.model ?? null,
     effort: row.effort ?? null,
     usageDelay: parseUsageDelay(row.usageDelay),
+    prePromptCommands: parseCommands(row.prePromptCommands),
     prompt: row.prompt,
     isActive: Boolean(row.isActive),
     nodeId: row.nodeId,

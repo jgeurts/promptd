@@ -46,6 +46,7 @@ function heldCron(): Cron {
     model: '',
     effort: '',
     usageDelay: { credits: false, fable: false, session: false, weekly: true },
+    prePromptCommands: [],
     prompt: 'Tidy up.',
     isActive: true,
     projectId: null,

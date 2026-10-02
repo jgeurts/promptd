@@ -31,6 +31,7 @@ import {
   pendingPatches,
   replaceJobs,
 } from './jobCache.js';
+import { PRE_PROMPT_COMMANDS_FEATURE } from './jobDefaults.js';
 import { DEFAULT_MAX_CONCURRENT_JOBS, normalizeMaxConcurrentJobs } from './settings.js';
 import { browseDirectories } from './browse.js';
 import { suggestTitle } from './title.js';
@@ -250,6 +251,8 @@ function identity(): NodeIdentity {
     startedAt: STARTED_AT,
     processors: DEFAULT_MAX_CONCURRENT_JOBS,
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    // So the hub sends this node jobs with commands before the prompt.
+    features: [PRE_PROMPT_COMMANDS_FEATURE],
   };
 }
 

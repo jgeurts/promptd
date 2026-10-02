@@ -57,6 +57,7 @@ const cronInput: CronInput = {
   model: 'sonnet',
   effort: 'high',
   usageDelay: { credits: false, fable: false, session: true, weekly: false },
+  prePromptCommands: null,
   prompt: 'Write two lines.',
   isActive: true,
   nodeId: '',
@@ -205,6 +206,7 @@ describe.each(targets)('storage on $name', ({ url }) => {
       model: 'haiku',
       effort: 'low',
       usageDelay: { session: true, weekly: true, fable: false, credits: false },
+      prePromptCommands: [],
     });
 
     // Saving the job again with an override, and then with it cleared, lands where it says.
@@ -216,6 +218,48 @@ describe.each(targets)('storage on $name', ({ url }) => {
       effective: { useWorktree: false, model: '', effort: 'low' },
     });
   });
+
+  it('keeps commands before the prompt apart from following the defaults, in both tables', async () => {
+    const lists: Array<string[] | null> = [null, [], ['pnpm install --frozen-lockfile', 'pnpm build']];
+    for (const prePromptCommands of lists) {
+      const cron = await store.createCron({ ...cronInput, prePromptCommands });
+      expect((await store.getCron(cron.id))?.prePromptCommands).toEqual(prePromptCommands);
+      const execution = await executions.createExecution({ ...cronInput, prePromptCommands, scheduledAt: '2026-01-01T00:00:00.000Z' });
+      expect((await executions.getExecution(execution.id))?.prePromptCommands).toEqual(prePromptCommands);
+    }
+    // An edit can go back to following, or to running nothing.
+    const cron = await store.createCron({ ...cronInput, prePromptCommands: ['make'] });
+    await store.updateCron(cron.id, { ...cronInput, prePromptCommands: [] });
+    expect((await store.getCron(cron.id))?.prePromptCommands).toEqual([]);
+    await store.updateCron(cron.id, { ...cronInput, prePromptCommands: null });
+    expect((await store.getCron(cron.id))?.prePromptCommands).toBeNull();
+  });
+
+  it('keeps the cluster\'s commands through a save of another default', async () => {
+    const current = await settings.loadSettings();
+    await settings.patchSettings({ jobDefaults: jobDefaults.patchJobDefaults(current.jobDefaults, { prePromptCommands: ['pnpm install'] }) });
+    const after = await settings.loadSettings();
+    await settings.patchSettings({ jobDefaults: jobDefaults.patchJobDefaults(after.jobDefaults, { model: 'opus' }) });
+    expect((await settings.loadSettings()).jobDefaults).toMatchObject({ model: 'opus', prePromptCommands: ['pnpm install'] });
+  });
+});
+
+describe('the job forms\' commands before the prompt', () => {
+  const body = { name: 'Build', cron: '0 9 * * *', prompt: 'Build it.', isActive: true };
+
+  it('follow the defaults when left out or null, and keep a list, empty or not', () => {
+    expect(jobForms.readCronForm(body).value.prePromptCommands).toBeNull();
+    expect(jobForms.readCronForm({ ...body, prePromptCommands: null }).value.prePromptCommands).toBeNull();
+    expect(jobForms.readCronForm({ ...body, prePromptCommands: [] }).value.prePromptCommands).toEqual([]);
+    expect(jobForms.readExecutionForm({ ...body, asSoonAsPossible: true, prePromptCommands: [' make ', ''] }).value.prePromptCommands).toEqual(['make']);
+  });
+
+  it('refuse a list that is not one line per command', () => {
+    expect(jobForms.readCronForm({ ...body, prePromptCommands: ['make\nmake test'] }).errors).toEqual([
+      'Commands before the prompt must each be one line, with no line breaks or NUL characters.',
+    ]);
+    expect(jobForms.readCronForm({ ...body, prePromptCommands: 'make' }).errors).toEqual(['Commands before the prompt must be a list of strings.']);
+  });
 });
 
 /**
@@ -225,8 +269,11 @@ describe.each(targets)('storage on $name', ({ url }) => {
  * anyway, and a schema of its own would not do, since the migrator finds its
  * bookkeeping table in public whatever the search path says.
  */
+let upgrades = 0;
+
 async function freshUpgradeTarget(url: string): Promise<string> {
-  if (!url.startsWith('postgres')) return `sqlite:${path.join(home, `upgrade-${Date.now()}.sqlite`)}`;
+  upgrades += 1;
+  if (!url.startsWith('postgres')) return `sqlite:${path.join(home, `upgrade-${upgrades}.sqlite`)}`;
   const client = new pg.Client({ connectionString: url });
   await client.connect();
   await client.query('drop schema if exists public cascade');
@@ -287,6 +334,34 @@ describe.each(targets)('the migration to job setting defaults on $name', ({ url 
     await executions.patchExecution('set-once', { effort: null, retrospective: null });
     expect(await store.getCron('set')).toMatchObject({ model: null, useWorktree: null });
     expect(await executions.getExecution('set-once')).toMatchObject({ effort: null, retrospective: null });
+  });
+});
+
+describe.each(targets)('the migration to commands before the prompt on $name', ({ url }) => {
+  beforeAll(async () => {
+    await dbModule.closeDatabase();
+    dbModule.openDatabase(await freshUpgradeTarget(url));
+    await dbModule.migrate('20260930_007_name_inferred');
+    const db = dbModule.db();
+    const columns = sql`id, name, description, working_directory, use_worktree, model, usage_delay, prompt, is_active, node_id, created_at, updated_at`;
+    const values = (id: string) => sql`${id}, ${id}, '', '~/', 1, 'opus', '{}', 'Do it.', 1, '', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'`;
+    await sql`insert into crons (${columns}, cron, timezone) values (${values('before')}, '0 9 * * *', '')`.execute(db);
+    await sql`insert into executions (${columns}, scheduled_at, status) values (${values('before-once')}, '2026-01-02T00:00:00.000Z', 'scheduled')`.execute(db);
+    await dbModule.migrate();
+  });
+
+  it('leaves every job in both tables following the defaults, which run nothing', async () => {
+    const cron = await store.getCron('before');
+    const execution = await executions.getExecution('before-once');
+    for (const job of [cron, execution]) expect(job).toMatchObject({ prePromptCommands: null, useWorktree: true, model: 'opus' });
+    expect(jobForms.withEffective(cron!, jobDefaults.BUILT_IN_JOB_DEFAULTS).effective.prePromptCommands).toEqual([]);
+  });
+
+  it('lets both tables store a list, or none, once migrated', async () => {
+    await store.patchCron('before', { prePromptCommands: ['pnpm install'] });
+    await executions.patchExecution('before-once', { prePromptCommands: [] });
+    expect((await store.getCron('before'))?.prePromptCommands).toEqual(['pnpm install']);
+    expect((await executions.getExecution('before-once'))?.prePromptCommands).toEqual([]);
   });
 });
 

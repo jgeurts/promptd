@@ -91,6 +91,8 @@ export function feedbackExecution(
     model: '',
     effort: '',
     usageDelay: normalizeUsageDelay(null),
+    // It works in promptd's own checkout, which needs nothing set up first.
+    prePromptCommands: [],
     prompt: feedbackPrompt(kind, details),
     isActive: true,
     nodeId: '',

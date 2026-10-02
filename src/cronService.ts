@@ -25,7 +25,19 @@ import { TTL_MS as USAGE_CHECK_MS, hasUsageDelay, normalizeUsageDelay, usageBloc
 import { DEFAULT_MAX_CONCURRENT_JOBS } from './settings.js';
 import { validateCronExpression } from './schedule.js';
 import { RetrospectiveSplitter, retrospectiveAddendum, retrospectivePrompt, retrospectiveSection, substantiveRetrospective } from './retrospective.js';
-import { WORKTREE_INCLUDE_FILE, pathInRepo, removeWorktree, repoRoot, writeWorktreeInclude } from './worktree.js';
+import {
+  WORKTREE_INCLUDE_FILE,
+  copyWorktreeIncludes,
+  isStuck,
+  pathInRepo,
+  prepareWorktree,
+  removeWorktree,
+  repoRoot,
+  writeWorktreeInclude,
+} from './worktree.js';
+import type { PreparedWorktree } from './worktree.js';
+import { PRE_PROMPT_SHELL, PrePromptSetup, prePromptTimeoutMs } from './prePrompt.js';
+import type { SetupOutcome } from './prePrompt.js';
 // Every job here comes from the node's cache with its defaults filled in, so
 // these names are the resolved shapes, and each setting is a plain value.
 import type {
@@ -94,9 +106,12 @@ interface KindStore {
 }
 
 interface RunHandle {
-  child: ChildProcess;
+  /** Null while the commands before the prompt run, and Claude has not started. */
+  child: ChildProcess | null;
   stream: fs.WriteStream;
   killTimer: NodeJS.Timeout | null;
+  /** What Stop ends while there is no Claude yet. */
+  setup: PrePromptSetup | null;
 }
 
 type WorktreeIncludeOutcome = { written: string; text: string; skipped?: undefined } | { written?: undefined; skipped: string };
@@ -241,11 +256,11 @@ function statsBlock(result: CliEvent, afterCost: string[] = []): string {
  * happened in a line for the log. Never throws: a failed clean up is reported,
  * and the run's own outcome stands.
  */
-async function cleanUpWorktree(job: Job, cwd: string): Promise<string> {
+async function cleanUpWorktree(job: Job, cwd: string, at: string | null = null): Promise<string> {
   if (!job.cleanupWorktree) return 'not cleaned up: Clean up worktree after execution is off';
   const started = Date.now();
   try {
-    const result: { cleaned?: string; skipped?: string } = await removeWorktree(cwd, job.id);
+    const result: { cleaned?: string; skipped?: string } = await removeWorktree(cwd, job.id, at ? { at } : {});
     if (!result.cleaned) return `not cleaned up: ${result.skipped}`;
     return `cleaned up in ${((Date.now() - started) / 1000).toFixed(1)}s: ${result.cleaned}`;
   } catch (err) {
@@ -253,6 +268,40 @@ async function cleanUpWorktree(job: Job, cwd: string): Promise<string> {
     // Left behind, the worktree is found again by the next run, or by nobody.
     emit('worktree:cleanup-failed', { cronId: job.id, cronName: job.name, kind: job.kind ?? 'cron', error: oneLine(err instanceof Error ? err.message : String(err)) });
     return `error: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+/**
+ * How a run whose commands before the prompt did not all succeed ends: the
+ * detail on its log's closing line, and for one that failed, what the
+ * notification says stopped it.
+ */
+function setupFailure(
+  outcome: Exclude<SetupOutcome, { ok: true }>,
+  count: number,
+  timeoutMs: number,
+  stoppedBy: string | null,
+): { detail: string; reason: string | null } {
+  const which = `command ${outcome.index + 1} of ${count}`;
+  switch (outcome.why) {
+    case 'stopped':
+      return { detail: `killed by ${stoppedBy} during ${which} before the prompt`, reason: null };
+    case 'stuck':
+      return {
+        detail: `${which} before the prompt left processes that would not end: ${outcome.command}`,
+        reason: `${outcome.command} left processes running before the prompt that would not end`,
+      };
+    case 'timeout':
+      return {
+        detail: `the commands before the prompt ran past ${formatRuntime(timeoutMs)}, during ${which}: ${outcome.command}`,
+        reason: `its commands before the prompt ran past ${formatRuntime(timeoutMs)}, during ${outcome.command}`,
+      };
+    case 'spawn':
+      return { detail: `${which} before the prompt could not start: ${outcome.error}`, reason: `could not start ${outcome.command}: ${outcome.error}` };
+    case 'exit': {
+      const ended = outcome.signal ? `was ended by ${outcome.signal}` : `exited with ${outcome.code}`;
+      return { detail: `${which} before the prompt ${ended}: ${outcome.command}`, reason: `${outcome.command} ${ended} before the prompt` };
+    }
   }
 }
 
@@ -1368,14 +1417,24 @@ class CronService {
       );
     }
 
+    // Still running its commands before the prompt. Claude is not started
+    // once a stop is asked for, so ending the setup ends the run.
+    const { child } = handle;
+    if (!child) {
+      handle.setup?.stop();
+      console.log(`[cron] "${run.cronName}" stop requested by ${stoppedBy} before claude started`);
+      emit('run:stopping', { cronId, cronName: run.cronName, kind: run.kind, logFile: run.logFile });
+      return run;
+    }
+
     // claude may have children of its own, so signal the whole process group.
-    const { pid } = handle.child;
+    const { pid } = child;
     const signal = (sig: NodeJS.Signals): void => {
       try {
         process.kill(-Number(pid), sig);
       } catch {
         try {
-          handle.child.kill(sig);
+          child.kill(sig);
         } catch {
           /* already gone */
         }
@@ -1423,6 +1482,11 @@ class CronService {
     let worktreeArgs = useWorktree ? ['--worktree', cron.id] : [];
     // Why a job with Use worktree on runs without one this time, for the header.
     let worktreeSkipped: string | null = null;
+    // With commands to run before the prompt, promptd makes the worktree and
+    // runs them in it, then starts claude there without --worktree. With none,
+    // claude makes the worktree itself, as it always has.
+    const setupCommands = Array.isArray(cron.prePromptCommands) ? cron.prePromptCommands : [];
+    const setupTimeoutMs = prePromptTimeoutMs();
 
     const run: RunInfo = {
       runId: randomUUID(),
@@ -1471,13 +1535,14 @@ class CronService {
     // Set in `finish` when the retrospective said something.
     let wroteRetrospective = false;
 
-    // Written once the child exists, so the header can carry its pid.
+    // Written once the child exists, so the header can carry its pid. With
+    // commands before the prompt it goes first, and their section after it.
     const writeHeader = (pid: number | null | undefined): void => {
       stream.write(
         [
           `=== ${cron.name} ===`,
           `started    ${startedAt.toISOString()}`,
-          `pid        ${pid ?? '(not started)'}`,
+          `pid        ${pid ?? (setupCommands.length ? '(claude starts once the commands before the prompt succeed)' : '(not started)')}`,
           `trigger    ${source}`,
           cron.kind === 'execution' ? `scheduled  ${cron.scheduledAt} (one-time)` : `schedule   ${cron.cron}`,
           `directory  ${cwd}`,
@@ -1491,12 +1556,18 @@ class CronService {
           `Cleanup worktree  ${Boolean(cron.cleanupWorktree)}`,
           `.worktreeinclude  ${worktreeIncludeNote}`,
           `Retrospective     ${Boolean(cron.retrospective)}`,
+          ...(setupCommands.length
+            ? [
+                `Before prompt     ${setupCommands.length} command${setupCommands.length === 1 ? '' : 's'}, each through ${PRE_PROMPT_SHELL.join(' ')}, ${formatRuntime(setupTimeoutMs)} for all of them`,
+                ...setupCommands.map((command, index) => `  ${index + 1}  ${command}`),
+              ]
+            : []),
           `command    ${CLAUDE_BIN} -p <prompt> ${[...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs].join(' ')}`,
           ...(worktreeNoticeText === null ? [] : ['--- worktree notice ---', worktreeNoticeText]),
           ...(worktreeIncludeText === null ? [] : ['--- .worktreeinclude ---', worktreeIncludeText.replace(/\n$/, '')]),
           '--- prompt ---',
           cron.prompt ?? '',
-          '--- output ---',
+          ...(setupCommands.length ? ['--- before the prompt ---'] : ['--- output ---']),
           '',
         ].join('\n'),
       );
@@ -1505,13 +1576,23 @@ class CronService {
     // Filled in from the CLI's final result event, when the run gets that far.
     let resultEvent: CliEvent | null = null;
 
-    const finish = async (status: RunStatus, detail: string): Promise<void> => {
+    // Set when this run must not clean up a worktree: it never got one of its
+    // own, or something it started may still be writing in it. Clean up
+    // finds the worktree by its branch, which could be a checkout elsewhere.
+    let keepWorktree: string | null = null;
+    // The tree this run set up for its commands, which is the only one its clean up removes.
+    let preparedTree: string | null = null;
+    // `reason` is for a run that never reached claude: what stopped it, for the notification.
+    let finishing = false;
+    const finish = async (status: RunStatus, detail: string, reason: string | null = null): Promise<void> => {
+      if (finishing) return;
+      finishing = true;
       const endedAt = new Date();
       const seconds = ((endedAt.getTime() - startedAt.getTime()) / 1000).toFixed(1);
       // Every way a run ends comes through here once the child has exited, so
       // nothing is still writing in the folder being removed. The run keeps its
       // slot until this is done, so its next trigger cannot race the removal.
-      const cleanupLine = `Worktree cleanup: ${await cleanUpWorktree(cron, cwd)}`;
+      const cleanupLine = `Worktree cleanup: ${keepWorktree ? `not cleaned up: ${keepWorktree}` : await cleanUpWorktree(cron, cwd, preparedTree)}`;
       if (retroSplitter && retroPrompt !== null) {
         const held = retroSplitter.flush();
         if (held) stream.write(held);
@@ -1560,7 +1641,7 @@ class CronService {
         ...lifetime,
       }).catch((err: unknown) => console.error(`[cron] could not record last run: ${err instanceof Error ? err.message : String(err)}`));
       console.log(`[cron] "${cron.name}" ${status} in ${seconds}s -> ${file}`);
-      emit('run:finished', { cronId: cron.id, cronName: cron.name, kind, logFile: file, status, seconds: Number(seconds) });
+      emit('run:finished', { cronId: cron.id, cronName: cron.name, kind, logFile: file, status, seconds: Number(seconds), ...(reason ? { reason } : {}) });
       if (wroteRetrospective) emit('run:retrospective', { cronId: cron.id, cronName: cron.name, kind, logFile: file });
       // The execution has had its run, so the one-shot timer it was armed with
       // is spent. Rebuild the schedules to drop it rather than leave something
@@ -1614,15 +1695,180 @@ class CronService {
       worktreeNoticeText = worktreeNotice(cron, await pathInRepo(cwd));
     }
 
-    let child: ChildProcessByStdio<null, Readable, Readable>;
-    try {
-      child = spawn(CLAUDE_BIN, ['-p', promptFor(cron, worktreeNoticeText, retroPrompt), ...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs], {
-        cwd,
+    const spawnClaude = (runCwd: string): ChildProcessByStdio<null, Readable, Readable> =>
+      spawn(CLAUDE_BIN, ['-p', promptFor(cron, worktreeNoticeText, retroPrompt), ...CLAUDE_ARGS, ...modelArgs, ...effortArgs, ...worktreeArgs], {
+        cwd: runCwd,
         env: process.env,
         stdio: ['ignore', 'pipe', 'pipe'],
         // Own process group, so stopping can signal claude and anything it spawned.
         detached: true,
       });
+
+    /** Writes claude's output into the log as it comes, and finishes the run when claude exits. */
+    const follow = (child: ChildProcessByStdio<null, Readable, Readable>): void => {
+      run.pid = child.pid as number | null;
+      this.handles.set(cron.id, { child, stream, killTimer: null, setup: null });
+
+      // stdout is newline-delimited JSON events; write through only the assistant's
+      // text, so the log reads like plain output and can still be tailed live.
+      let pending = '';
+      let sawText = false;
+      let textTail = ''; // last two characters of assistant text, to size the break before the next block
+      let textBlockOpened = false;
+
+      const writeText = (text: string): void => {
+        sawText = true;
+        textTail = (textTail + text).slice(-2);
+        const output = retroSplitter ? retroSplitter.push(text) : text;
+        if (output) stream.write(output);
+      };
+
+      const handleLine = (line: string): void => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        let event: CliEvent;
+        try {
+          event = JSON.parse(trimmed) as CliEvent;
+        } catch {
+          stream.write(`${line}\n`); // not JSON (a CLI warning); keep it verbatim
+          return;
+        }
+        if (event.type === 'stream_event') {
+          const inner = event.event;
+          if (inner?.type === 'content_block_start') {
+            textBlockOpened = inner.content_block?.type === 'text';
+            return;
+          }
+          const text = inner?.type === 'content_block_delta' && inner.delta?.type === 'text_delta' ? inner.delta.text : null;
+          if (!text) return;
+          // Each text block is a new paragraph: the ones either side of a tool
+          // call arrive back to back and would otherwise run into one line.
+          if (textBlockOpened && sawText && !textTail.endsWith('\n\n')) writeText(textTail.endsWith('\n') ? '\n' : '\n\n');
+          textBlockOpened = false;
+          writeText(text);
+          return;
+        }
+        if (event.type === 'result') {
+          resultEvent = event;
+          // No deltas arrived (older CLI, or a non-streaming reply): fall back to the whole result.
+          if (!sawText && typeof event.result === 'string' && event.result) writeText(event.result);
+          if (event.is_error) stream.write(`\nCLI reported an error: ${event.api_error_status ?? event.subtype ?? 'unknown'}\n`);
+        }
+      };
+
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => {
+        pending += chunk;
+        const lines = pending.split('\n');
+        pending = lines.pop() ?? ''; // hold the incomplete tail for the next chunk
+        for (const line of lines) handleLine(line);
+      });
+      child.stdout.on('end', () => {
+        if (pending) handleLine(pending);
+        pending = '';
+      });
+
+      child.stderr.pipe(stream, { end: false });
+
+      child.on('error', (err) => {
+        stream.write(`\nprocess error: ${err.message}\n`);
+      });
+
+      child.on('close', (code, signal) => {
+        const status = run.stopping ? 'stopped' : code === 0 ? 'succeeded' : 'failed';
+        const detail = run.stopping
+          ? `killed by ${run.stoppedBy}${signal ? `, signal ${signal}` : ''}`
+          : signal
+            ? `signal ${signal}`
+            : `exit code ${code}`;
+        finish(status, detail).catch((err: unknown) => console.error(`[cron] finish failed: ${err instanceof Error ? err.message : String(err)}`));
+      });
+    };
+
+    /**
+     * The commands before the prompt, and then claude. With Use worktree on,
+     * promptd makes or reuses the worktree claude would have, copies in what
+     * .worktreeinclude names when it is new, and runs the commands at its top,
+     * where claude then starts; without one they run in the job's folder. A
+     * command that fails, or runs past the time allowed, ends the run there.
+     */
+    const prepareAndLaunch = async (setup: PrePromptSetup): Promise<void> => {
+      let runCwd = cwd;
+      if (useWorktree) {
+        let tree: PreparedWorktree;
+        try {
+          tree = await prepareWorktree(cwd, cron.id, { signal: setup.signal });
+        } catch (err) {
+          // A half-made tree is already gone, and one this run could not get is not its own to remove.
+          keepWorktree = 'this run did not get a worktree of its own';
+          if (setup.isStopped) return finish('stopped', `killed by ${run.stoppedBy} while its worktree was being made`);
+          const message = oneLine(err instanceof Error ? err.message : String(err));
+          stream.write(`could not make the worktree: ${message}\n`);
+          return finish('failed', 'could not make the worktree', `could not make its worktree: ${message}`);
+        }
+        preparedTree = tree.path;
+        for (const note of tree.notes) stream.write(`worktree   ${note}\n`);
+        if (tree.created) {
+          try {
+            const copy = await copyWorktreeIncludes(tree.root, tree.path, { signal: setup.signal });
+            stream.write(
+              `${WORKTREE_INCLUDE_FILE}  copied ${copy.copied.length} file${copy.copied.length === 1 ? '' : 's'}${copy.copied.length ? `: ${copy.copied.slice(0, 20).join(', ')}${copy.copied.length > 20 ? ', ...' : ''}` : ''}` +
+                `${copy.skipped.length ? `; left out ${copy.skipped.length} already in the tree or behind a symlink: ${copy.skipped.slice(0, 20).join(', ')}` : ''}\n`,
+            );
+          } catch (err) {
+            if (isStuck(err)) keepWorktree = 'something git started is still running in it';
+            if (setup.isStopped) return finish('stopped', `killed by ${run.stoppedBy} while files were copied into its worktree`);
+            const message = oneLine(err instanceof Error ? err.message : String(err));
+            stream.write(`could not copy what ${WORKTREE_INCLUDE_FILE} names: ${message}\n`);
+            return finish('failed', `could not copy what ${WORKTREE_INCLUDE_FILE} names`, `could not copy what ${WORKTREE_INCLUDE_FILE} names into its worktree: ${message}`);
+          }
+        }
+        runCwd = tree.path;
+      }
+      stream.write(`directory  ${runCwd}\n`);
+      const outcome = await setup.run(setupCommands, { cwd: runCwd, write: (chunk) => stream.write(chunk), timeoutMs: setupTimeoutMs });
+      if (!outcome.ok) {
+        if (outcome.why === 'stuck') keepWorktree = 'something a command before the prompt started is still running in it';
+        const failure = setupFailure(outcome, setupCommands.length, setupTimeoutMs, run.stoppedBy);
+        return finish(outcome.why === 'stopped' ? 'stopped' : 'failed', failure.detail, failure.reason);
+      }
+      // Asked to stop just as the last command finished.
+      if (run.stopping) return finish('stopped', `killed by ${run.stoppedBy} before claude started`);
+      let child: ChildProcessByStdio<null, Readable, Readable>;
+      try {
+        child = spawnClaude(runCwd);
+      } catch (err) {
+        stream.write(`could not start ${CLAUDE_BIN}: ${err instanceof Error ? err.message : String(err)}\n`);
+        return finish('failed', 'spawn error');
+      }
+      stream.write(`claude     pid ${child.pid}\n--- output ---\n`);
+      follow(child);
+      console.log(`[cron] "${cron.name}" ran its commands before the prompt; claude started (pid ${child.pid})`);
+    };
+
+    if (setupCommands.length) {
+      // promptd makes the worktree, so claude is started in it rather than asked for one.
+      worktreeArgs = [];
+      writeHeader(null);
+      const setup = new PrePromptSetup();
+      this.handles.set(cron.id, { child: null, stream, killTimer: null, setup });
+      console.log(`[cron] "${cron.name}" started (${source}) with ${setupCommands.length} command(s) before the prompt -> ${file}`);
+      emit('run:started', run);
+      // Not waited on: an install can take minutes, and the node has to keep
+      // syncing, and hear a Stop, meanwhile.
+      prepareAndLaunch(setup)
+        .catch(async (err: unknown) => {
+          const message = oneLine(err instanceof Error ? err.message : String(err));
+          stream.write(`\ncould not run the commands before the prompt: ${message}\n`);
+          await finish('failed', 'setup error', `could not run its commands before the prompt: ${message}`);
+        })
+        .catch((err: unknown) => console.error(`[cron] finish failed: ${err instanceof Error ? err.message : String(err)}`));
+      return run;
+    }
+
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawnClaude(cwd);
     } catch (err) {
       writeHeader(null);
       stream.write(`could not start ${CLAUDE_BIN}: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -1630,86 +1876,8 @@ class CronService {
       await finish('failed', 'spawn error');
       return run;
     }
-
-    run.pid = child.pid as number | null;
     writeHeader(child.pid);
-    this.handles.set(cron.id, { child, stream, killTimer: null });
-
-    // stdout is newline-delimited JSON events; write through only the assistant's
-    // text, so the log reads like plain output and can still be tailed live.
-    let pending = '';
-    let sawText = false;
-    let textTail = ''; // last two characters of assistant text, to size the break before the next block
-    let textBlockOpened = false;
-
-    const writeText = (text: string): void => {
-      sawText = true;
-      textTail = (textTail + text).slice(-2);
-      const output = retroSplitter ? retroSplitter.push(text) : text;
-      if (output) stream.write(output);
-    };
-
-    const handleLine = (line: string): void => {
-      const trimmed = line.trim();
-      if (!trimmed) return;
-      let event: CliEvent;
-      try {
-        event = JSON.parse(trimmed) as CliEvent;
-      } catch {
-        stream.write(`${line}\n`); // not JSON (a CLI warning); keep it verbatim
-        return;
-      }
-      if (event.type === 'stream_event') {
-        const inner = event.event;
-        if (inner?.type === 'content_block_start') {
-          textBlockOpened = inner.content_block?.type === 'text';
-          return;
-        }
-        const text = inner?.type === 'content_block_delta' && inner.delta?.type === 'text_delta' ? inner.delta.text : null;
-        if (!text) return;
-        // Each text block is a new paragraph: the ones either side of a tool
-        // call arrive back to back and would otherwise run into one line.
-        if (textBlockOpened && sawText && !textTail.endsWith('\n\n')) writeText(textTail.endsWith('\n') ? '\n' : '\n\n');
-        textBlockOpened = false;
-        writeText(text);
-        return;
-      }
-      if (event.type === 'result') {
-        resultEvent = event;
-        // No deltas arrived (older CLI, or a non-streaming reply): fall back to the whole result.
-        if (!sawText && typeof event.result === 'string' && event.result) writeText(event.result);
-        if (event.is_error) stream.write(`\nCLI reported an error: ${event.api_error_status ?? event.subtype ?? 'unknown'}\n`);
-      }
-    };
-
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      pending += chunk;
-      const lines = pending.split('\n');
-      pending = lines.pop() ?? ''; // hold the incomplete tail for the next chunk
-      for (const line of lines) handleLine(line);
-    });
-    child.stdout.on('end', () => {
-      if (pending) handleLine(pending);
-      pending = '';
-    });
-
-    child.stderr.pipe(stream, { end: false });
-
-    child.on('error', (err) => {
-      stream.write(`\nprocess error: ${err.message}\n`);
-    });
-
-    child.on('close', (code, signal) => {
-      const status = run.stopping ? 'stopped' : code === 0 ? 'succeeded' : 'failed';
-      const detail = run.stopping
-        ? `killed by ${run.stoppedBy}${signal ? `, signal ${signal}` : ''}`
-        : signal
-          ? `signal ${signal}`
-          : `exit code ${code}`;
-      finish(status, detail).catch((err: unknown) => console.error(`[cron] finish failed: ${err instanceof Error ? err.message : String(err)}`));
-    });
-
+    follow(child);
     console.log(`[cron] "${cron.name}" started (pid ${child.pid}, ${source}) -> ${file}`);
     emit('run:started', run);
     return run;

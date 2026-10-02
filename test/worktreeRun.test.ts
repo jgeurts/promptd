@@ -50,6 +50,7 @@ function cron(id: string, workingDirectory: string): RunnableCron {
     model: '',
     effort: '',
     usageDelay: { credits: false, fable: false, session: false, weekly: false },
+    prePromptCommands: [],
     prompt: 'Do the task.',
     isActive: false,
     projectId: null,

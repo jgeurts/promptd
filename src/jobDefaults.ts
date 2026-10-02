@@ -20,7 +20,10 @@ import type {
  * reaches every job that did not set its own from its next run.
  */
 
-/** What the cluster starts with: worktrees on and cleaned up, the CLI's model and effort, waiting out the session limit. */
+/**
+ * What the cluster starts with: worktrees on and cleaned up, the CLI's model
+ * and effort, waiting out the session limit, and nothing run before the prompt.
+ */
 export const BUILT_IN_JOB_DEFAULTS: JobDefaults = {
   useWorktree: true,
   cleanupWorktree: true,
@@ -28,7 +31,20 @@ export const BUILT_IN_JOB_DEFAULTS: JobDefaults = {
   model: '',
   effort: '',
   usageDelay: { session: true, weekly: false, fable: false, credits: false },
+  prePromptCommands: [],
 };
+
+/**
+ * What a node says in its identity when it can run commands before the
+ * prompt. A node without it would run such a job without them, so the hub
+ * does not send it one.
+ */
+export const PRE_PROMPT_COMMANDS_FEATURE = 'prePromptCommands';
+
+/** Bounds on a list of commands run before the prompt. Anything longer belongs in a script in the repository. */
+export const MAX_PRE_PROMPT_COMMANDS = 50;
+export const MAX_PRE_PROMPT_COMMAND_LENGTH = 4096;
+const MAX_PRE_PROMPT_TOTAL_LENGTH = 16384;
 
 const FLAGS = ['useWorktree', 'cleanupWorktree', 'retrospective'] as const;
 
@@ -45,7 +61,34 @@ function usageIds(): UsageDelayCategoryId[] {
 }
 
 function builtIn(): JobDefaults {
-  return { ...BUILT_IN_JOB_DEFAULTS, usageDelay: { ...BUILT_IN_JOB_DEFAULTS.usageDelay } };
+  return { ...BUILT_IN_JOB_DEFAULTS, usageDelay: { ...BUILT_IN_JOB_DEFAULTS.usageDelay }, prePromptCommands: [] };
+}
+
+/**
+ * A list of commands to run before the prompt, or what is wrong with it,
+ * worded to follow the name of the field. Each is one line of shell; blank
+ * ones are dropped and the rest trimmed, in order. A line break inside one is
+ * refused rather than split, since the form shows one command per line and
+ * would save it back as two.
+ */
+export function parsePrePromptCommands(input: unknown): { commands: string[] } | { error: string } {
+  if (!Array.isArray(input) || input.some((command) => typeof command !== 'string')) return { error: 'must be a list of strings' };
+  const commands = (input as string[]).map((command) => command.trim()).filter(Boolean);
+  if (commands.some((command) => /[\0\r\n]/.test(command))) return { error: 'must each be one line, with no line breaks or NUL characters' };
+  if (commands.length > MAX_PRE_PROMPT_COMMANDS) return { error: `can be at most ${MAX_PRE_PROMPT_COMMANDS} commands` };
+  if (commands.some((command) => command.length > MAX_PRE_PROMPT_COMMAND_LENGTH)) {
+    return { error: `must each be ${MAX_PRE_PROMPT_COMMAND_LENGTH} characters or fewer` };
+  }
+  if (commands.reduce((total, command) => total + command.length, 0) > MAX_PRE_PROMPT_TOTAL_LENGTH) {
+    return { error: `must come to ${MAX_PRE_PROMPT_TOTAL_LENGTH} characters or fewer in all` };
+  }
+  return { commands };
+}
+
+/** A stored list, or null when it is missing or not one, so whatever reads it falls back to what it follows. */
+function readCommands(input: unknown): string[] | null {
+  const parsed = parsePrePromptCommands(input);
+  return 'commands' in parsed ? parsed.commands : null;
 }
 
 /** A model or effort as given, or null when it is not one: effort must be a level the CLI takes, or blank. */
@@ -64,6 +107,7 @@ export function readJobDefaults(input: unknown): JobDefaults {
   for (const key of FLAGS) if (typeof given[key] === 'boolean') defaults[key] = given[key];
   for (const key of TEXTS) defaults[key] = readText(key, given[key]) ?? defaults[key];
   for (const id of usageIds()) if (typeof delay[id] === 'boolean') defaults.usageDelay[id] = delay[id];
+  defaults.prePromptCommands = readCommands(given.prePromptCommands) ?? defaults.prePromptCommands;
   return defaults;
 }
 
@@ -97,7 +141,15 @@ export function patchJobDefaults(current: JobDefaults, input: unknown): JobDefau
       else throw new JobDefaultsError(`jobDefaults.usageDelay.${id} must be true, false or null`);
     }
   }
+  if ('prePromptCommands' in patch) next.prePromptCommands = patch.prePromptCommands === null ? initial.prePromptCommands : commandsFrom(patch.prePromptCommands);
   return next;
+}
+
+/** A list the API was sent, or an error saying why it is not one. */
+function commandsFrom(input: unknown): string[] {
+  const parsed = parsePrePromptCommands(input);
+  if ('error' in parsed) throw new JobDefaultsError(`jobDefaults.prePromptCommands ${parsed.error}`);
+  return parsed.commands;
 }
 
 /** A node's stored changes, with anything unreadable dropped so it follows the cluster. */
@@ -113,6 +165,9 @@ export function readJobDefaultsOverride(input: unknown): JobDefaultsOverride {
   const usage: Partial<UsageDelay> = {};
   for (const id of usageIds()) if (typeof delay[id] === 'boolean') usage[id] = delay[id];
   if (Object.keys(usage).length) override.usageDelay = usage;
+  // An empty list is a change of its own: this node runs nothing before the prompt.
+  const commands = readCommands(given.prePromptCommands);
+  if (commands) override.prePromptCommands = commands;
   return override;
 }
 
@@ -154,6 +209,10 @@ export function patchJobDefaultsOverride(current: JobDefaultsOverride, input: un
     if (Object.keys(usage).length) next.usageDelay = usage;
     else delete next.usageDelay;
   }
+  if ('prePromptCommands' in patch) {
+    if (patch.prePromptCommands === null) delete next.prePromptCommands;
+    else next.prePromptCommands = commandsFrom(patch.prePromptCommands);
+  }
   return next;
 }
 
@@ -167,6 +226,7 @@ export function effectiveJobDefaults(cluster: JobDefaults, override: JobDefaults
     model: override.model ?? base.model,
     effort: override.effort ?? base.effort,
     usageDelay: Object.fromEntries(usageIds().map((id) => [id, override.usageDelay?.[id] ?? base.usageDelay[id]])) as UsageDelay,
+    prePromptCommands: [...(override.prePromptCommands ?? base.prePromptCommands)],
   };
 }
 
@@ -180,13 +240,22 @@ export function readTextOverride(input: unknown): string | null {
   return input === null || input === undefined ? null : String(input).trim();
 }
 
+/**
+ * Commands a job keeps for itself: null or missing follows the defaults, a
+ * list is the job's own, empty included. A list that is not one also follows
+ * them; the form reader is where it is refused.
+ */
+export function readCommandsOverride(input: unknown): string[] | null {
+  return input === null || input === undefined ? null : readCommands(input);
+}
+
 /** All four Delay for usage boxes, each on, off, or null to follow the defaults. */
 export function readUsageDelayOverride(input: unknown): UsageDelayOverride {
   const given = asRecord(input);
   return Object.fromEntries(usageIds().map((id) => [id, readFlagOverride(given[id])])) as UsageDelayOverride;
 }
 
-/** The six settings as a job stores them, each its own value or null. */
+/** The settings as a job stores them, each its own value or null. */
 export function jobSettingOverrides(input: Partial<JobSettingOverrides>): JobSettingOverrides {
   return {
     useWorktree: readFlagOverride(input.useWorktree),
@@ -195,10 +264,11 @@ export function jobSettingOverrides(input: Partial<JobSettingOverrides>): JobSet
     model: readTextOverride(input.model),
     effort: readTextOverride(input.effort),
     usageDelay: readUsageDelayOverride(input.usageDelay),
+    prePromptCommands: readCommandsOverride(input.prePromptCommands),
   };
 }
 
-/** Just the six settings of a job, with what it leaves to the defaults filled in from them. */
+/** Just the settings of a job, with what it leaves to the defaults filled in from them. */
 export function effectiveJobSettings(job: JobSettingOverrides, defaults: JobDefaults): JobSettings {
   const delay = readUsageDelayOverride(job.usageDelay);
   return {
@@ -208,6 +278,7 @@ export function effectiveJobSettings(job: JobSettingOverrides, defaults: JobDefa
     model: job.model ?? defaults.model,
     effort: job.effort ?? defaults.effort,
     usageDelay: Object.fromEntries(usageIds().map((id) => [id, delay[id] ?? defaults.usageDelay[id]])) as UsageDelay,
+    prePromptCommands: [...(readCommandsOverride(job.prePromptCommands) ?? defaults.prePromptCommands ?? [])],
   };
 }
 

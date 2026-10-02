@@ -119,6 +119,8 @@ function decorate(cron: Cron) {
   return {
     ...withEffective(cron, hub.jobDefaultsFor(cron)),
     node: hub.nodeSummary(cron),
+    // Why its node is not sent it, which is also why it shows no next run.
+    withheld: hub.withheld(cron),
     nextRunAt: view?.nextRunAt ?? null,
     isRunning: Boolean(view?.currentRun),
     currentRun: view?.currentRun ?? null,
@@ -140,6 +142,7 @@ function decorateExecution(execution: Execution) {
     ...withEffective(execution, hub.jobDefaultsFor(execution)),
     kind: 'execution',
     node: hub.nodeSummary(execution),
+    withheld: hub.withheld(execution),
     nextRunAt: armed ? execution.scheduledAt : null,
     // Its time has passed and nothing has run it. On the page that is the gap
     // between the trigger being missed and the catch-up starting the run.
@@ -683,6 +686,8 @@ app.post('/api/:kind(crons|executions)/:id/run', async (req: JobRequest, res, ne
     const node = hub.nodeSummary(job);
     const view = hub.jobView(job);
     if (!node.online) return res.status(409).json({ error: `node "${node.name ?? 'default'}" is offline` });
+    const withheld = hub.withheld(job);
+    if (withheld) return res.status(409).json({ error: withheld });
     if (view?.currentRun) return res.status(409).json({ error: `this ${noun(req)} is already running` });
     if (view?.delayed) {
       return res.status(409).json({
