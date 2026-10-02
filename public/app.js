@@ -13,6 +13,7 @@ let updateWatchTimer = null; // polling while an update waits for runs to finish
 // rebuilding the whole page under the user's cursor. Cleared on navigation.
 let repaintQueue = null;
 let disposeView = null; // what the open page holds outside the DOM, let go of on the way to the next: timers, listeners, answers still out
+let routeGeneration = 0; // counts moves between pages, so a page still loading when the next opens can tell it is stale
 // The commit the server reported when this page loaded. If it ever differs, the
 // server has been updated underneath us and this page is running old code.
 let loadedCommit = null;
@@ -2408,60 +2409,77 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
   let value = selected ?? '';
   let byId = new Map(); // the listings /api/nodes gave
   let fallbackId = '';
-  let options = []; // one per radio: { value, listing, reading, folder, root, drawn, online, asked, answered }
+  let options = []; // one per radio: { value, listing, name, reading, folder, root, drawn, online, flight, answer }
   let computers = new Map(); // by node id, from the last cluster summary seen
   let disposed = false;
   const chosen = () => byId.get(value || fallbackId) ?? null;
+  const isOnline = (option) => computers.get(option.value)?.online ?? option.listing.online;
 
   // ---- the folder check
   // Each online computer is asked once per settled Working Directory, never per
   // keystroke: a remote node answers inside its sync, so a burst would hold up
-  // its heartbeat and its commands. One request is out per computer at a time;
-  // the newest path wins, and an answer paints only while it is still the path
-  // in the field.
-  const folderPath = () => directory?.value.trim() ?? '';
+  // its heartbeat and its commands. The path asked for is the one the field
+  // settled on, not whatever is in it now; one request is out per computer at
+  // a time, numbered so only its own completion clears it; and a card says what
+  // it knows only while the field still shows the path it knows it for.
+  let settledPath = '';
+  let flights = 0;
+  const livePath = () => directory?.value.trim() ?? '';
   const sayFolder = (option, text, status = '') => {
     option.folder.textContent = text;
     option.folder.className = `node-folder${status ? ` ${status}` : ''}`;
   };
+  const folderWords = (option) => {
+    const live = livePath();
+    if (!live) return null;
+    if (live !== settledPath) return ['Folder not checked yet', ''];
+    if (!isOnline(option)) return ['Offline, so the folder is not checked', ''];
+    if (option.answer?.path === settledPath) return [option.answer.text, option.answer.status];
+    return ['Checking for the folder…', 'pending'];
+  };
+  /** Each card's folder line, from what is known; sends nothing. */
+  const paintFolders = () => {
+    for (const option of options) {
+      if (!option.listing) continue;
+      const words = folderWords(option);
+      option.folder.hidden = !words;
+      if (words) sayFolder(option, ...words);
+    }
+  };
   const askFolder = (option, path) => {
-    option.asked = path;
+    const id = ++flights;
+    option.flight = { id, path };
     api(`/api/browse?path=${encodeURIComponent(path)}&node=${encodeURIComponent(option.value)}`)
       .then(
         (result) => ({ text: result.exists ? 'Folder found' : 'Folder not on this Mac', status: result.exists ? 'ok' : 'warn' }),
         (err) => ({ text: `Folder not checked: ${err.message}`, status: '' }),
       )
       .then((answer) => {
-        if (disposed || option.asked !== path) return; // let go of, or already superseded
-        option.asked = null;
-        const now = folderPath();
-        if (now === path) {
-          option.answered = path;
-          sayFolder(option, answer.text, answer.status);
-        } else if (now) {
-          askFolder(option, now); // the field moved on while this was out
-        }
+        if (disposed || option.flight?.id !== id) return;
+        option.flight = null;
+        option.answer = { path, ...answer };
+        // The field settled elsewhere while this was out: ask once more, for where it settled.
+        if (settledPath && path !== settledPath && isOnline(option)) askFolder(option, settledPath);
+        paintFolders();
       });
   };
+  /** Asks each online computer that has neither answered for the settled path nor been asked yet, then paints. */
   const checkFolders = () => {
-    const path = folderPath();
     for (const option of options) {
-      if (!option.listing) continue;
-      option.folder.hidden = !path;
-      const online = computers.get(option.value)?.online ?? option.listing.online;
-      if (!path || !online) {
-        option.asked = null; // an answer still out is dropped
-        option.answered = null;
-        if (path) sayFolder(option, 'Offline, so the folder is not checked');
-        continue;
-      }
-      if (option.answered === path && !option.asked) continue; // already says it
-      sayFolder(option, 'Checking for the folder…', 'pending');
-      if (!option.asked) askFolder(option, path);
+      if (!option.listing || !settledPath || !isOnline(option)) continue;
+      if (option.answer?.path === settledPath || option.flight) continue;
+      askFolder(option, settledPath);
     }
+    paintFolders();
   };
-  // `change` is the field settling: leaving it after an edit, or taking a suggestion.
-  directory?.addEventListener('change', checkFolders);
+  /** The field has settled: on leaving it after an edit, on taking a suggestion, on load, and on a pick. */
+  const settle = () => {
+    settledPath = livePath();
+    checkFolders();
+  };
+  directory?.addEventListener('change', settle);
+  // Typing: every card says it does not know yet, and nothing is asked until the field settles.
+  directory?.addEventListener('input', paintFolders);
 
   // ---- the readings, in the sidebar's vocabulary
   const andList = (names) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
@@ -2509,8 +2527,17 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       option.online = online;
       option.reading.replaceChildren(...readingLines(option.listing, computer));
     }
-    // A computer that has just come online can now answer for the folder.
+    // A computer that has just come online can now answer for the settled path.
     if (flipped) checkFolders();
+  };
+  /** The first card names the default node; saving blank follows whatever it is when the job runs, so the name follows the setting. */
+  const paintDefault = (defaultNodeId) => {
+    if (typeof defaultNodeId !== 'string') return;
+    fallbackId = defaultNodeId;
+    const fallback = byId.get(defaultNodeId);
+    const name = fallback ? `Default node — ${fallback.name}` : defaultNodeId ? `Default node — ${defaultNodeId}` : 'Default node';
+    const first = options.find((entry) => entry.value === '' && !entry.listing);
+    if (first && first.name.textContent !== name) first.name.textContent = name;
   };
 
   // ---- the cards
@@ -2527,35 +2554,35 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       onchange: () => {
         value = input.value;
         onChange(chosen());
-        // A new job's folder follows the node, so the check runs again once the form has moved it.
-        checkFolders();
+        // A new job's folder follows the node, so the field has settled again once the form has moved it.
+        settle();
       },
     });
+    const name = el('span', { class: 'node-opt-name', id: nameId, text: label });
     const reading = el('span', { class: 'node-reading', id: readingId });
     const folder = el('span', { class: 'node-folder', hidden: 'hidden' });
-    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [el('span', { class: 'node-opt-name', id: nameId, text: label }), reading, folder])]);
-    return { value: optionValue, listing, reading, folder, root, drawn: null, online: undefined, asked: null, answered: null };
+    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [name, reading, folder])]);
+    return { value: optionValue, listing, name, reading, folder, root, drawn: null, online: undefined, flight: null, answer: null };
   };
   const paint = ({ nodes = [], defaultNodeId = '' }) => {
     byId = new Map(nodes.map((node) => [node.id, node]));
-    fallbackId = defaultNodeId;
-    const fallback = byId.get(defaultNodeId);
-    options = [
-      option('', fallback ? `Default node — ${fallback.name}` : 'Default node', null),
-      ...nodes.map((node) => option(node.id, node.name, node)),
-    ];
+    options = [option('', 'Default node', null), ...nodes.map((node) => option(node.id, node.name, node))];
     if (value && !byId.has(value)) options.push(option(value, `${value} (not connected)`, null));
     list.replaceChildren(...options.map((entry) => entry.root));
+    paintDefault(defaultNodeId);
   };
 
   // The health poll keeps the cards current until the page lets the form go.
-  const onHealth = (health) => paintReadings(health.cluster);
+  const onHealth = (health) => {
+    paintReadings(health.cluster);
+    paintDefault(health.defaultNodeId);
+  };
   healthListeners.add(onHealth);
   const dispose = () => {
     disposed = true;
     healthListeners.delete(onHealth);
-    directory?.removeEventListener('change', checkFolders);
-    for (const entry of options) entry.asked = null;
+    directory?.removeEventListener('change', settle);
+    directory?.removeEventListener('input', paintFolders);
   };
 
   api('/api/nodes')
@@ -2564,7 +2591,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       paint(state);
       paintReadings(state.cluster);
       onChange(chosen());
-      checkFolders();
+      settle();
     })
     .catch((err) => {
       if (disposed) return;
@@ -2595,6 +2622,7 @@ const NAMING = import('/shared/naming.js').catch(() => null);
  * Save creates a new job instead of writing back to the source.
  */
 async function renderJobForm(kind, id, duplicateOf) {
+  const opened = routeGeneration;
   const oneTime = kind === 'execution';
   const words = oneTime
     ? { noun: 'one-time execution', api: '/api/executions', home: '#/one-time', back: '← All one-time executions', duplicate: '#/one-time/new/', created: 'One-time execution created' }
@@ -2605,6 +2633,8 @@ async function renderJobForm(kind, id, duplicateOf) {
     jobFormSettings(),
     NAMING,
   ]);
+  // The page moved on while this loaded: nothing below may register listeners or claim the view.
+  if (opened !== routeGeneration) return;
   const errorBox = el('div', { class: 'error', role: 'alert', tabindex: '-1', hidden: 'hidden' });
 
   const inputs = {
@@ -4316,6 +4346,7 @@ async function route() {
   repaintQueue = null;
   disposeView?.();
   disposeView = null;
+  routeGeneration += 1;
   nodeMachine = null;
   clearTimeout(modelPollTimer);
   clearTimeout(reloadTimer);
