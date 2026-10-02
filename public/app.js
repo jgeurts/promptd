@@ -6161,6 +6161,22 @@ function syncBannerHeight() {
 }
 addEventListener('resize', syncBannerHeight);
 
+// Another tab's choice of bars or rings, or a banner it hid, reaches this one too.
+addEventListener('storage', (event) => {
+  if (event.key === STATUS_VIEW_KEY) {
+    statusViewChoice = event.newValue === 'rings' ? 'rings' : 'bars';
+    paintShell();
+  } else if (event.key === DISK_HIDDEN_KEY) {
+    try {
+      const stored = JSON.parse(event.newValue || '{}');
+      hiddenDiskLevels = stored && typeof stored === 'object' ? stored : {};
+    } catch {
+      hiddenDiskLevels = {};
+    }
+    paintDiskBanner();
+  }
+});
+
 // The banner sticks under the header, which wraps taller than --topbar-h on a phone.
 const topbarEl = document.querySelector('.topbar');
 if (topbarEl && 'ResizeObserver' in window) {
