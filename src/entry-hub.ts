@@ -32,6 +32,8 @@ import { checkForUpdates, currentCommit, selfUpdater, UPDATE_LOG, PROJECT_DIR } 
 import { usageDelayOptions } from './usage.js';
 import { lifetimeStats } from './stats.js';
 import { MAX_NOTIFICATIONS, PAGE_SIZE, isLevel, notificationCenter } from './notifications.js';
+import { activityView, byActivity, jobActivity, readRequests } from './jobActivity.js';
+import type { JobActivityTable } from './db.js';
 import {
   MAX_LOGS_PER_CRON,
   createCron,
@@ -64,7 +66,7 @@ type JobLogRequest = Request<{ kind: string; id: string; file: string }>;
 interface FoundRecord {
   record: Cron | Execution;
   kind: JobKind;
-  view(record: Cron | Execution): object;
+  view(record: Cron | Execution, activity?: JobActivityTable): object;
 }
 
 function errorCode(err: unknown): unknown {
@@ -114,7 +116,8 @@ function readProjectForm(body: Record<string, unknown> | undefined): { errors: s
   return { errors, value: { name, description: String(body?.description ?? '').trim() } };
 }
 
-function decorate(cron: Cron) {
+/** `activity` is the job's row of updates, when it has one. */
+function decorate(cron: Cron, activity?: JobActivityTable) {
   const view = hub.jobView(cron);
   return {
     ...withEffective(cron, hub.jobDefaultsFor(cron)),
@@ -127,6 +130,7 @@ function decorate(cron: Cron) {
     isDelayed: Boolean(view?.delayed),
     delayed: view?.delayed ?? null,
     delayRisk: view?.delayRisk ?? null,
+    activity: activityView(cron, activity),
   };
 }
 
@@ -135,7 +139,7 @@ function decorate(cron: Cron) {
  * waiting on, so a record that has already run — or been cancelled — reports
  * none, whatever its date says.
  */
-function decorateExecution(execution: Execution) {
+function decorateExecution(execution: Execution, activity?: JobActivityTable) {
   const view = hub.jobView(execution);
   const armed = execution.isActive && execution.status === 'scheduled';
   return {
@@ -152,7 +156,14 @@ function decorateExecution(execution: Execution) {
     isDelayed: Boolean(view?.delayed),
     delayed: view?.delayed ?? null,
     delayRisk: view?.delayRisk ?? null,
+    activity: activityView(execution, activity),
   };
+}
+
+/** Executions in the Activity sort's order, judged on what the page draws for each. */
+function rankExecutions(all: Execution[], activity: Map<string, JobActivityTable>): Execution[] {
+  const views = new Map(all.map((execution) => [execution.id, decorateExecution(execution, activity.get(execution.id))]));
+  return [...all].sort((a, b) => byActivity(views.get(a.id)!, views.get(b.id)!));
 }
 
 /** What the route was asked about, for an error message a person reads. */
@@ -219,6 +230,29 @@ app.post('/api/notifications/read', async (req: JsonRequest, res, next) => {
       return res.status(400).json({ error: 'revisions must give the count each id had when it was seen' });
     }
     res.json(await notificationCenter.markRead(ids, revisions as Record<string, unknown>));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Which jobs have updates nobody has looked at yet: a count per kind, and the revision each is at. */
+app.get('/api/job-activity', async (_req, res, next) => {
+  try {
+    res.json(await jobActivity.summary());
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * Marks jobs read. Body `{"items":[{"id":"...","revision":3}]}`, each with the
+ * revision the page showed it at: a job that has had an update since stays unread.
+ */
+app.post('/api/job-activity/read', async (req: JsonRequest, res, next) => {
+  try {
+    const parsed = readRequests(req.body);
+    if ('error' in parsed) return res.status(400).json({ error: parsed.error });
+    res.json(await jobActivity.markRead(parsed.items));
   } catch (err) {
     next(err);
   }
@@ -469,10 +503,13 @@ app.get('/api/next-run', (req, res) => {
   res.json({ valid: true, error: null, nextRunAt: previewNextRun(expression, timezone), timezone: timezone ?? null });
 });
 
-app.get('/api/crons', async (_req, res, next) => {
+/** Every cron, by name; `?sort=activity` puts what is running, waiting or unread first. */
+app.get('/api/crons', async (req, res, next) => {
   try {
-    const crons = await listCrons();
-    res.json(crons.map(decorate));
+    const [crons, activity] = await Promise.all([listCrons(), jobActivity.rows()]);
+    const views = crons.map((cron) => decorate(cron, activity.get(cron.id)));
+    if (req.query.sort === 'activity') views.sort(byActivity);
+    res.json(views);
   } catch (err) {
     next(err);
   }
@@ -482,7 +519,7 @@ app.get('/api/crons/:id', async (req, res, next) => {
   try {
     const cron = await getCron(req.params.id);
     if (!cron) return res.status(404).json({ error: 'cron not found' });
-    res.json(decorate(cron));
+    res.json(decorate(cron, await jobActivity.row(cron.id)));
   } catch (err) {
     next(err);
   }
@@ -511,7 +548,7 @@ app.put('/api/crons/:id', async (req, res, next) => {
     if (!cron) return res.status(404).json({ error: 'cron not found' });
     hub.jobsChanged();
     if (value.nameInferred) hub.requestTitle('cron', cron);
-    res.json(decorate(cron));
+    res.json(decorate(cron, await jobActivity.row(cron.id)));
   } catch (err) {
     next(err);
   }
@@ -521,6 +558,7 @@ app.delete('/api/crons/:id', async (req, res, next) => {
   try {
     const removed = await deleteCron(req.params.id);
     if (!removed) return res.status(404).json({ error: 'cron not found' });
+    await jobActivity.forget(req.params.id);
     hub.jobsChanged();
     res.json({ ok: true });
   } catch (err) {
@@ -570,13 +608,16 @@ app.delete('/api/projects/:id', async (req, res, next) => {
 
 /**
  * One page of one-time executions, newest first, with the same cursor the
- * notification drawer uses.
+ * notification drawer uses. `?sort=activity` ranks all of them before taking
+ * the page, so one with an update rises onto the first page from anywhere.
  */
 app.get('/api/executions', async (req, res, next) => {
   try {
     const before = String(req.query.before ?? '').trim() || null;
-    const page = await pageExecutions({ before, limit: req.query.limit ?? EXECUTIONS_PAGE_SIZE });
-    res.json({ ...page, items: page.items.map(decorateExecution) });
+    const activity = await jobActivity.rows();
+    const order = req.query.sort === 'activity' ? (all: Execution[]) => rankExecutions(all, activity) : undefined;
+    const page = await pageExecutions({ before, limit: req.query.limit ?? EXECUTIONS_PAGE_SIZE, order });
+    res.json({ ...page, items: page.items.map((execution) => decorateExecution(execution, activity.get(execution.id))) });
   } catch (err) {
     next(err);
   }
@@ -586,7 +627,7 @@ app.get('/api/executions/:id', async (req, res, next) => {
   try {
     const execution = await getExecution(req.params.id);
     if (!execution) return res.status(404).json({ error: 'execution not found' });
-    res.json(decorateExecution(execution));
+    res.json(decorateExecution(execution, await jobActivity.row(execution.id)));
   } catch (err) {
     next(err);
   }
@@ -634,7 +675,7 @@ app.put('/api/executions/:id', async (req, res, next) => {
     if (!execution) return res.status(404).json({ error: 'execution not found' });
     hub.jobsChanged();
     if (value.nameInferred) hub.requestTitle('execution', execution);
-    res.json(decorateExecution(execution));
+    res.json(decorateExecution(execution, await jobActivity.row(execution.id)));
   } catch (err) {
     next(err);
   }
@@ -644,6 +685,7 @@ app.delete('/api/executions/:id', async (req, res, next) => {
   try {
     const removed = await deleteExecution(req.params.id);
     if (!removed) return res.status(404).json({ error: 'execution not found' });
+    await jobActivity.forget(req.params.id);
     hub.jobsChanged();
     res.json({ ok: true });
   } catch (err) {
@@ -663,7 +705,7 @@ app.post('/api/executions/:id/rearm', async (req, res, next) => {
     if (execution.status === 'running') return res.status(409).json({ error: 'this execution is running' });
     const rearmed = await patchExecution(req.params.id, { status: 'scheduled', firedAt: null, stoppedBy: null });
     hub.jobsChanged();
-    res.json(decorateExecution(rearmed!));
+    res.json(decorateExecution(rearmed!, await jobActivity.row(rearmed!.id)));
   } catch (err) {
     next(err);
   }
@@ -730,6 +772,9 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     const found = await findRecord(req.params.id);
     if (!found) return res.status(404).json({ error: `${noun(req)} not found` });
     const cron = found.record;
+    // Read before the runs are listed: the page marks this revision read once
+    // it shows them, and a run that starts in between is a later revision.
+    const activity = await jobActivity.row(cron.id);
     const logs = await listLogs(cron.id);
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     const shown = await filterLogs(cron.id, logs, query);
@@ -739,7 +784,7 @@ app.get('/api/:kind(crons|executions)/:id/logs', async (req: JobRequest, res, ne
     const stats = await lifetimeStats(cron, found.kind === 'execution' ? patchExecution : undefined);
     hub.jobsCache = null;
     res.json({
-      cron: found.view(cron),
+      cron: found.view(cron, activity),
       stats,
       total: logs.length,
       logs: shown.map((log) => ({
@@ -893,6 +938,7 @@ try {
 // Subscribes to the event bus before anything can emit, and reads the table
 // behind the server coming up.
 notificationCenter.start();
+jobActivity.start();
 runningCommit = await currentCommit();
 hub.setVersion(runningCommit);
 await hub.start(await loadSettings()); // writes the defaults on first run

@@ -107,6 +107,23 @@ export interface NodeTable {
   settings: Generated<string>;
 }
 
+/**
+ * What has happened to one job since it was last looked at. `revision` counts
+ * its updates and `readRevision` is the one last read, so it is unread while
+ * the two differ. A job with no row has had nothing happen since this existed.
+ */
+export interface JobActivityTable {
+  jobId: string;
+  revision: number;
+  readRevision: number;
+  /** When the hub took in the latest update, which is what the lists sort by. */
+  lastActivityAt: string;
+  updateKind: string | null;
+  /** When the latest update happened, by the clock of the node it happened on. */
+  updateAt: string | null;
+  updateLogFile: string | null;
+}
+
 export interface Tables {
   crons: CronTable;
   executions: ExecutionTable;
@@ -115,6 +132,7 @@ export interface Tables {
   nodes: NodeTable;
   projects: ProjectTable;
   secrets: SecretTable;
+  jobActivity: JobActivityTable;
 }
 
 export type Db = Kysely<Tables>;
@@ -386,6 +404,23 @@ const MIGRATIONS: Record<string, Migration> = {
       for (const table of ['crons', 'executions']) {
         await db.schema.alterTable(table).addColumn('pre_prompt_commands', 'text').execute();
       }
+    },
+  },
+  // One row per job that has had a run start, end or wait on usage since this
+  // existed. Nothing is written for the jobs already here: none of them has
+  // anything new to show, so they start read.
+  '20261001_002_job_activity_reads': {
+    async up(db: Kysely<unknown>): Promise<void> {
+      await db.schema
+        .createTable('job_activity')
+        .addColumn('job_id', 'text', (col) => col.primaryKey())
+        .addColumn('revision', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('read_revision', 'integer', (col) => col.notNull().defaultTo(0))
+        .addColumn('last_activity_at', 'text', (col) => col.notNull())
+        .addColumn('update_kind', 'text')
+        .addColumn('update_at', 'text')
+        .addColumn('update_log_file', 'text')
+        .execute();
     },
   },
 };

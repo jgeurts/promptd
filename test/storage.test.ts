@@ -8,12 +8,13 @@ import pg from 'pg';
 
 import type * as DbModule from '../src/db.js';
 import type * as ExecutionsModule from '../src/executions.js';
+import type * as JobActivityModule from '../src/jobActivity.js';
 import type * as JobDefaultsModule from '../src/jobDefaults.js';
 import type * as JobFormsModule from '../src/jobForms.js';
 import type * as ProjectsModule from '../src/projects.js';
 import type * as SettingsModule from '../src/settings.js';
 import type * as StoreModule from '../src/store.js';
-import type { CronInput } from '../src/types.js';
+import type { BusEvent, CronInput, Execution } from '../src/types.js';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'promptd-storage-'));
 process.env.PROMPTD_HOME = home;
@@ -25,6 +26,7 @@ let projects: typeof ProjectsModule;
 let settings: typeof SettingsModule;
 let jobForms: typeof JobFormsModule;
 let jobDefaults: typeof JobDefaultsModule;
+let activity: typeof JobActivityModule;
 
 beforeAll(async () => {
   dbModule = await import('../src/db.js');
@@ -34,6 +36,7 @@ beforeAll(async () => {
   settings = await import('../src/settings.js');
   jobForms = await import('../src/jobForms.js');
   jobDefaults = await import('../src/jobDefaults.js');
+  activity = await import('../src/jobActivity.js');
 });
 
 afterAll(async () => {
@@ -73,7 +76,7 @@ describe.each(targets)('storage on $name', ({ url }) => {
 
   beforeEach(async () => {
     const db = dbModule.db();
-    for (const table of ['crons', 'executions', 'notifications', 'settings', 'nodes', 'projects'] as const) {
+    for (const table of ['crons', 'executions', 'notifications', 'settings', 'nodes', 'projects', 'jobActivity'] as const) {
       await db.deleteFrom(table).execute();
     }
   });
@@ -262,6 +265,157 @@ describe('the job forms\' commands before the prompt', () => {
   });
 });
 
+describe.each(targets)('job activity on $name', ({ url }) => {
+  let log: InstanceType<(typeof JobActivityModule)['JobActivityLog']>;
+
+  beforeAll(async () => {
+    await dbModule.closeDatabase();
+    dbModule.openDatabase(url);
+    await dbModule.migrate();
+  });
+
+  beforeEach(async () => {
+    const db = dbModule.db();
+    for (const table of ['crons', 'executions', 'projects', 'jobActivity'] as const) await db.deleteFrom(table).execute();
+    log = new activity.JobActivityLog();
+  });
+
+  const update = (jobId: string, kind: JobActivityModule.UpdateKind = 'started', jobKind: 'cron' | 'execution' = 'cron') => ({
+    jobId,
+    jobKind,
+    kind,
+    at: new Date().toISOString(),
+    logFile: kind === 'waiting' ? null : 'run.txt',
+  });
+  const unread = async (id: string) => activity.activityView({ createdAt: '' }, await log.row(id)).unread;
+
+  it('counts a run starting and ending against its job, and makes it unread', async () => {
+    const { id } = await store.createCron(cronInput);
+    expect(await log.record(update(id, 'started'))).toBe(1);
+    expect(await log.record(update(id, 'failed'))).toBe(2);
+    expect(await log.row(id)).toMatchObject({ revision: 2, readRevision: 0, updateKind: 'failed', updateLogFile: 'run.txt' });
+    expect(await unread(id)).toBe(true);
+    expect((await log.summary()).counts).toEqual({ cron: 1, execution: 0 });
+  });
+
+  it('writes nothing for a job that is not there, so a late report cannot bring one back', async () => {
+    expect(await log.record(update('deleted-job'))).toBeNull();
+    expect((await log.rows()).size).toBe(0);
+  });
+
+  it('marks a job read at the revision the page showed it at', async () => {
+    const { id } = await store.createCron(cronInput);
+    await log.record(update(id, 'started'));
+    await log.record(update(id, 'succeeded'));
+    expect(await log.markRead([{ id, revision: 2 }])).toEqual({ marked: 1, counts: { cron: 0, execution: 0 } });
+    expect(await unread(id)).toBe(false);
+    // Said twice, as two tabs might: nothing more to do.
+    expect((await log.markRead([{ id, revision: 2 }])).marked).toBe(0);
+  });
+
+  it('keeps a job unread when its run ended after the page drew it', async () => {
+    const { id } = await store.createCron(cronInput);
+    const shown = await log.record(update(id, 'started'));
+    // The run finishes while that page is still open, then the page says what it saw.
+    await log.record(update(id, 'succeeded'));
+    expect((await log.markRead([{ id, revision: shown! }])).marked).toBe(0);
+    expect(await unread(id)).toBe(true);
+    // The page draws the job again, now at its new revision.
+    expect((await log.markRead([{ id, revision: 2 }])).marked).toBe(1);
+    expect(await unread(id)).toBe(false);
+  });
+
+  it('makes a read job unread again on its next update', async () => {
+    const { id } = await store.createCron(cronInput);
+    await log.record(update(id, 'started'));
+    await log.markRead([{ id, revision: 1 }]);
+    await log.record(update(id, 'waiting'));
+    expect(await unread(id)).toBe(true);
+    expect(await log.row(id)).toMatchObject({ updateKind: 'waiting', updateLogFile: null });
+  });
+
+  it('reads only what Mark all read was shown', async () => {
+    const first = await store.createCron(cronInput);
+    const second = await store.createCron({ ...cronInput, name: 'Second' });
+    const once = await executions.createExecution({ ...cronInput, scheduledAt: '2026-01-01T00:00:00.000Z' });
+    await log.record(update(first.id));
+    await log.record(update(second.id));
+    await log.record(update(once.id, 'started', 'execution'));
+    const shown = await log.summary();
+    expect(shown.counts).toEqual({ cron: 2, execution: 1 });
+    // The second cron's run ends after the list was drawn and before the button is pressed.
+    await log.record(update(second.id, 'succeeded'));
+    const crons = shown.unread.filter((job) => job.kind === 'cron').map(({ id, revision }) => ({ id, revision }));
+    expect(await log.markRead(crons)).toEqual({ marked: 1, counts: { cron: 1, execution: 1 } });
+    expect(await unread(second.id)).toBe(true);
+    expect(await unread(once.id)).toBe(true);
+  });
+
+  it('counts each kind, and only the jobs that are still there', async () => {
+    const cron = await store.createCron(cronInput);
+    const once = await executions.createExecution({ ...cronInput, scheduledAt: '2026-01-01T00:00:00.000Z' });
+    await log.record(update(cron.id));
+    await log.record(update(once.id, 'started', 'execution'));
+    await dbModule
+      .db()
+      .insertInto('jobActivity')
+      .values({ jobId: 'orphan', revision: 4, readRevision: 0, lastActivityAt: new Date().toISOString(), updateKind: 'failed', updateAt: null, updateLogFile: null })
+      .execute();
+    expect(await log.summary()).toEqual({
+      counts: { cron: 1, execution: 1 },
+      unread: [
+        { id: cron.id, kind: 'cron', revision: 1 },
+        { id: once.id, kind: 'execution', revision: 1 },
+      ],
+    });
+    await executions.deleteExecution(once.id);
+    expect((await log.summary()).counts).toEqual({ cron: 1, execution: 0 });
+    await log.forget(once.id);
+    expect(await log.row(once.id)).toBeUndefined();
+  });
+
+  it('ranks every execution before paging, so an unread one rises onto the first page', async () => {
+    const dated = async (scheduledAt: string) => (await executions.createExecution({ ...cronInput, scheduledAt })).id;
+    const newest = await dated('2026-03-01T00:00:00.000Z');
+    await dated('2026-02-01T00:00:00.000Z');
+    const oldest = await dated('2026-01-01T00:00:00.000Z');
+    await log.record(update(oldest, 'failed', 'execution'));
+    const rows = await log.rows();
+    const ranked = (all: Execution[]) =>
+      all
+        .map((execution) => ({
+          execution,
+          rank: { id: execution.id, isRunning: false, isDelayed: false, activity: activity.activityView(execution, rows.get(execution.id)) },
+        }))
+        .sort((a, b) => activity.byActivity(a.rank, b.rank))
+        .map(({ execution }) => execution);
+    const page = await executions.pageExecutions({ limit: 1, order: ranked });
+    expect(page.items.map((item) => item.id)).toEqual([oldest]);
+    expect(page).toMatchObject({ total: 3, scheduled: 3 });
+    expect((await executions.pageExecutions({ limit: 1 })).items.map((item) => item.id)).toEqual([newest]);
+  });
+
+  it('takes updates off the bus in the order they came, and announces each once it is written', async () => {
+    const { id } = await store.createCron(cronInput);
+    const { bus, emit } = await import('../src/events.js');
+    const heard: Array<Promise<{ announced: number; stored: number | undefined }>> = [];
+    const onEvent = (event: BusEvent) => {
+      // What the row says at the moment a page hears of it.
+      if (event.type === 'job:activity') heard.push(log.row(id).then((row) => ({ announced: Number(event.revision), stored: row?.revision })));
+    };
+    bus.on('event', onEvent);
+    activity.jobActivity.start();
+    emit('run:started', { cronId: id, cronName: 'Nightly digest', kind: 'cron', logFile: 'a.txt' });
+    emit('run:skipped', { cronId: id, cronName: 'Nightly digest', kind: 'cron' });
+    emit('run:finished', { cronId: id, cronName: 'Nightly digest', kind: 'cron', logFile: 'a.txt', status: 'succeeded', seconds: 3 });
+    await activity.jobActivity.settled();
+    bus.off('event', onEvent);
+    expect((await Promise.all(heard)).map(({ announced }) => announced)).toEqual([1, 2]);
+    for (const { announced, stored } of await Promise.all(heard)) expect(stored).toBeGreaterThanOrEqual(announced);
+    expect(await log.row(id)).toMatchObject({ revision: 2, updateKind: 'succeeded', updateLogFile: 'a.txt' });
+  });
+});
+
 /**
  * An upgrade from the schema before job defaults, on an empty database: a
  * fresh SQLite file, or the test Postgres with its public schema rebuilt.
@@ -362,6 +516,27 @@ describe.each(targets)('the migration to commands before the prompt on $name', (
     await executions.patchExecution('before-once', { prePromptCommands: [] });
     expect((await store.getCron('before'))?.prePromptCommands).toEqual(['pnpm install']);
     expect((await executions.getExecution('before-once'))?.prePromptCommands).toEqual([]);
+  });
+});
+
+describe.each(targets)('the migration to job activity on $name', ({ url }) => {
+  beforeAll(async () => {
+    await dbModule.closeDatabase();
+    dbModule.openDatabase(await freshUpgradeTarget(url));
+    // The migration just before job activity, so the store's own writes have every column they use.
+    await dbModule.migrate('20261001_001_pre_prompt_commands');
+    await store.createCron(cronInput);
+    const ran = await store.createCron({ ...cronInput, name: 'Ran' });
+    await store.patchCron(ran.id, { createdAt: '2026-09-01T00:00:00.000Z', lastRunAt: '2026-09-30T12:00:00.000Z', lastRunStatus: 'failed' });
+    await dbModule.migrate();
+  });
+
+  it('starts every job already there as read, as recent as its last run', async () => {
+    const log = new activity.JobActivityLog();
+    expect(await log.summary()).toEqual({ counts: { cron: 0, execution: 0 }, unread: [] });
+    const ran = (await store.listCrons()).find((cron) => cron.name === 'Ran')!;
+    expect(activity.activityView(ran, await log.row(ran.id))).toEqual({ revision: 0, unread: false, lastActivityAt: '2026-09-30T12:00:00.000Z', update: null });
+    expect(await log.record({ jobId: ran.id, jobKind: 'cron', kind: 'started', at: new Date().toISOString(), logFile: 'run.txt' })).toBe(1);
   });
 });
 

@@ -1249,6 +1249,93 @@ h2 {
   box-shadow: inset 0 2px 0 var(--accent);
 }
 
+/* How many jobs on a tab are updated since they were last opened. */
+.tab-count {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.tab-count[hidden] {
+  display: none;
+}
+
+/* Sort and Mark all read, between the tabs and the list. */
+.list-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+
+.sort-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sort-label {
+  margin-right: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sort-group .btn[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A job's name and, when it has news, the word that says so. */
+.job-title {
+  position: relative;
+}
+
+/* In the cell's padding, so the name stays put whether or not it is there. */
+.unread-dot {
+  position: absolute;
+  top: 7px;
+  left: -10px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+tr.unread .unread-dot {
+  background: var(--accent);
+}
+
+/* Text in the text colour on the accent, so it reads whatever the server colour is. */
+.updated-tag {
+  display: inline-block;
+  margin-left: 8px;
+  vertical-align: 1px;
+  padding: 0 7px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2426,4 +2513,17 @@ tbody tr.group-row:hover {
 
 tr.linked-row {
   cursor: pointer;
+}
+
+/* An updated job: the drawer's unread edge, on the row's first cell. */
+tbody tr.unread {
+  background: rgba(217, 119, 87, 0.06);
+}
+
+tbody tr.unread:hover {
+  background: rgba(217, 119, 87, 0.1);
+}
+
+tbody tr.unread td:first-child {
+  box-shadow: inset 2px 0 0 var(--accent);
 }

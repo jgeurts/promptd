@@ -28,7 +28,7 @@ async function api(url, options) {
   const isJson = (res.headers.get('content-type') || '').includes('application/json');
   const body = isJson ? await res.json() : await res.text();
   if (res.status === 401 && url !== '/api/auth/logout') location.assign('/login');
-  if (!res.ok) throw new Error(body?.error || `request failed (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(body?.error || `request failed (${res.status})`), { status: res.status });
   return body;
 }
 
@@ -608,24 +608,254 @@ let homeRenderId = 0;
 
 /** The two tabs, and which one the hash is asking for. */
 const TABS = [
-  { id: 'crons', label: 'Crons', hash: '#/' },
-  { id: 'executions', label: 'One-time Execution', hash: '#/one-time' },
+  { id: 'crons', kind: 'cron', label: 'Crons', hash: '#/' },
+  { id: 'executions', kind: 'execution', label: 'One-time Execution', hash: '#/one-time' },
 ];
 
+/**
+ * How many jobs of each kind have updates nobody has opened yet, as the hub
+ * last said: { cron, execution }. Null until the first answer.
+ */
+let activityCounts = null;
+let activityAnnounceTimer = null;
+const activityStatusEl = document.getElementById('activity-status');
+
+/** "Updated since you last looked: 2 crons and 1 one-time execution", or empty. */
+function updatedPhrase(counts) {
+  const parts = [];
+  if (counts.cron) parts.push(`${counts.cron} cron${counts.cron === 1 ? '' : 's'}`);
+  if (counts.execution) parts.push(`${counts.execution} one-time execution${counts.execution === 1 ? '' : 's'}`);
+  return parts.length ? `Updated since you last looked: ${parts.join(' and ')}` : '';
+}
+
+/**
+ * Takes the counts the hub sent and redraws the tabs' numbers. A rise is said
+ * aloud, once for a burst of runs ending together; a fall is the reader's own
+ * doing, and the first answer is the page loading, not news.
+ */
+function setActivityCounts(counts) {
+  if (!counts) return;
+  const next = { cron: Number(counts.cron) || 0, execution: Number(counts.execution) || 0 };
+  const rose = activityCounts && (next.cron > activityCounts.cron || next.execution > activityCounts.execution);
+  activityCounts = next;
+  for (const tab of document.querySelectorAll('.tab[data-kind]')) paintTabCount(tab);
+  if (!rose || !activityStatusEl) return;
+  clearTimeout(activityAnnounceTimer);
+  activityAnnounceTimer = setTimeout(() => {
+    // Emptied first, so the same sentence as last time is still said.
+    activityStatusEl.textContent = '';
+    requestAnimationFrame(() => {
+      activityStatusEl.textContent = updatedPhrase(activityCounts);
+    });
+  }, 1500);
+}
+
+function refreshActivityCounts() {
+  api('/api/job-activity')
+    .then((summary) => setActivityCounts(summary.counts))
+    .catch(() => {});
+}
+
+/** A tab's number of updated jobs: drawn for the eye, said in words to a screen reader. */
+function paintTabCount(tab) {
+  const count = activityCounts?.[tab.dataset.kind] ?? 0;
+  const badge = tab.querySelector('.tab-count');
+  badge.hidden = !count;
+  badge.textContent = count > 99 ? '99+' : String(count);
+  tab.querySelector('.tab-count-words').textContent = count ? `, ${count} updated` : '';
+  tab.title = count ? `${count} updated since you last opened ${count === 1 ? 'it' : 'them'}` : '';
+}
+
 function tabBar(current) {
-  return el(
-    'nav',
-    { class: 'tabs', role: 'tablist' },
-    TABS.map((tab) =>
-      el('a', {
+  const tabs = TABS.map((tab) =>
+    el(
+      'a',
+      {
         class: `tab${tab.id === current ? ' selected' : ''}`,
         href: tab.hash,
         role: 'tab',
         'aria-selected': tab.id === current ? 'true' : 'false',
-        text: tab.label,
-      }),
+        'data-kind': tab.kind,
+        'data-focus': `tab:${tab.id}`,
+      },
+      [
+        el('span', { text: tab.label }),
+        el('span', { class: 'tab-count', 'aria-hidden': 'true', hidden: '' }),
+        el('span', { class: 'sr-only tab-count-words' }),
+      ],
     ),
   );
+  for (const tab of tabs) paintTabCount(tab);
+  return el('nav', { class: 'tabs', role: 'tablist' }, tabs);
+}
+
+/**
+ * Each tab's orders, the first being where it starts. Activity is running,
+ * then waiting, then updated, then the rest; the other is the order the list
+ * had before there was an Activity one. Kept per browser.
+ */
+const SORTS = {
+  crons: [
+    { id: 'activity', label: 'Activity', title: 'Running first, then waiting to start, then updated, then the rest by latest activity' },
+    { id: 'name', label: 'Name', title: 'By name, under each project' },
+  ],
+  executions: [
+    { id: 'activity', label: 'Activity', title: 'Running first, then waiting to start, then updated, then the rest by latest activity' },
+    { id: 'date', label: 'Date', title: 'Latest scheduled date first, under each project' },
+  ],
+};
+
+/** The order picked on this page, which outlives storage that will not keep it. */
+const pickedSorts = {};
+
+function readSort(tab) {
+  if (pickedSorts[tab]) return pickedSorts[tab];
+  try {
+    const saved = localStorage.getItem(`promptd.sort.${tab}`);
+    if (SORTS[tab].some((option) => option.id === saved)) return saved;
+  } catch {
+    // No storage, as in a private window: every visit starts on Activity.
+  }
+  return SORTS[tab][0].id;
+}
+
+function saveSort(tab, sort) {
+  pickedSorts[tab] = sort;
+  try {
+    localStorage.setItem(`promptd.sort.${tab}`, sort);
+  } catch {
+    // Kept for this page only.
+  }
+}
+
+/** The words an update's hover says, by what it was. */
+const UPDATE_WORDS = {
+  started: 'A run started',
+  succeeded: 'A run succeeded',
+  failed: 'A run failed',
+  stopped: 'A run was stopped',
+  interrupted: 'A run was interrupted',
+  waiting: 'A trigger started waiting on a usage limit',
+  late: 'A trigger is still waiting on a usage limit, past its expected start',
+};
+
+function updateTitle(activity) {
+  const what = UPDATE_WORDS[activity?.update?.kind] ?? 'Something happened';
+  return `${what} ${fmtRelative(activity?.update?.at ?? activity?.lastActivityAt)}, since you last opened it. Opening its logs marks it read.`;
+}
+
+/**
+ * A job's name, with what says it has news: a dot and the word Updated, so it
+ * never rests on colour alone. The dot sits in the cell's padding, so a name
+ * does not move when its job is read.
+ */
+function jobNameCell(job, lines) {
+  const unread = Boolean(job.activity?.unread);
+  return el('td', {}, [
+    el('div', { class: 'job-title' }, [
+      el('span', { class: 'unread-dot', 'aria-hidden': 'true' }),
+      el('span', { class: 'cron-name', text: job.name }),
+      unread ? el('span', { class: 'updated-tag', title: updateTitle(job.activity), text: 'Updated' }) : null,
+    ]),
+    ...lines,
+  ]);
+}
+
+/** Gives the control in `node` a key the redraw can put focus back on. */
+function focusable(node, key) {
+  const target = node?.matches?.('a, button') ? node : node?.querySelector?.('a, button');
+  target?.setAttribute('data-focus', key);
+  return node;
+}
+
+/**
+ * The order the open list was last drawn in. It is held while the pointer or
+ * the keyboard is in the list, since a job rising to the top under a cursor
+ * about to click would put the click on another job; the list catches up once
+ * both have left it.
+ */
+const NO_ORDER = { key: null, ids: null, behind: false };
+const listOrder = { ...NO_ORDER };
+
+function holdingList() {
+  const panel = view.querySelector('.tab-panel');
+  return Boolean(panel && (panel.matches(':hover') || panel.contains(document.activeElement)));
+}
+
+/** Whether the list drawn as `key` is held now. */
+function holding(key) {
+  return listOrder.key === key && Boolean(listOrder.ids) && holdingList();
+}
+
+/**
+ * The rows to draw, ranked and cut to `limit`, or while the list is held, the
+ * rows it was last drawn with in the places they had: none moves and none
+ * leaves, and one that has risen into the list from below joins at the
+ * bottom. Answers the order to remember too, which the caller keeps only if
+ * its render is the one drawn.
+ */
+function heldOrder(key, jobs, limit = jobs.length) {
+  const ranked = jobs.slice(0, limit);
+  if (!holding(key)) return { jobs: ranked, order: { key, ids: ranked.map((job) => job.id), behind: false } };
+  const place = new Map(listOrder.ids.map((id, index) => [id, index]));
+  const rank = (job) => place.get(job.id) ?? listOrder.ids.length + jobs.indexOf(job);
+  const kept = jobs.filter((job, index) => place.has(job.id) || index < limit).sort((a, b) => rank(a) - rank(b));
+  const behind = kept.length !== ranked.length || kept.some((job, index) => job.id !== ranked[index].id);
+  return { jobs: kept, order: { key, ids: kept.map((job) => job.id), behind } };
+}
+
+/** The Sort buttons and Mark all read, above either list. */
+function listTools(tab, sort, unread) {
+  const label = `sort-label-${tab}`;
+  return el('div', { class: 'list-tools' }, [
+    el('div', { class: 'sort-group', role: 'group', 'aria-labelledby': label }, [
+      el('span', { class: 'sort-label', id: label, text: 'Sort' }),
+      ...SORTS[tab].map((option) =>
+        el('button', {
+          type: 'button',
+          class: 'btn small',
+          'aria-pressed': String(option.id === sort),
+          'data-focus': `sort:${option.id}`,
+          title: option.title,
+          text: option.label,
+          onclick: () => {
+            if (option.id === sort) return;
+            saveSort(tab, option.id);
+            // An order asked for is drawn as it is, not held to the last one.
+            Object.assign(listOrder, NO_ORDER);
+            renderHome(tab).catch(() => {});
+          },
+        }),
+      ),
+    ]),
+    el('button', {
+      type: 'button',
+      class: 'btn small',
+      'data-focus': 'mark-all',
+      // Not disabled when there is nothing to read: a disabled button drops the focus it had.
+      'aria-disabled': unread.length ? null : 'true',
+      title: unread.length
+        ? `Marks the ${unread.length} updated here read. Anything that happens after this list was drawn stays updated.`
+        : 'Nothing here is updated.',
+      text: 'Mark all read',
+      onclick: async (event) => {
+        if (!unread.length || event.currentTarget.dataset.busy) return;
+        const button = event.currentTarget;
+        button.dataset.busy = '1';
+        try {
+          // What this list was drawn with: a run that ends after it stays updated.
+          const items = unread.map(({ id, revision }) => ({ id, revision }));
+          const result = await api('/api/job-activity/read', { method: 'POST', body: JSON.stringify({ items }) });
+          setActivityCounts(result.counts);
+          await renderHome(tab);
+        } catch (err) {
+          toast(err.message, true);
+        } finally {
+          delete button.dataset.busy;
+        }
+      },
+    }),
+  ]);
 }
 
 /**
@@ -652,7 +882,10 @@ function pauseSummary(pause) {
 async function renderHome(tab = 'crons') {
   const renderId = ++homeRenderId;
   const hash = location.hash;
-  const pause = await api('/api/pause');
+  const [pause, summary] = await Promise.all([api('/api/pause'), api('/api/job-activity').catch(() => null)]);
+  if (summary) setActivityCounts(summary.counts);
+  // What Mark all read reads: the updated jobs this list is drawn with, paged in or not.
+  const unread = (summary?.unread ?? []).filter((job) => job.kind === (tab === 'executions' ? 'execution' : 'cron'));
 
   const subEl = el('p', { class: 'sub', text: '' });
   const head = el('div', { class: 'page-head' }, [
@@ -673,12 +906,35 @@ async function renderHome(tab = 'crons') {
     subEl.textContent = text;
   };
 
-  if (tab === 'executions') await paintExecutions(panel, pause, sub);
-  else await paintCrons(panel, pause, sub);
+  const order = tab === 'executions' ? await paintExecutions(panel, pause, sub, unread) : await paintCrons(panel, pause, sub, unread);
 
   // A newer render, or a move to another page, landed while this one waited.
   if (renderId !== homeRenderId || location.hash !== hash) return;
+  // What is on screen is what a held list holds to; Name and Date hold nothing.
+  Object.assign(listOrder, order ?? NO_ORDER);
+  // Redraws come with every run event, and must not throw the keyboard back to the top.
+  const focused = view.contains(document.activeElement) ? document.activeElement.closest('[data-focus]')?.dataset.focus : null;
   view.replaceChildren(head, tabBar(tab), panel);
+  if (focused) view.querySelector(`[data-focus="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+  panel.addEventListener('pointerleave', () => catchUp(0));
+  panel.addEventListener('focusout', () => catchUp(0));
+  catchUp();
+}
+
+/**
+ * Redraws a held list once the pointer and the focus have both left it. Leaving
+ * is also checked on a timer, since a list redrawn under a still pointer may
+ * never be told the pointer has gone.
+ */
+let catchUpTimer = null;
+function catchUp(delay = 500) {
+  clearTimeout(catchUpTimer);
+  if (!listOrder.behind) return;
+  catchUpTimer = setTimeout(() => {
+    if (!listOrder.behind || parseHash().section !== 'list') return;
+    if (holdingList()) catchUp();
+    else refreshCurrentView();
+  }, delay);
 }
 
 /** A row that opens `href`, except from its own controls or when the click ends a text selection. */
@@ -710,9 +966,21 @@ function groupedRows(jobs, projects, row) {
   });
 }
 
-/** The Crons tab: everything the home page showed before the tabs existed. */
-async function paintCrons(panel, pause, sub) {
-  const [crons, projects] = await Promise.all([api('/api/crons'), api('/api/projects')]);
+/** The project a job is in, by name, for a list that is not grouped by project. */
+function projectLine(job, projects) {
+  const project = projects.find((candidate) => candidate.id === job.projectId);
+  return project ? el('div', { class: 'cron-desc', text: project.name }) : null;
+}
+
+/**
+ * The Crons tab: everything the home page showed before the tabs existed. In
+ * the Activity order it is one list, since project headings would split what
+ * is running across them; by name it is grouped as it always was.
+ */
+async function paintCrons(panel, pause, sub, unread) {
+  const sort = readSort('crons');
+  const [ranked, projects] = await Promise.all([api(sort === 'activity' ? '/api/crons?sort=activity' : '/api/crons'), api('/api/projects')]);
+  const { jobs: crons, order } = sort === 'activity' ? heldOrder('crons', ranked) : { jobs: ranked, order: null };
   const armed = crons.filter((c) => c.isActive).length;
 
   let line;
@@ -736,13 +1004,13 @@ async function paintCrons(panel, pause, sub) {
         ]),
       ]),
     );
-    return;
+    return order;
   }
 
-  const rows = groupedRows(crons, projects, (cron) =>
-    el('tr', linkedRow(`#/logs/${cron.id}`), [
-      el('td', {}, [
-        el('div', { class: 'cron-name', text: cron.name }),
+  const row = (cron) =>
+    el('tr', { ...linkedRow(`#/logs/${cron.id}`), class: `linked-row${cron.activity?.unread ? ' unread' : ''}` }, [
+      jobNameCell(cron, [
+        sort === 'activity' ? projectLine(cron, projects) : null,
         // Two lines on the page, all of it in the tooltip: a paragraph of
         // description must not push the row taller than the ones around it.
         cron.description ? el('div', { class: 'cron-desc clamp', text: cron.description, title: cron.description }) : null,
@@ -763,15 +1031,16 @@ async function paintCrons(panel, pause, sub) {
       el('td', { class: 'hide-sm time-cell' }, [nextRunCell(cron, pause)]),
       el('td', {}, [
         el('div', { class: 'row-actions' }, [
-          runControl(cron, { small: true, pause }),
-          el('a', { class: 'btn small', href: `#/edit/${cron.id}`, text: 'Edit' }),
-          el('a', { class: 'btn small', href: `#/logs/${cron.id}`, text: 'View logs' }),
+          focusable(runControl(cron, { small: true, pause }), `run:${cron.id}`),
+          el('a', { class: 'btn small', href: `#/edit/${cron.id}`, 'data-focus': `edit:${cron.id}`, text: 'Edit' }),
+          el('a', { class: 'btn small', href: `#/logs/${cron.id}`, 'data-focus': `logs:${cron.id}`, text: 'View logs' }),
         ]),
       ]),
-    ]),
-  );
+    ]);
+  const rows = sort === 'activity' ? crons.map(row) : groupedRows(crons, projects, row);
 
   panel.replaceChildren(
+    listTools('crons', sort, unread),
     el('div', { class: 'panel' }, [
       el('table', {}, [
         el('thead', {}, [
@@ -788,6 +1057,7 @@ async function paintCrons(panel, pause, sub) {
       ]),
     ]),
   );
+  return order;
 }
 
 /** The Next run cell: a held trigger, a real schedule, or nothing to say. */
@@ -821,9 +1091,32 @@ function nextRunCell(cron, pause) {
  * by hand, and a save that moves its date arms it afresh; nothing re-fires it
  * on its own.
  */
-async function paintExecutions(panel, pause, sub) {
-  const [page, projects] = await Promise.all([api(`/api/executions?limit=${executionsState.limit}`), api('/api/projects')]);
-  const executions = page.items;
+async function paintExecutions(panel, pause, sub, unread) {
+  const sort = readSort('executions');
+  const [page, projects] = await Promise.all([
+    api(`/api/executions?limit=${executionsState.limit}${sort === 'activity' ? '&sort=activity' : ''}`),
+    api('/api/projects'),
+  ]);
+  let items = page.items;
+  // Held, no row the list showed may leave it, so one that a rise has pushed
+  // off the page is read on its own. Asked once the answer is in, since the
+  // pointer may have come into the list while the page was on its way.
+  if (sort === 'activity' && holding('executions')) {
+    const fetched = new Set(items.map((execution) => execution.id));
+    const missing = listOrder.ids.filter((id) => !fetched.has(id));
+    // Only one that is gone leaves. Any other failure draws nothing, and the list stays as it is.
+    const found = await Promise.all(
+      missing.map((id) =>
+        api(`/api/executions/${id}`).catch((err) => {
+          if (err.status === 404) return null;
+          throw err;
+        }),
+      ),
+    );
+    items = [...items, ...found.filter(Boolean)];
+  }
+  const { jobs: executions, order } =
+    sort === 'activity' ? heldOrder('executions', items, executionsState.limit) : { jobs: items, order: null };
 
   let line;
   if (!page.total) line = 'Nothing scheduled yet';
@@ -846,13 +1139,13 @@ async function paintExecutions(panel, pause, sub) {
         ]),
       ]),
     );
-    return;
+    return order;
   }
 
-  const rows = groupedRows(executions, projects, (execution) =>
-    el('tr', linkedRow(`#/one-time/logs/${execution.id}`), [
-      el('td', {}, [
-        el('div', { class: 'cron-name', text: execution.name }),
+  const row = (execution) =>
+    el('tr', { ...linkedRow(`#/one-time/logs/${execution.id}`), class: `linked-row${execution.activity?.unread ? ' unread' : ''}` }, [
+      jobNameCell(execution, [
+        sort === 'activity' ? projectLine(execution, projects) : null,
         execution.description
           ? el('div', { class: 'cron-desc clamp', text: execution.description, title: execution.description })
           : null,
@@ -873,20 +1166,22 @@ async function paintExecutions(panel, pause, sub) {
       el('td', { class: 'hide-sm time-cell' }, [scheduledCell(execution, pause)]),
       el('td', {}, [
         el('div', { class: 'row-actions' }, [
-          runControl(execution, { small: true, pause }),
-          rearmControl(execution),
-          el('a', { class: 'btn small', href: `#/one-time/edit/${execution.id}`, text: 'Edit' }),
-          el('a', { class: 'btn small', href: `#/one-time/logs/${execution.id}`, text: 'View logs' }),
+          focusable(runControl(execution, { small: true, pause }), `run:${execution.id}`),
+          focusable(rearmControl(execution), `rearm:${execution.id}`),
+          el('a', { class: 'btn small', href: `#/one-time/edit/${execution.id}`, 'data-focus': `edit:${execution.id}`, text: 'Edit' }),
+          el('a', { class: 'btn small', href: `#/one-time/logs/${execution.id}`, 'data-focus': `logs:${execution.id}`, text: 'View logs' }),
         ]),
       ]),
-    ]),
-  );
+    ]);
+  const rows = sort === 'activity' ? executions.map(row) : groupedRows(executions, projects, row);
 
-  const more = page.nextBefore
+  const more = executions.length < page.total
     ? el('div', { class: 'load-more' }, [
         el('button', {
           class: 'btn',
-          text: `Load ${executionsState.pageSize} older`,
+          'data-focus': 'load-more',
+          // By activity the next ten are further down the ranking, not older.
+          text: `Load ${executionsState.pageSize} ${sort === 'activity' ? 'more' : 'older'}`,
           onclick: (event) => {
             event.target.disabled = true;
             event.target.textContent = 'Loading…';
@@ -901,6 +1196,7 @@ async function paintExecutions(panel, pause, sub) {
       : null;
 
   panel.replaceChildren(
+    listTools('executions', sort, unread),
     el('div', { class: 'panel' }, [
       el('table', {}, [
         el('thead', {}, [
@@ -918,6 +1214,7 @@ async function paintExecutions(panel, pause, sub) {
       more,
     ]),
   );
+  return order;
 }
 
 /** When a one-time execution goes, or when it went and what became of it. */
@@ -3446,6 +3743,7 @@ const logsState = {
   query: '', // the run list shows only logs containing this, ignoring case
   searchTimer: null,
   renderSeq: 0, // a slow search response must not overwrite a newer one
+  paintedSeq: 0, // the render on screen, which alone may mark its job read
   toRetrospective: false, // scroll the selected log to its retrospective once it has loaded
 };
 
@@ -3528,6 +3826,9 @@ async function renderLogs(id, kind = 'cron') {
   const logsUrl = `/api/${base}/${id}/logs${query ? `?q=${encodeURIComponent(query)}` : ''}`;
   const [{ cron, logs, stats, total }, pause] = await Promise.all([api(logsUrl), api('/api/pause')]);
   if (seq !== logsState.renderSeq) return;
+  // A move to another page landed while this one waited.
+  const open = parseHash();
+  if (open.section !== 'logs' || open.id !== id || open.kind !== kind) return;
 
   // Default to the live run if there is one, else the newest run.
   if (!logsState.selected || !logs.some((log) => log.file === logsState.selected)) {
@@ -3635,6 +3936,7 @@ async function renderLogs(id, kind = 'cron') {
       ? `Scheduled for ${fmtDateTime(cron.scheduledAt) ?? 'an unreadable date'}.`
       : '';
 
+  logsState.paintedSeq = seq;
   view.replaceChildren(
     el('div', { class: 'breadcrumb' }, [
       kind === 'execution'
@@ -3674,7 +3976,38 @@ async function renderLogs(id, kind = 'cron') {
     search.setSelectionRange(...typing);
   }
 
-  if (logsState.selected) openLogStream(id, logsState.selected, body, liveBadge, runtimeEl, base);
+  // Read once the run is on screen, by the render on screen: a log that never
+  // loads reads nothing, nor does one whose page has been left or redrawn.
+  const newest = query ? null : (logs[0]?.file ?? null);
+  // The run this render streams, which a click on another changes in logsState before it is drawn.
+  const displayed = logsState.selected;
+  const shown = () => {
+    if (seq === logsState.paintedSeq && body.isConnected) acknowledgeJob(cron, displayed, newest);
+  };
+  if (displayed) openLogStream(id, displayed, body, liveBadge, runtimeEl, base, shown);
+  else shown();
+}
+
+/** The revision each job was last reported read at from this page, so a redraw does not say it again. */
+const reportedRead = new Map();
+
+/**
+ * Marks a job read once its logs page shows what its latest update is about:
+ * the run it names, or the newest run, or, for a wait on usage, which has no
+ * run, the page itself. Opening an older run leaves a newer update unread, and
+ * a tab nobody is looking at marks nothing; it is redrawn when it is looked at.
+ */
+function acknowledgeJob(job, selected, newest) {
+  const activity = job?.activity;
+  if (!activity?.unread || document.visibilityState !== 'visible') return;
+  const about = activity.update?.logFile ?? null;
+  if (about && selected !== about && !(selected && selected === newest)) return;
+  if (reportedRead.get(job.id) === activity.revision) return;
+  reportedRead.set(job.id, activity.revision);
+  // The revision this page was drawn with: an update since leaves the job unread.
+  api('/api/job-activity/read', { method: 'POST', body: JSON.stringify({ items: [{ id: job.id, revision: activity.revision }] }) })
+    .then((result) => setActivityCounts(result.counts))
+    .catch(() => reportedRead.delete(job.id));
 }
 
 /**
@@ -3689,7 +4022,7 @@ function durationFromLog(text) {
 }
 
 /** Streams one log file into the pre element, appending chunks as they arrive. */
-function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons') {
+function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons', onShown = () => {}) {
   closeLogStream();
   body.textContent = '';
   liveBadge.textContent = 'streaming';
@@ -3698,9 +4031,18 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons')
   const stream = new EventSource(`/api/${base}/${cronId}/logs/${encodeURIComponent(file)}/stream`);
   logStream = stream;
 
+  // Called once, when the log is first on screen: its first chunk, or its end.
+  let shown = false;
+  const show = () => {
+    if (shown) return;
+    shown = true;
+    onShown();
+  };
+
   stream.addEventListener('chunk', (event) => {
     body.append(JSON.parse(event.data).text);
     if (logsState.atBottom) body.scrollTop = body.scrollHeight;
+    show();
   });
 
   stream.addEventListener('done', () => {
@@ -3716,6 +4058,7 @@ function openLogStream(cronId, file, body, liveBadge, runtimeEl, base = 'crons')
     const retro = markRetrospective(body);
     if (retro && logsState.toRetrospective) body.scrollTop = retro.offsetTop - body.offsetTop;
     logsState.toRetrospective = false;
+    show();
     closeLogStream();
   });
 
@@ -3820,6 +4163,13 @@ function refreshCurrentView() {
   repaintQueue?.();
 }
 
+/** One redraw for a burst of activity, such as Mark all read in another tab. */
+let refreshSoonTimer = null;
+function refreshSoon() {
+  clearTimeout(refreshSoonTimer);
+  refreshSoonTimer = setTimeout(refreshCurrentView, 150);
+}
+
 function connectEvents() {
   const events = new EventSource('/api/events');
   // Every event is an update, so the header can say when the last one came if the stream drops.
@@ -3828,10 +4178,16 @@ function connectEvents() {
       stream.lastAt = new Date().toISOString();
       handler(event);
     });
+  let connectedBefore = false;
 
   on('hello', () => {
     stream.awaitingHealth = healthAsked + 1;
     checkHealth();
+    // Also the reconnect path: whatever happened while the stream was down is
+    // counted, and the page drawn again, since none of it was heard.
+    refreshActivityCounts();
+    if (connectedBefore) refreshCurrentView();
+    connectedBefore = true;
     // Also the reconnect path: a node page that dropped samples fills its charts back in.
     nodeMachine?.reload();
   });
@@ -3902,6 +4258,19 @@ function connectEvents() {
       refreshCurrentView();
     });
   }
+
+  // A job's updates were written, or read in some browser: the lists show both.
+  // The logs page only needs the first, to mark read what it is now showing.
+  on('job:activity', (event) => {
+    const { id, counts } = JSON.parse(event.data);
+    setActivityCounts(counts);
+    const { section, id: open } = parseHash();
+    if (section === 'list' || (section === 'logs' && open === id)) refreshSoon();
+  });
+  on('job:read', (event) => {
+    setActivityCounts(JSON.parse(event.data).counts);
+    if (parseHash().section === 'list') refreshSoon();
+  });
 
   // Matches the wording the server writes into the notification drawer.
   on('run:retrospective', (event) => {
@@ -5359,6 +5728,10 @@ async function checkHealth() {
 }
 
 window.addEventListener('hashchange', route);
+// A logs page in a background tab marks nothing read; it does once it is looked at.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && parseHash().section === 'logs') refreshCurrentView();
+});
 // Live run clocks, wherever they are on the page.
 setInterval(tickRuntimes, 1000);
 // Cheap, and a restart is exactly when the running commit changes.
