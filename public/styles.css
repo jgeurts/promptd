@@ -166,6 +166,13 @@ a {
   color: var(--red);
 }
 
+.status-strip .strip-limit {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-strip .strip-word {
   margin-left: auto;
   font-weight: 600;
@@ -411,8 +418,13 @@ a {
   transform: rotate(90deg);
 }
 
-.side-projects .side-list {
+.side-projects .side-list,
+.side-add {
   margin-top: 2px;
+}
+
+.side-add[hidden] {
+  display: none;
 }
 
 /* The form that adds a project, under the list, with its label shown and its error beside the field. */
@@ -734,6 +746,14 @@ a {
   html[data-sidebar='rail'] .avail-rail .glyph {
     margin: 0;
     font-size: 12px;
+  }
+
+  /* A reading that could not be refreshed says so under its number. */
+  html[data-sidebar='rail'] .avail-stale {
+    color: var(--amber);
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   html[data-sidebar='rail'] .avail.ok .avail-rail .glyph {

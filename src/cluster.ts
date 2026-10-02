@@ -172,9 +172,9 @@ export interface BestAccount {
   /** The computers signed in to it, which the tile names it by. */
   nodeNames: string[];
   status: AccountStatus;
-  /** The limit closest to stopping work on it. */
+  /** The limit that stops work on it first: the most used, see `bottleneckWindow`. */
   tightest: AccountLimit;
-  /** The session and the weekly all-models limits, plus the tightest when it is another: what the tile draws meters for. */
+  /** The session and the weekly all-models limits, plus the bottleneck when it is another: what the tile draws meters for. */
   limits: AccountLimit[];
   checkedAt: string | null;
   stale: boolean;
@@ -190,17 +190,21 @@ export interface Availability {
   best: BestAccount | null;
   /** How many accounts have a reading; `best` is the best of these. */
   accounts: number;
+  /** How many of those readings are stale, so a comparison can say it rests on old numbers. */
+  staleAccounts: number;
   /**
    * The accounts other than the best, by their worst limit. `text` is the
    * sentence under the meters, "2 other accounts at their weekly limit", or
    * null when there is no other account; `firstResetAt` is the earliest any of
-   * their reached limits frees, for the page to add in local time.
+   * them is free again, each once the last of its reached limits resets, for
+   * the page to add in local time. Null when none reports every reset time.
    */
   others: { count: number; reached: number; near: number; text: string | null; firstResetAt: string | null };
   /**
    * Limits reached, then jobs held, accounts near a limit, machine trouble and
-   * computers offline. Empty is all clear. The page adds its own on the end:
-   * its connection and an update on offer, which only it knows.
+   * computers offline. Empty is all clear. With one account the limit alerts
+   * name the limits; with several they count the accounts. The page adds its
+   * own on the end: its connection and an update on offer, which only it knows.
    */
   alerts: AvailabilityAlert[];
 }
@@ -546,12 +550,23 @@ function limitPhrase(window: UsageWindow): string {
   }
 }
 
+/**
+ * The window that stops work first: the one with the most used, whatever
+ * severity the API gives it. Ties go to the one the API calls worse, then by
+ * key so the pick holds still. `tightestWindow` keeps the severity-first
+ * answer for the `tightest` field a tab still on the old header reads.
+ */
+export function bottleneckWindow<T extends UsageWindow>(windows: T[]): T | null {
+  return [...windows].sort((a, b) => b.usedPercent - a.usedPercent || SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.key.localeCompare(b.key))[0] ?? null;
+}
+
 /** One account as `availability` weighs it, from either kind of entry. */
 interface Candidate {
   key: string;
   title: string;
   nodeNames: string[];
   usage: UsageSummary;
+  /** Its bottleneck: see `bottleneckWindow`. */
   tightest: AccountLimit;
 }
 
@@ -571,16 +586,40 @@ function nearPhrase(near: number, other: boolean): string {
 }
 
 /**
- * The best case over every account: the one whose tightest limit has the most
+ * The one account's limits by name: "Weekly limit reached", "Session and
+ * weekly limits reached", "Near the weekly limit". With one account there is
+ * nothing to count, so the limits themselves are the news.
+ */
+function namedLimits(windows: AccountLimit[], status: LimitStatus): string {
+  const names = [...new Set(windows.filter((limit) => limit.status === status).map((limit) => limitPhrase(limit).replace(/ limit$/, '')))];
+  const list = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)} limits` : `${names[0]} limit`;
+  const text = status === 'reached' ? `${list} reached` : `Near the ${list}`;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * When an account is free to work again: once the last of its reached limits
+ * resets, since a session reset frees nothing while the weekly limit is spent.
+ * Null when any reached limit reports no reset time, rather than a guess.
+ */
+function freesAt(candidate: Candidate): string | null {
+  const resets = candidate.usage.windows.filter((limit) => limit.status === 'reached').map((limit) => limit.resetsAt);
+  if (!resets.length || !resets.every((at): at is string => Boolean(at))) return null;
+  return resets.sort((a, b) => Date.parse(a) - Date.parse(b)).at(-1)!;
+}
+
+/**
+ * The best case over every account: the one whose bottleneck has the most
  * room, named by its computers, then how the rest stand and what is wrong.
- * Pure over the rest of the summary, so the tile's words are tested here with
- * the header's.
+ * A fresh reading is preferred over a stale one, which may say more room than
+ * there is. Pure over the rest of the summary, so the tile's words are tested
+ * here with the header's.
  */
 export function availability(summary: Omit<ClusterSummary, 'availability' | 'header'>): Availability {
   const names = new Map(summary.computers.map((node) => [node.id, node.name]));
   // An account with no reading has no limit to weigh, so it is not a candidate.
   const candidate = (key: string, title: string, nodeNames: string[], usage: UsageSummary): Candidate | null => {
-    const tightest = tightestWindow(usage.windows) as AccountLimit | null;
+    const tightest = bottleneckWindow(usage.windows as AccountLimit[]);
     return tightest ? { key, title, nodeNames, usage, tightest } : null;
   };
   const candidates = [
@@ -588,12 +627,13 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
     ...summary.unknownAccountUsage.map((entry) => candidate(`unknown:${entry.nodeId}`, 'Account unknown', [entry.nodeName], entry)),
   ]
     .filter((found): found is Candidate => found !== null)
-    // Most room first; with the same room, the one whose status is better, then by name so the pick holds still.
+    // Fresh readings first, then most room; with the same room, the better status, then by name so the pick holds still.
     .sort(
       (a, b) =>
-        b.tightest.usedPercent - a.tightest.usedPercent === 0
-          ? STATUS_RANK[a.usage.status] - STATUS_RANK[b.usage.status] || a.title.localeCompare(b.title)
-          : a.tightest.usedPercent - b.tightest.usedPercent,
+        Number(a.usage.stale) - Number(b.usage.stale) ||
+        a.tightest.usedPercent - b.tightest.usedPercent ||
+        STATUS_RANK[a.usage.status] - STATUS_RANK[b.usage.status] ||
+        a.title.localeCompare(b.title),
     );
 
   const [bestOf, ...rest] = candidates;
@@ -606,7 +646,7 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
       nodeNames: bestOf.nodeNames,
       status: bestOf.usage.status,
       tightest: bestOf.tightest,
-      // In the reading's own order, with the tightest added only when it is not a headline limit already.
+      // In the reading's own order, with the bottleneck added only when it is not a headline limit already.
       limits: bestOf.usage.windows.filter((limit) => headline.includes(limit) || limit === bestOf.tightest),
       checkedAt: bestOf.usage.checkedAt,
       stale: bestOf.usage.stale,
@@ -615,25 +655,30 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
 
   const reachedOthers = rest.filter((candidate) => candidate.usage.status === 'reached');
   const nearOthers = rest.filter((candidate) => candidate.usage.status === 'near').length;
-  const resets = reachedOthers
-    .flatMap((candidate) => candidate.usage.windows.filter((limit) => limit.status === 'reached').map((limit) => limit.resetsAt))
-    .filter((at): at is string => Boolean(at))
-    .sort();
+  const frees = reachedOthers
+    .map(freesAt)
+    .filter((at): at is string => at !== null)
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
   let othersText: string | null = null;
   if (reachedOthers.length && nearOthers) othersText = `${reachedPhrase(reachedOthers, true)}, ${nearOthers} near`;
   else if (reachedOthers.length) othersText = reachedPhrase(reachedOthers, true);
   else if (nearOthers) othersText = nearPhrase(nearOthers, true);
   else if (rest.length) othersText = `${rest.length} other account${rest.length === 1 ? '' : 's'} with room`;
 
+  const single = candidates.length === 1;
   const reached = candidates.filter((candidate) => candidate.usage.status === 'reached');
-  const near = candidates.filter((candidate) => candidate.usage.status === 'near').length;
+  const near = candidates.filter((candidate) => candidate.usage.status === 'near');
   const forUsage = summary.waiting.filter((job) => job.hold === 'usage').length;
   const forSlot = summary.waiting.length - forUsage;
   const alerts: AvailabilityAlert[] = [];
-  if (reached.length) alerts.push({ id: 'accounts-reached', section: 'accounts', severity: 'critical', text: reachedPhrase(reached, false) });
+  if (reached.length) {
+    alerts.push({ id: 'accounts-reached', section: 'accounts', severity: 'critical', text: single ? namedLimits(reached[0]!.usage.windows, 'reached') : reachedPhrase(reached, false) });
+  }
   if (forUsage) alerts.push({ id: 'waiting-usage', section: 'jobs', severity: 'warning', text: `${count(forUsage, 'job')} waiting for account limits` });
   if (forSlot) alerts.push({ id: 'waiting-slot', section: 'jobs', severity: 'warning', text: `${count(forSlot, 'job')} queued behind the job limit` });
-  if (near) alerts.push({ id: 'accounts-near', section: 'accounts', severity: 'warning', text: nearPhrase(near, false) });
+  if (near.length) {
+    alerts.push({ id: 'accounts-near', section: 'accounts', severity: 'warning', text: single ? namedLimits(near[0]!.usage.windows, 'near') : nearPhrase(near.length, false) });
+  }
   if (summary.exceptions.length) {
     const [worst] = summary.exceptions;
     alerts.push({
@@ -651,7 +696,8 @@ export function availability(summary: Omit<ClusterSummary, 'availability' | 'hea
   return {
     best,
     accounts: candidates.length,
-    others: { count: rest.length, reached: reachedOthers.length, near: nearOthers, text: othersText, firstResetAt: resets[0] ?? null },
+    staleAccounts: candidates.filter((candidate) => candidate.usage.stale).length,
+    others: { count: rest.length, reached: reachedOthers.length, near: nearOthers, text: othersText, firstResetAt: frees[0] ?? null },
     alerts,
   };
 }

@@ -882,7 +882,7 @@ function pauseSummary(pause) {
  */
 async function renderHome(tab = 'crons') {
   const renderId = ++homeRenderId;
-  const hash = location.hash;
+  let expected = location.hash;
   const { project: projectId } = parseHash();
   const [pause, summary, projects] = await Promise.all([api('/api/pause'), api('/api/job-activity').catch(() => null), api('/api/projects')]);
   if (summary) setActivityCounts(summary.counts);
@@ -890,7 +890,10 @@ async function renderHome(tab = 'crons') {
   const project = projectId ? (projects.find((candidate) => candidate.id === projectId) ?? null) : null;
   if (projectId && !project) {
     history.replaceState(null, '', TABS.find((candidate) => candidate.id === tab).hash);
-    syncCurrent();
+    // The same place under its right name, which the check for a move away below has to expect.
+    expected = location.hash;
+    lastRoute = parseHash();
+    paintProjects();
   }
   // What Mark all read reads: the updated jobs this list is drawn with, paged in or not.
   const unread = (summary?.unread ?? []).filter((job) => job.kind === (tab === 'executions' ? 'execution' : 'cron'));
@@ -925,7 +928,7 @@ async function renderHome(tab = 'crons') {
   const order = tab === 'executions' ? await paintExecutions(panel, pause, sub, unread, scope) : await paintCrons(panel, pause, sub, unread, scope);
 
   // A newer render, or a move to another page, landed while this one waited.
-  if (renderId !== homeRenderId || location.hash !== hash) return;
+  if (renderId !== homeRenderId || location.hash !== expected) return;
   // What is on screen is what a held list holds to; Name and Date hold nothing.
   Object.assign(listOrder, order ?? NO_ORDER);
   // Redraws come with every run event, and must not throw the keyboard back to the top.
@@ -999,7 +1002,8 @@ async function paintCrons(panel, pause, sub, given, { projects, project }) {
   const sort = readSort('crons');
   const all = await api(sort === 'activity' ? '/api/crons?sort=activity' : '/api/crons');
   const ranked = project ? all.filter((cron) => cron.projectId === project.id) : all;
-  const { jobs: crons, order } = sort === 'activity' ? heldOrder('crons', ranked) : { jobs: ranked, order: null };
+  // Held by scope: a list filtered to another project is another list.
+  const { jobs: crons, order } = sort === 'activity' ? heldOrder(`crons:${project?.id ?? ''}`, ranked) : { jobs: ranked, order: null };
   // Mark all read reads what this list shows; filtered, that is the project's updated crons.
   const unread = project ? given.filter((job) => ranked.some((cron) => cron.id === job.id)) : given;
   const armed = crons.filter((c) => c.isActive).length;
@@ -1122,10 +1126,13 @@ async function paintExecutions(panel, pause, sub, given, { projects, project }) 
   if (project) params.set('project', project.id);
   const page = await api(`/api/executions?${params}`);
   let items = page.items;
+  // Held by scope: a list filtered to another project is another list.
+  const scopeKey = `executions:${project?.id ?? ''}`;
   // Held, no row the list showed may leave it, so one that a rise has pushed
   // off the page is read on its own. Asked once the answer is in, since the
-  // pointer may have come into the list while the page was on its way.
-  if (sort === 'activity' && holding('executions')) {
+  // pointer may have come into the list while the page was on its way. A row
+  // read back this way is kept only if it is still this list's.
+  if (sort === 'activity' && holding(scopeKey)) {
     const fetched = new Set(items.map((execution) => execution.id));
     const missing = listOrder.ids.filter((id) => !fetched.has(id));
     // Only one that is gone leaves. Any other failure draws nothing, and the list stays as it is.
@@ -1137,10 +1144,10 @@ async function paintExecutions(panel, pause, sub, given, { projects, project }) 
         }),
       ),
     );
-    items = [...items, ...found.filter(Boolean)];
+    items = [...items, ...found.filter((execution) => execution && (!project || execution.projectId === project.id))];
   }
   const { jobs: executions, order } =
-    sort === 'activity' ? heldOrder('executions', items, executionsState.limit) : { jobs: items, order: null };
+    sort === 'activity' ? heldOrder(scopeKey, items, executionsState.limit) : { jobs: items, order: null };
   // Mark all read reads what this list shows; filtered, the hub has not said which unread ones are the project's, so that is the rows drawn.
   const unread = project ? given.filter((job) => executions.some((execution) => execution.id === job.id)) : given;
 
@@ -5028,7 +5035,6 @@ const announcerEl = document.getElementById('status-announcer');
 
 let healthState = null; // the last /api/health answer
 let healthRefreshTimer = null;
-let sidebarDrawn = null; // what the sidebar was last drawn from, so an unchanged poll redraws nothing
 let statusDrawn = null; // the same for the status page
 let statusBodyEl = null; // the status page's body, while that page is open
 let statusWordEl = null; // its All clear / Needs attention word
@@ -5059,7 +5065,7 @@ const LIMIT_FLAG = { reached: 'Reached', near: 'Near' };
 
 /** Said once, under the accounts, so the two words never need a tooltip. The rules are `limitStatus` in src/cluster.ts. */
 const LIMIT_DEFINITIONS =
-  'Limit reached: a limit is at 100%, so nothing on that account can use it until it resets. ' +
+  'Limit reached: this limit is at 100%; work that uses it may be blocked until it resets. ' +
   'Near limit: Claude flags a limit as running high, or it is at or past the percentage where jobs set to wait for usage are held ' +
   "(Delay for usage, on each computer's page).";
 
@@ -5232,6 +5238,10 @@ function closeOverlays() {
 }
 
 menuEl.addEventListener('click', () => (sidebarOpen ? closeSidebar() : openSidebar()));
+// A link to the page already open fires no hashchange, so a drawer link closes the drawer here as well.
+sidebarEl.addEventListener('click', (event) => {
+  if (event.target.closest?.('a[href]')) closeSidebar({ restoreFocus: false });
+});
 sidebarCloseEl.addEventListener('click', () => closeSidebar());
 drawerBackdropEl?.addEventListener('click', () => {
   closeSidebar({ restoreFocus: false });
@@ -5256,18 +5266,33 @@ document.getElementById('skip-link')?.addEventListener('click', (event) => {
 // ---- the availability tile and the phone's strip
 
 /**
+ * The alerts the tile itself shows. With several accounts the line under the
+ * meters already says how the accounts stand, so the account alerts are left
+ * out here; the tile's severity and where it links still come from all of them.
+ */
+function tileAlerts(alerts, availability) {
+  return availability.accounts > 1 ? alerts.filter((alert) => alert.id !== 'accounts-reached' && alert.id !== 'accounts-near') : alerts;
+}
+
+/** "5-hour session 61% used", or for a reading that could not be refreshed, "last known 5-hour session 61% used". */
+function bottleneckWords(best, { short = false } = {}) {
+  const words = `${short ? shortLimitName(best.tightest) : best.tightest.name} ${fmtUsed(best.tightest.usedPercent)} used`;
+  return best.stale ? `last known ${words}` : words;
+}
+
+/**
  * The tile's one-sentence summary: the link's accessible name, and the rail's
  * tooltip. "galaxy: 5-hour session 61% used. 2 other accounts at their weekly
- * limit. 2 accounts at their weekly limit, 1 more."
+ * limit. 1 job waiting for account limits, 1 more. Opens System status."
  */
-function availabilitySentence(availability, alerts, severity) {
+function availabilitySentence(availability, alerts, shown, severity) {
   const parts = [];
   const { best, others } = availability;
-  if (best) parts.push(`${best.nodeNames.join(', ') || best.title}: ${best.tightest.name} ${fmtUsed(best.tightest.usedPercent)} used`);
+  if (best) parts.push(`${best.nodeNames.join(', ') || best.title}: ${best.stale ? 'usage out of date, ' : ''}${bottleneckWords(best)}`);
   else parts.push('No usage reading yet');
   if (others.text) parts.push(others.text);
-  if (alerts.length) parts.push(`${alerts[0].text}${alerts.length > 1 ? `, ${alerts.length - 1} more` : ''}`);
-  else parts.push(SEVERITY[severity].word);
+  if (shown.length) parts.push(`${shown[0].text}${shown.length > 1 ? `, ${shown.length - 1} more` : ''}`);
+  else if (!alerts.length) parts.push(SEVERITY[severity].word);
   return `${parts.join('. ')}. Opens System status.`;
 }
 
@@ -5282,70 +5307,91 @@ function availLimit(limit) {
   ]);
 }
 
+/** "1 reading out of date", "2 readings out of date". */
+function staleWords(n) {
+  return `${n} reading${n === 1 ? '' : 's'} out of date`;
+}
+
 /**
  * The tile. One account: its session and weekly meters, plus a model-scoped
  * weekly limit when that is the tightest. Several: the account with the most
  * room, named by its computers, and one line on how the others stand. Under
- * the meters, the worst current issue in words, then how many more.
+ * the meters, the worst current issue in words, then how many more. A reading
+ * that could not be refreshed says so wherever its numbers appear.
  */
 function paintAvailability(alerts) {
   const availability = healthState.cluster.availability;
-  const { best, others, accounts } = availability;
+  const { best, others, accounts, staleAccounts } = availability;
   const severity = worstSeverity(alerts);
   const first = alerts[0] ?? null;
+  const shown = tileAlerts(alerts, availability);
+  const lead = shown[0] ?? null;
   availEl.className = `avail ${severity}`;
   // The tile lands on the section that explains the worst issue, or at the top with nothing wrong.
   availEl.href = first && first.section !== 'page' ? `#/status/${first.section}` : first ? '#/status/page' : '#/status';
-  const sentence = availabilitySentence(availability, alerts, severity);
+  const sentence = availabilitySentence(availability, alerts, shown, severity);
   availEl.setAttribute('aria-label', sentence);
   availTipEl.textContent = sentence;
   availRailEl.replaceChildren(
-    el('span', { class: 'glyph', text: SEVERITY[severity].glyph }),
-    el('span', { text: best ? fmtUsed(best.tightest.usedPercent) : '—' }),
+    ...[
+      el('span', { class: 'glyph', text: SEVERITY[severity].glyph }),
+      el('span', { text: best ? fmtUsed(best.tightest.usedPercent) : '—' }),
+      best?.stale ? el('span', { class: 'avail-stale', text: 'stale' }) : null,
+    ].filter(Boolean),
   );
-  const alertLine = el('p', { class: `avail-alert ${first ? first.severity : 'clear'}` }, [
-    el('span', { class: 'glyph', 'aria-hidden': 'true', text: first ? SEVERITY[first.severity === 'info' ? 'ok' : first.severity].glyph : SEVERITY.ok.glyph }),
-    el('span', {}, [
-      first?.severity === 'critical' || first?.severity === 'warning' ? el('span', { class: 'sr-only', text: `${first.severity}: ` }) : null,
-      first ? first.text : SEVERITY.ok.word,
-      alerts.length > 1 ? el('span', { class: 'avail-more', text: ` +${alerts.length - 1} more` }) : null,
-    ]),
-  ]);
+  // Nothing wrong: a line that says so. Something wrong the account line already says: no line, the border and glyph carry it.
+  const alertLine =
+    lead || !alerts.length
+      ? el('p', { class: `avail-alert ${lead ? lead.severity : 'clear'}` }, [
+          el('span', { class: 'glyph', 'aria-hidden': 'true', text: lead ? SEVERITY[lead.severity === 'info' ? 'ok' : lead.severity].glyph : SEVERITY.ok.glyph }),
+          el('span', {}, [
+            lead?.severity === 'critical' || lead?.severity === 'warning' ? el('span', { class: 'sr-only', text: `${lead.severity}: ` }) : null,
+            lead ? lead.text : SEVERITY.ok.word,
+            shown.length > 1 ? el('span', { class: 'avail-more', text: ` +${shown.length - 1} more` }) : null,
+          ]),
+        ])
+      : null;
+  const glyph = el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph });
   if (!best) {
     const reason = [...healthState.cluster.accounts, ...healthState.cluster.unknownAccountUsage].find((entry) => entry.reason)?.reason ?? null;
     availBodyEl.replaceChildren(
-      el('span', { class: 'avail-head' }, [el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph }), 'Availability']),
-      el('p', { class: 'avail-checked', text: healthState.cluster.nodes.online ? `No usage reading yet${reason ? `: ${reason}` : ''}` : 'No computer is online to read usage' }),
-      alertLine,
+      ...[
+        el('span', { class: 'avail-head' }, [glyph, 'Availability']),
+        el('p', { class: 'avail-checked', text: healthState.cluster.nodes.online ? `No usage reading yet${reason ? `: ${reason}` : ''}` : 'No computer is online to read usage' }),
+        alertLine,
+      ].filter(Boolean),
     );
     return;
   }
+  const head = accounts > 1 ? `Most room of ${accounts} accounts${staleAccounts ? ` · ${staleWords(staleAccounts)}` : ''}` : best.stale ? 'Availability · usage out of date' : 'Availability';
   // Filtered: replaceChildren writes a null as the word "null", where `el` would skip it.
   availBodyEl.replaceChildren(
     ...[
-      el('span', { class: 'avail-head' }, [
-        el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph }),
-        accounts > 1 ? `Most room of ${accounts} accounts` : 'Availability',
-      ]),
+      el('span', { class: 'avail-head' }, [glyph, head]),
       el('div', { class: 'avail-who' }, [best.nodeNames.join(', ') || best.title, best.nodeNames.length ? el('span', { class: 'muted', text: ` · ${best.title}` }) : null]),
       el('ul', { class: 'avail-limits' }, best.limits.map(availLimit)),
       others.text ? el('p', { class: 'avail-others', text: `${others.text}${others.firstResetAt ? ` · first frees ${fmtWhen(others.firstResetAt)}` : ''}` }) : null,
-      best.stale ? el('p', { class: 'avail-checked stale', text: `Usage last checked ${fmtAgo(best.checkedAt)}, so it may be out of date` }) : null,
+      best.stale ? el('p', { class: 'avail-checked stale', text: best.checkedAt ? `Last known numbers: usage last checked ${fmtAgo(best.checkedAt)}` : 'Last known numbers: usage could not be refreshed' }) : null,
       alertLine,
     ].filter(Boolean),
   );
 }
 
-/** The phone's one line under the brand: the best account's tightest limit, and the alert word. */
+/** The phone's one line under the brand: the best account's bottleneck, and the alert word. */
 function paintStrip(alerts) {
-  const { best } = healthState.cluster.availability;
+  const availability = healthState.cluster.availability;
+  const { best } = availability;
   const severity = worstSeverity(alerts);
+  const shown = tileAlerts(alerts, availability);
   stripEl.className = `status-strip ${severity}`;
   stripEl.href = availEl.href;
   stripEl.replaceChildren(
     el('span', { class: 'glyph', 'aria-hidden': 'true', text: SEVERITY[severity].glyph }),
-    el('span', { class: 'strip-limit', text: best ? `${best.nodeNames[0] ?? best.title} · ${shortLimitName(best.tightest)} ${fmtUsed(best.tightest.usedPercent)} used` : 'No usage reading yet' }),
-    el('span', { class: 'strip-word', text: alerts[0]?.text ?? SEVERITY.ok.word }),
+    el('span', {
+      class: 'strip-limit',
+      text: best ? `${best.nodeNames[0] ?? best.title} · ${best.stale ? 'Usage out of date · ' : ''}${bottleneckWords(best, { short: true })}` : 'No usage reading yet',
+    }),
+    el('span', { class: 'strip-word', text: shown[0]?.text ?? SEVERITY[alerts.length ? severity : 'ok'].word }),
   );
   stripEl.hidden = false;
 }
@@ -5414,10 +5460,11 @@ function paintSideCounts() {
 }
 
 let projectsState = []; // /api/projects/summary, as last read
-let projectsDrawn = null; // what the list was last drawn from
+let projectsDrawn = null; // what the rows were last drawn from
 let projectsOpen = true; // the Projects list unfolded
 let projectsRefreshTimer = null;
 let newProjectOpen = false; // the New project form is showing
+let projectsParts = null; // the section's fixed parts, built once: { toggle, count, list, add }
 
 /** Re-reads the projects' counts after run activity, coalesced like `refreshHealth`. */
 function refreshProjects() {
@@ -5439,6 +5486,23 @@ function projectHash(projectId) {
   return `${tab.hash}?project=${encodeURIComponent(projectId)}`;
 }
 
+/** The New project row, which the form takes the place of. */
+function newProjectButton() {
+  return sideItem(
+    'button',
+    {
+      type: 'button',
+      'data-key': 'project:new',
+      onclick: () => {
+        newProjectOpen = true;
+        paintProjects();
+        projectsParts.add.querySelector('#side-new-name')?.focus();
+      },
+    },
+    { icon: ICONS.plus, label: 'New project' },
+  );
+}
+
 /** The form that adds a project, with its label shown and any error beside the field. It uses the Settings page's API. */
 function newProjectForm() {
   const input = el('input', { type: 'text', id: 'side-new-name', maxlength: '120', autocomplete: 'off', required: '' });
@@ -5446,39 +5510,46 @@ function newProjectForm() {
   const close = () => {
     newProjectOpen = false;
     paintProjects();
-    sideProjectsEl.querySelector('[data-key="project:new"]')?.focus();
+    projectsParts.add.querySelector('[data-key="project:new"]')?.focus();
   };
-  const form = el('form', { class: 'side-new', onsubmit: async (event) => {
-    event.preventDefault();
-    const name = input.value.trim();
-    if (!name) {
-      error.textContent = 'Give the project a name.';
-      error.hidden = false;
-      input.focus();
-      return;
-    }
-    const button = form.querySelector('[type="submit"]');
-    button.disabled = true;
-    try {
-      await api('/api/projects', { method: 'POST', body: JSON.stringify({ name, description: '' }) });
-      toast('Project added');
-      newProjectOpen = false;
-      refreshProjects();
-    } catch (err) {
-      error.textContent = err.message;
-      error.hidden = false;
-      button.disabled = false;
-      input.focus();
-    }
-  } }, [
-    el('label', { for: 'side-new-name', text: 'Project name' }),
-    input,
-    error,
-    el('div', { class: 'row-actions' }, [
-      el('button', { class: 'btn small primary', type: 'submit', text: 'Add project' }),
-      el('button', { class: 'btn small', type: 'button', text: 'Cancel', onclick: close }),
-    ]),
-  ]);
+  const form = el(
+    'form',
+    {
+      class: 'side-new',
+      onsubmit: async (event) => {
+        event.preventDefault();
+        const name = input.value.trim();
+        if (!name) {
+          error.textContent = 'Give the project a name.';
+          error.hidden = false;
+          input.focus();
+          return;
+        }
+        const button = form.querySelector('[type="submit"]');
+        button.disabled = true;
+        try {
+          await api('/api/projects', { method: 'POST', body: JSON.stringify({ name, description: '' }) });
+          toast('Project added');
+          close();
+          refreshProjects();
+        } catch (err) {
+          error.textContent = err.message;
+          error.hidden = false;
+          button.disabled = false;
+          input.focus();
+        }
+      },
+    },
+    [
+      el('label', { for: 'side-new-name', text: 'Project name' }),
+      input,
+      error,
+      el('div', { class: 'row-actions' }, [
+        el('button', { class: 'btn small primary', type: 'submit', text: 'Add project' }),
+        el('button', { class: 'btn small', type: 'button', text: 'Cancel', onclick: close }),
+      ]),
+    ],
+  );
   form.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
       event.stopPropagation();
@@ -5489,78 +5560,93 @@ function newProjectForm() {
 }
 
 /**
- * The projects, folded under one row that counts them. Each shows how many
- * jobs it has, a run under way and an update not yet opened, so which project
- * needs a look shows without filtering; the item filters both lists to it,
- * and the current one, pressed again, clears the filter.
+ * The section's fixed parts: the row that folds it, the list of projects, and
+ * the place the New project row or its form sits. Built once, so the form
+ * outlives every redraw of the rows beside it.
  */
-function paintProjects() {
-  const { project: current, kind } = parseHash();
-  // Rebuilt only when something it shows has changed: a list rebuilt under a pointer loses the click.
-  const drawn = JSON.stringify([projectsState, current, kind, projectsOpen, newProjectOpen]);
-  if (drawn === projectsDrawn) return;
-  projectsDrawn = drawn;
-  const focused = sideProjectsEl.contains(document.activeElement) ? document.activeElement.closest('[data-key]')?.dataset.key : null;
+function projectsSkeleton() {
+  if (projectsParts) return projectsParts;
   const listId = 'side-project-list';
-  const items = projectsState.map((project) =>
-    el('li', {}, [
-      sideItem(
-        'a',
-        {
-          href: project.id === current ? (parseHash().kind === 'execution' ? '#/one-time' : '#/') : projectHash(project.id),
-          'data-route': `project:${project.id}`,
-          'data-key': `project:${project.id}`,
-          title: project.id === current ? 'Showing this project. Press again for every job.' : null,
-        },
-        {
-          icon: ICONS.project,
-          label: project.name,
-          after: [
-            project.running ? el('span', { class: 'side-mark running', title: `${project.running} running` }, [el('span', { 'aria-hidden': 'true', text: ICONS.run }), el('span', { class: 'sr-only', text: `, ${project.running} running` })]) : null,
-            project.updated ? el('span', { class: 'side-mark updated', title: `${project.updated} updated` }, [el('span', { class: 'sr-only', text: `, ${project.updated} updated` })]) : null,
-            el('span', { class: 'side-count quiet' }, [el('span', { 'aria-hidden': 'true', text: String(project.jobs) }), el('span', { class: 'sr-only', text: `, ${project.jobs} job${project.jobs === 1 ? '' : 's'}` })]),
-          ],
-          tip: `${project.name}: ${project.jobs} job${project.jobs === 1 ? '' : 's'}${project.running ? `, ${project.running} running` : ''}${project.updated ? `, ${project.updated} updated` : ''}`,
-        },
-      ),
-    ]),
-  );
-  const add = el('li', {}, [
-    newProjectOpen
-      ? newProjectForm()
-      : sideItem(
-          'button',
-          { type: 'button', 'data-key': 'project:new', onclick: () => {
-            newProjectOpen = true;
-            paintProjects();
-            sideProjectsEl.querySelector('#side-new-name')?.focus();
-          } },
-          { icon: ICONS.plus, label: 'New project' },
-        ),
-  ]);
-  sideProjectsEl.replaceChildren(
-    el('button', {
+  const count = el('span', { class: 'side-count quiet' });
+  const toggle = el(
+    'button',
+    {
       type: 'button',
       class: 'side-item side-disclose',
-      'aria-expanded': String(projectsOpen),
       'aria-controls': listId,
       'data-key': 'projects',
       onclick: () => {
         projectsOpen = !projectsOpen;
         paintProjects();
       },
-    }, [
-      el('span', { class: 'side-icon side-chevron', 'aria-hidden': 'true', html: ICONS.chevron }),
-      el('span', { class: 'side-label', text: 'Projects' }),
-      el('span', { class: 'side-count quiet' }, [el('span', { 'aria-hidden': 'true', text: String(projectsState.length) }), el('span', { class: 'sr-only', text: `, ${projectsState.length}` })]),
-    ]),
-    el('ul', { id: listId, class: 'side-list', hidden: projectsOpen ? null : '' }, [
-      ...(items.length ? items : [el('li', { class: 'side-empty', text: 'No projects yet' })]),
-      add,
-    ]),
+    },
+    [el('span', { class: 'side-icon side-chevron', 'aria-hidden': 'true', html: ICONS.chevron }), el('span', { class: 'side-label', text: 'Projects' }), count],
   );
+  const list = el('ul', { id: listId, class: 'side-list' });
+  const add = el('div', { class: 'side-add' });
+  sideProjectsEl.replaceChildren(toggle, list, add);
+  projectsParts = { toggle, count, list, add };
+  return projectsParts;
+}
+
+/**
+ * The projects, folded under one row that counts them. Each shows how many
+ * jobs it has, a run under way and an update not yet opened, so which project
+ * needs a look shows without filtering; the item filters both lists to it,
+ * and the current one, pressed again, clears the filter. Called on every
+ * route change too, so each row leads where the open list is. The New project
+ * form is never rebuilt with the rows, so a count arriving mid-typing leaves
+ * the draft and the focus where they were.
+ */
+function paintProjects() {
+  const { toggle, count, list, add } = projectsSkeleton();
+  const { project: current, kind } = parseHash();
+  toggle.setAttribute('aria-expanded', String(projectsOpen));
+  count.replaceChildren(el('span', { 'aria-hidden': 'true', text: String(projectsState.length) }), el('span', { class: 'sr-only', text: `, ${projectsState.length}` }));
+  list.hidden = !projectsOpen;
+  add.hidden = !projectsOpen;
+  if (newProjectOpen && !add.querySelector('form')) add.replaceChildren(newProjectForm());
+  else if (!newProjectOpen && !add.querySelector('[data-key="project:new"]')) add.replaceChildren(newProjectButton());
+  // The rows are rebuilt only when what they show has changed: a list rebuilt under a pointer loses the click.
+  const drawn = JSON.stringify([projectsState, current, kind]);
+  if (drawn !== projectsDrawn) {
+    projectsDrawn = drawn;
+    const focused = list.contains(document.activeElement) ? document.activeElement.closest('[data-key]')?.dataset.key : null;
+    const items = projectsState.map((project) =>
+      el('li', {}, [
+        sideItem(
+          'a',
+          {
+            href: project.id === current ? (kind === 'execution' ? '#/one-time' : '#/') : projectHash(project.id),
+            'data-route': `project:${project.id}`,
+            'data-key': `project:${project.id}`,
+            title: project.id === current ? 'Showing this project. Press again for every job.' : null,
+          },
+          {
+            icon: ICONS.project,
+            label: project.name,
+            after: [
+              project.running
+                ? el('span', { class: 'side-mark running', title: `${project.running} running` }, [
+                    el('span', { 'aria-hidden': 'true', text: ICONS.run }),
+                    el('span', { class: 'sr-only', text: `, ${project.running} running` }),
+                  ])
+                : null,
+              project.updated ? el('span', { class: 'side-mark updated', title: `${project.updated} updated` }, [el('span', { class: 'sr-only', text: `, ${project.updated} updated` })]) : null,
+              el('span', { class: 'side-count quiet' }, [
+                el('span', { 'aria-hidden': 'true', text: String(project.jobs) }),
+                el('span', { class: 'sr-only', text: `, ${project.jobs} job${project.jobs === 1 ? '' : 's'}` }),
+              ]),
+            ],
+            tip: `${project.name}: ${project.jobs} job${project.jobs === 1 ? '' : 's'}${project.running ? `, ${project.running} running` : ''}${project.updated ? `, ${project.updated} updated` : ''}`,
+          },
+        ),
+      ]),
+    );
+    list.replaceChildren(...(items.length ? items : [el('li', { class: 'side-empty', text: 'No projects yet' })]));
+    if (focused) list.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
+  }
   syncCurrent();
-  if (focused) sideProjectsEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
 
 /** Every run under way, each a link to its logs, with its node and a live clock. */
@@ -5615,10 +5701,10 @@ function paintNodes() {
             el('span', { text: node.online ? 'online' : 'offline' }),
             '·',
             el('span', { text: load, title: node.online ? 'Running, of its job limit' : null }),
-            tightest ? el('span', { class: 'lim-meter', 'aria-hidden': 'true' }, [el('span', { class: `lim-fill ${tightest.status}`, style: `width: ${used}%` })]) : null,
-            tightest ? el('span', { class: 'sr-only', text: `, ${tightest.name} ${fmtUsed(used)} used` }) : null,
+            tightest ? el('span', { class: 'lim-meter', 'aria-hidden': 'true', title: usage.stale ? 'Usage out of date' : null }, [el('span', { class: `lim-fill ${tightest.status}`, style: `width: ${used}%` })]) : null,
+            tightest ? el('span', { class: 'sr-only', text: `, ${usage.stale ? 'last known ' : ''}${tightest.name} ${fmtUsed(used)} used` }) : null,
           ]),
-          tip: `${node.name}: ${node.online ? `online, ${load} running` : `offline, ${load}`}${tightest ? `, ${tightest.name} ${fmtUsed(used)} used` : ''}`,
+          tip: `${node.name}: ${node.online ? `online, ${load} running` : `offline, ${load}`}${tightest ? `, ${usage.stale ? 'last known ' : ''}${tightest.name} ${fmtUsed(used)} used` : ''}`,
         },
       ),
     ]);
@@ -5640,25 +5726,44 @@ function syncCurrent() {
   }
 }
 
+/** Drops what moves with every poll and is drawn, if at all, to the minute: when usage was read, and when a node was last heard. */
+function withoutHeartbeat(key, value) {
+  return key === 'checkedAt' || key === 'lastSeenAt' ? undefined : value;
+}
+
+const drawnParts = new Map(); // each part of the sidebar, by name, and what it was last drawn from
+
+/** Whether `facts` differ from what `part` was last drawn from, remembering them when they do. */
+function changed(part, facts) {
+  const drawn = JSON.stringify(facts, withoutHeartbeat);
+  if (drawnParts.get(part) === drawn) return false;
+  drawnParts.set(part, drawn);
+  return true;
+}
+
 /**
  * Redraws the sidebar from the last health reading and the page's own state,
- * and the status page when it is open. Rebuilt rather than patched, so the
- * item holding focus is found again by its key afterwards.
+ * and the status page when it is open. Each part is rebuilt rather than
+ * patched, and only when what it draws has changed, so a poll that moves
+ * nothing but timestamps rebuilds nothing; the item holding focus is found
+ * again by its key afterwards.
  */
 function paintShell() {
   if (!healthState?.cluster?.availability) return;
   const alerts = pageAlerts();
   announce(alerts);
   paintStatusPage();
-  // The minute is in it so "last seen 3 minutes ago" keeps up.
-  const drawn = JSON.stringify([healthState.cluster, healthState.runningJobs, alerts, Math.floor(Date.now() / 60000)]);
-  if (drawn === sidebarDrawn) return;
-  sidebarDrawn = drawn;
+  const { cluster } = healthState;
+  // Relative times, "resets in 3 hours" and "last seen 2 minutes ago", move with the minute.
+  const minute = Math.floor(Date.now() / 60000);
   const focused = sidebarEl.contains(document.activeElement) ? document.activeElement.closest('[data-key]')?.dataset.key : null;
-  paintAvailability(alerts);
-  paintStrip(alerts);
-  paintRunning();
-  paintNodes();
+  const reasons = [...cluster.accounts, ...cluster.unknownAccountUsage].map((entry) => entry.reason);
+  if (changed('tile', [cluster.availability, cluster.nodes.online, reasons, alerts, minute])) {
+    paintAvailability(alerts);
+    paintStrip(alerts);
+  }
+  if (changed('running', (healthState.runningJobs ?? []).map((run) => [run.cronId, run.cronName, run.kind, run.nodeId, run.nodeName, run.startedAt]))) paintRunning();
+  if (changed('nodes', [cluster.computers, cluster.accounts, cluster.unknownAccountUsage, minute])) paintNodes();
   syncCurrent();
   if (focused) sidebarEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
 }
@@ -5953,7 +6058,7 @@ function paintStatusPage() {
   // The minute is in it so "checked 3 minutes ago" keeps up.
   // The stream's last event time only shows while it is disconnected; connected, it moves every few seconds.
   const updates = stream.state === 'disconnected' ? stream : stream.state;
-  const drawn = JSON.stringify([healthState.cluster, healthState.armedCrons, healthState.armedExecutions, updates, staleBuild, updateOffered, Math.floor(Date.now() / 60000)]);
+  const drawn = JSON.stringify([healthState.cluster, healthState.armedCrons, healthState.armedExecutions, updates, staleBuild, updateOffered, Math.floor(Date.now() / 60000)], withoutHeartbeat);
   if (drawn === statusDrawn) return;
   statusDrawn = drawn;
   statusWordEl.className = `status-word ${attention ? 'attention' : 'clear'}`;
@@ -6251,7 +6356,8 @@ window.addEventListener('hashchange', async () => {
   const after = parseHash();
   lastRoute = after;
   await route();
-  syncCurrent();
+  // Each project row leads where the open list is, and the current one is marked.
+  paintProjects();
   // Between the two tabs, or onto a project, focus stays on the tab or the item just pressed.
   if (before.section === 'list' && after.section === 'list' && document.activeElement !== document.body) return;
   focusPage();
