@@ -4543,8 +4543,8 @@ function warnIcon() {
 /** The warnings the server knows of, then the page's own. */
 function pageWarnings() {
   const warnings = [...(healthState?.cluster?.header?.warnings ?? [])];
-  if (stream.state === 'disconnected') warnings.push({ id: 'updates', section: 'updates', text: 'Updates disconnected' });
-  if (staleBuild) warnings.push({ id: 'stale', section: 'updates', text: 'Page out of date' });
+  if (stream.state === 'disconnected') warnings.push({ id: 'page', section: 'page', text: 'Page not updating · reconnecting' });
+  if (staleBuild) warnings.push({ id: 'stale', section: 'page', text: 'Page out of date' });
   return warnings;
 }
 
@@ -4631,8 +4631,8 @@ function announce(warnings, attention) {
   const settling = Date.now() - Date.parse(healthState.startedAt ?? '') < HUB_SETTLE_MS;
   if (!settling && facts.waiting.some((job) => !before.waiting.includes(job))) said.push(...[text('waiting-usage'), text('waiting-slot')].filter(Boolean));
   if (!settling && facts.offline.some((id) => !before.offline.includes(id)) && text('offline')) said.push(text('offline'));
-  if (facts.disconnected && !before.disconnected) said.push('Updates disconnected');
-  if (!facts.disconnected && before.disconnected) said.push('Updates reconnected');
+  if (facts.disconnected && !before.disconnected) said.push('Page not updating');
+  if (!facts.disconnected && before.disconnected) said.push('Page updating live');
   if (!settling && !facts.attention && before.attention) said.push('All clear');
   if (!said.length) return;
   // Emptied first, so a message that repeats an earlier one is still spoken.
@@ -4871,14 +4871,14 @@ function computersSection() {
 }
 
 /** The page's own connection, and whether it is older than the server. */
-function updatesSection() {
+function pageSection() {
   const lines = [];
   if (stream.state === 'connected') {
-    lines.push(el('p', {}, [el('strong', { text: 'Updates connected' }), el('span', { class: 'muted', text: ' · this page changes as things happen' })]));
+    lines.push(el('p', {}, [el('strong', { text: 'Page updating live' }), el('span', { class: 'muted', text: ' · changes appear as they happen' })]));
   } else if (stream.state === 'disconnected') {
     const last = stream.lastAt ? `last update ${fmtWhen(stream.lastAt)} (${fmtAgo(stream.lastAt)})` : 'no update received yet';
     lines.push(
-      el('p', { class: 'sp-item warning' }, [warnIcon(), el('strong', { text: `Updates disconnected, ${last}` })]),
+      el('p', { class: 'sp-item warning' }, [warnIcon(), el('strong', { text: `Page not updating, ${last}` })]),
       el('p', { class: 'sp-meta', text: 'This page keeps trying to reconnect. Until it does, what it shows may be out of date.' }),
     );
   } else {
@@ -4894,7 +4894,7 @@ function updatesSection() {
       ]),
     );
   }
-  return panelSection('updates', 'Updates', lines);
+  return panelSection('page', 'This page', lines);
 }
 
 /**
@@ -4916,7 +4916,7 @@ function paintPanel() {
   const focusedKey = inside?.dataset.key ?? null;
   const focusedSection = inside?.closest('[data-section]')?.dataset.section ?? null;
   const scroll = statusPanelBodyEl.scrollTop;
-  statusPanelBodyEl.replaceChildren(jobsSection(), accountsSection(), computersSection(), updatesSection());
+  statusPanelBodyEl.replaceChildren(jobsSection(), accountsSection(), computersSection(), pageSection());
   statusPanelBodyEl.scrollTop = scroll;
   if (inside) {
     // A link that went with the redraw, say a job that started, hands focus to its section's heading rather than dropping it.
