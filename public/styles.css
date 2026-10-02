@@ -36,19 +36,51 @@ a {
 }
 
 /*
- * The header: the brand, the summary row and the buttons on the first line,
- * and the warning row under the summary only while something needs attention.
- * A grid, so the warning row lines up under the summary it explains.
+ * The app shell: the header across the top, the sidebar down the left and the
+ * page beside it. The sidebar is a 264px column, a 56px rail when collapsed
+ * (`html[data-sidebar='rail']`), and a drawer off the left edge on a phone.
  */
-.topbar {
+:root {
+  --topbar-h: 52px;
+  --sidebar-w: 264px;
+  --rail-w: 56px;
+}
+
+.shell {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas:
-    'brand summary right'
-    '. warnings warnings';
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* Keyboard users land on it first; it is off screen until focused. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 12px;
+  z-index: 60;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 8px;
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
+}
+
+/* The header: the menu button on a phone, the brand, and the bell. */
+.topbar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  column-gap: 18px;
-  padding: 12px 22px;
+  gap: 6px 12px;
+  min-height: var(--topbar-h);
+  padding: 8px 16px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
   position: sticky;
@@ -58,18 +90,23 @@ a {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
+/* `.btn.icon` is declared further down; these outrank it so the menu and close buttons show only where they apply. */
+.topbar .btn.menu {
+  display: none;
+}
+
 .brand {
-  grid-area: brand;
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
   font-weight: 600;
   letter-spacing: 0.2px;
-  flex: none;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .brand .dot {
+  flex: none;
   width: 10px;
   height: 10px;
   border-radius: 50%;
@@ -77,132 +114,665 @@ a {
 }
 
 .topbar-right {
-  grid-area: right;
   display: flex;
   align-items: center;
   gap: 10px;
-  justify-self: end;
-}
-
-/* Offers an update without taking one: amber, and a link to the Settings page. */
-.badge-update {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11.5px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px solid var(--warn-border);
-  color: var(--amber);
-  background: rgba(229, 185, 92, 0.08);
-  text-decoration: none;
-  white-space: nowrap;
-}
-
-.badge-update:hover {
-  background: rgba(229, 185, 92, 0.16);
-}
-
-.badge-update::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-/* Beats the display above, which would otherwise defeat the hidden attribute. */
-.badge-update[hidden] {
-  display: none;
-}
-
-.summary {
-  grid-area: summary;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-/* A margin rather than a row gap, so a hidden row leaves no space behind. */
-.warnings {
-  grid-area: warnings;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.summary[hidden],
-.warnings[hidden] {
-  display: none;
+  margin-left: auto;
 }
 
 /*
- * Every part of both rows is a button onto the System status panel. Amber
- * and green always come with a word and a mark, never on their own; borders
- * are at least 3:1 against the bar.
+ * The one-line availability strip, on a phone only: the best account's
+ * tightest limit and the alert word, so the display stays in view with the
+ * sidebar closed. Border and glyph carry the severity along with the colour.
  */
-.hdr-btn {
-  display: inline-flex;
+.status-strip {
+  display: none;
+  flex: 1 1 100%;
   align-items: center;
-  gap: 7px;
-  min-height: 32px;
-  padding: 4px 12px;
-  border: 1px solid var(--control-border);
-  border-radius: 999px;
-  background: transparent;
+  gap: 8px;
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 1px solid var(--ok-border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-strip.warning {
+  border-color: var(--warn-border);
+}
+
+.status-strip.critical {
+  border-color: rgba(240, 113, 106, 0.55);
+}
+
+.status-strip .glyph {
+  margin: 0;
+  font-size: 11px;
+}
+
+.status-strip.ok .glyph {
+  color: var(--green);
+}
+
+.status-strip.warning .glyph,
+.status-strip.warning .strip-word {
+  color: var(--amber);
+}
+
+.status-strip.critical .glyph,
+.status-strip.critical .strip-word {
+  color: var(--red);
+}
+
+.status-strip .strip-word {
+  margin-left: auto;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The sidebar: a column that stays put while the page scrolls, and scrolls on its own when it is the taller. */
+.sidebar {
+  grid-column: 1;
+  grid-row: 2;
+  position: sticky;
+  top: var(--topbar-h);
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--topbar-h));
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 10px 12px;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.sidebar-head {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sidebar .btn.side-close {
+  display: none;
+}
+
+.side-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+}
+
+.side-group {
+  min-width: 0;
+}
+
+.side-title {
+  margin: 0 0 4px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.side-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.side-empty {
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/*
+ * One item: an icon, a label and whatever marks it carries, as a link or a
+ * button. The current page is the accent edge and a heavier label, never a
+ * colour on its own.
+ */
+.side-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
   color: var(--text);
   font: inherit;
   font-size: 13px;
-  line-height: 1.3;
-  /* Digits all one width, so a count changing does not nudge everything after it. */
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
+  line-height: 1.35;
+  text-align: left;
   cursor: pointer;
 }
 
-.hdr-btn:hover,
-.hdr-btn.current {
+.side-item:hover {
   background: var(--panel-2);
 }
 
-.hdr-btn:focus-visible,
-.status-panel a:focus-visible,
-.status-panel .btn:focus-visible,
-.status-panel [tabindex='-1']:focus-visible {
+.side-item[aria-current='page'] {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+  font-weight: 600;
+}
+
+.side-item:focus-visible,
+.avail:focus-visible,
+.side-toggle:focus-visible,
+.topbar .menu:focus-visible,
+.status-page a:focus-visible,
+.status-page .btn:focus-visible,
+.status-page [tabindex='-1']:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.hdr-btn.status.clear {
-  color: var(--green);
-  border-color: var(--ok-border);
+.side-item:focus-visible {
+  outline-offset: -2px;
 }
 
-.hdr-btn.status.attention,
-.hdr-btn.warning {
-  color: var(--amber);
+.side-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.side-icon svg {
+  display: block;
+}
+
+.side-item[aria-current='page'] .side-icon {
+  color: var(--text);
+}
+
+/* A node's online glyph is a filled dot, offline a hollow one, each with its word beside it. */
+.side-icon.online {
+  color: var(--green);
+}
+
+.side-icon.offline {
+  color: var(--muted);
+}
+
+.side-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.side-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The second line of an item: which node, how long, how busy. */
+.side-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.side-sub .lim-meter {
+  flex: 1 1 36px;
+  max-width: 64px;
+  height: 4px;
+}
+
+/* How many of a kind are updated, as the tabs count them. */
+.side-count {
+  flex: none;
+  min-width: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.side-count.quiet {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.side-count[hidden] {
+  display: none;
+}
+
+/* The marks beside a project: a run under way, an update not yet opened, and on Settings an update on offer. */
+.side-mark {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.side-mark.running {
+  color: var(--accent);
+}
+
+.side-mark.updated::before,
+.side-mark.update::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.side-mark.update::before {
+  background: var(--amber);
+}
+
+.side-mark[hidden] {
+  display: none;
+}
+
+/* The projects fold away under one row that counts them. */
+.side-projects {
+  margin-top: 2px;
+}
+
+.side-disclose .side-chevron {
+  display: inline-flex;
+  transition: transform 150ms ease;
+}
+
+.side-disclose[aria-expanded='true'] .side-chevron {
+  transform: rotate(90deg);
+}
+
+.side-projects .side-list {
+  margin-top: 2px;
+}
+
+/* The form that adds a project, under the list, with its label shown and its error beside the field. */
+.side-new {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 2px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.side-new label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.side-new input {
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.side-new input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.side-new .row-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.side-new .error {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.side-new .error[hidden] {
+  display: none;
+}
+
+.side-foot {
+  display: grid;
+  gap: 2px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/*
+ * The availability tile: the one display and the one action. The border and
+ * the glyph say the severity along with the word on the alert line, so
+ * nothing here rests on colour alone.
+ */
+.avail {
+  position: relative;
+  display: block;
+  margin: 2px 0 12px;
+  padding: 10px 12px 11px;
+  border: 1px solid var(--ok-border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.avail.warning {
   border-color: var(--warn-border);
 }
 
-.hdr-btn.warning {
-  background: rgba(229, 185, 92, 0.07);
+.avail.critical {
+  border-color: rgba(240, 113, 106, 0.6);
 }
 
-.hdr-btn.warning:hover,
-.hdr-btn.warning.current {
-  background: rgba(229, 185, 92, 0.15);
+.avail:hover {
+  background: #232834;
 }
 
-.hdr-dot {
+.avail-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.avail-head .glyph {
+  margin: 0;
+  font-size: 11px;
+}
+
+.avail.ok .avail-head .glyph {
+  color: var(--green);
+}
+
+.avail.warning .avail-head .glyph {
+  color: var(--amber);
+}
+
+.avail.critical .avail-head .glyph {
+  color: var(--red);
+}
+
+.avail-who {
+  margin-top: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.avail-who .muted {
+  font-weight: 400;
+}
+
+.avail-limits {
+  display: grid;
+  gap: 7px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.avail-lim {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 3px 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.avail-lim .lim-meter {
+  grid-column: 1 / -1;
+  height: 5px;
+}
+
+.avail-lim .lim-reset {
+  grid-column: 1 / -1;
+  font-size: 11.5px;
+}
+
+.avail-lim.near .lim-name,
+.avail-lim.near .lim-pct {
+  color: var(--amber);
+}
+
+.avail-lim.reached .lim-name,
+.avail-lim.reached .lim-pct {
+  color: var(--red);
+}
+
+.lim-fill.near {
+  background: var(--amber);
+}
+
+.lim-fill.reached {
+  background: var(--red);
+}
+
+.avail-others,
+.avail-checked {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.avail-checked.stale {
+  color: var(--amber);
+}
+
+/* The worst current issue, in words, under a rule; "+2 more" after it. */
+.avail-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 9px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.avail-alert .glyph {
   flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: currentColor;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.avail-alert.clear {
+  color: var(--green);
+}
+
+.avail-alert.warning {
+  color: var(--amber);
+}
+
+.avail-alert.critical {
+  color: var(--red);
+}
+
+.avail-more {
+  color: var(--muted);
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+/* What the rail shows of the tile: the glyph and the tightest percentage. */
+.avail-rail {
+  display: none;
+}
+
+/* A tooltip for the rail, drawn only there, on hover and on keyboard focus alike. */
+.side-tip {
+  display: none;
+}
+
+@media (min-width: 641px) {
+  html[data-sidebar='rail'] .shell {
+    --sidebar-w: var(--rail-w);
+  }
+
+  /* The rail may run taller than the window; its tooltips must not be clipped, so it does not scroll inside itself. */
+  html[data-sidebar='rail'] .sidebar {
+    height: auto;
+    min-height: calc(100vh - var(--topbar-h));
+    overflow: visible;
+    padding: 8px 6px 12px;
+  }
+
+  html[data-sidebar='rail'] .sidebar-head {
+    justify-content: center;
+  }
+
+  html[data-sidebar='rail'] .side-toggle svg {
+    transform: rotate(180deg);
+  }
+
+  /* The words stay for a screen reader; only the eye loses them. */
+  html[data-sidebar='rail'] .side-label,
+  html[data-sidebar='rail'] .side-sub,
+  html[data-sidebar='rail'] .side-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  html[data-sidebar='rail'] .side-item {
+    justify-content: center;
+    gap: 0;
+    padding: 7px 0;
+  }
+
+  html[data-sidebar='rail'] .side-text {
+    flex: none;
+  }
+
+  /* A count or a mark sits on the icon's corner, where a label would have been. */
+  html[data-sidebar='rail'] .side-count,
+  html[data-sidebar='rail'] .side-mark {
+    position: absolute;
+    top: 2px;
+    right: 4px;
+  }
+
+  html[data-sidebar='rail'] .side-count {
+    min-width: 16px;
+    padding: 0 4px;
+    font-size: 10px;
+    line-height: 16px;
+  }
+
+  html[data-sidebar='rail'] .side-mark.running {
+    top: auto;
+    bottom: 2px;
+  }
+
+  /* Lists of words have no icon to stand for them; they wait for the sidebar to open. */
+  html[data-sidebar='rail'] .side-group.running,
+  html[data-sidebar='rail'] .side-projects {
+    display: none;
+  }
+
+  html[data-sidebar='rail'] .avail {
+    margin: 2px 0 10px;
+    padding: 8px 0;
+    text-align: center;
+  }
+
+  html[data-sidebar='rail'] .avail-body {
+    display: none;
+  }
+
+  html[data-sidebar='rail'] .avail-rail {
+    display: grid;
+    gap: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  html[data-sidebar='rail'] .avail-rail .glyph {
+    margin: 0;
+    font-size: 12px;
+  }
+
+  html[data-sidebar='rail'] .avail.ok .avail-rail .glyph {
+    color: var(--green);
+  }
+
+  html[data-sidebar='rail'] .avail.warning .avail-rail .glyph {
+    color: var(--amber);
+  }
+
+  html[data-sidebar='rail'] .avail.critical .avail-rail .glyph {
+    color: var(--red);
+  }
+
+  html[data-sidebar='rail'] .side-item:hover .side-tip,
+  html[data-sidebar='rail'] .side-item:focus-visible .side-tip,
+  html[data-sidebar='rail'] .avail:hover .side-tip,
+  html[data-sidebar='rail'] .avail:focus-visible .side-tip {
+    display: block;
+    position: absolute;
+    top: 50%;
+    left: calc(100% + 10px);
+    z-index: 20;
+    max-width: 320px;
+    padding: 6px 10px;
+    border: 1px solid var(--control-border);
+    border-radius: 6px;
+    background: #0b0d12;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+    text-align: left;
+    white-space: normal;
+    width: max-content;
+    transform: translateY(-50%);
+    pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  }
 }
 
 .hdr-icon {
@@ -237,70 +807,40 @@ a {
 }
 
 /*
- * The System status panel: jobs, Claude accounts, computers and the page's
- * own updates, in that order. Under the header rather than over it, so the
- * button that opened it stays in view, and capped to the window.
+ * The System status page: jobs, Claude accounts, computers and the page's
+ * own updates, in that order. Each section is reachable by its own address,
+ * so the sidebar's alert line can land on the one that explains it.
  */
-.status-panel {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 16px;
-  z-index: 25;
-  display: flex;
-  flex-direction: column;
-  width: min(860px, calc(100vw - 32px));
-  /* The percentage is the header's height: the panel never runs off the bottom of the window. */
-  max-height: calc(100vh - 100% - 24px);
-  background: #0b0d12;
-  border: 1px solid var(--control-border);
-  border-radius: 12px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+.status-page {
+  container: status / inline-size;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 18px 6px;
 }
 
-.status-panel[hidden] {
-  display: none;
-}
-
-.status-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-
-.status-panel-head h2 {
-  margin: 0;
-  font-size: 15px;
-}
-
-.status-panel-head .attention {
-  color: var(--amber);
-}
-
-.status-panel-head .clear {
-  color: var(--green);
-}
-
-/* Positioned, so a section's offsetTop is measured from here when a button scrolls to it. */
-.status-panel-body {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 16px 12px;
-}
-
-.status-panel a.link {
+.status-page a.link {
   color: inherit;
   text-decoration: underline;
   text-decoration-color: var(--control-border);
   text-underline-offset: 3px;
 }
 
-.status-panel a.link:hover {
+.status-page a.link:hover {
   text-decoration-color: currentColor;
+}
+
+.status-word.attention {
+  color: var(--amber);
+}
+
+.status-word.clear {
+  color: var(--green);
+}
+
+/* A section scrolled to from the sidebar clears the sticky header. */
+.sp-section h3 {
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
 }
 
 .sp-section {
@@ -527,55 +1067,29 @@ a {
   color: var(--amber);
 }
 
-/* The Settings page's Nodes card, scrolled to from the panel, clears the sticky header. */
+/* The Settings page's Nodes card, scrolled to from the status page, clears the sticky header. */
 [data-card] {
-  scroll-margin-top: 140px;
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
 }
 
-/* A touch screen gets full-size targets wherever the header is drawn. */
+/* A touch screen gets full-size targets wherever the shell is drawn. */
 @media (pointer: coarse) {
-  .hdr-btn {
+  .side-item,
+  .side-new input,
+  .side-new .btn {
     min-height: 44px;
   }
-  .topbar-right .btn.icon {
+  .topbar-right .btn.icon,
+  .topbar .menu,
+  .side-toggle,
+  .side-close {
     width: 44px;
     height: 44px;
   }
 }
 
-/*
- * Too narrow for one line: the brand and the buttons share the first row and
- * the buttons drop under the brand when a long server name or the update
- * badge leaves no room, then the summary and the warnings take rows of their own.
- */
-@media (max-width: 900px) {
-  .topbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 10px 12px;
-  }
-  .brand {
-    flex: 0 1 auto;
-    min-width: 0;
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-  .topbar-right {
-    order: 1;
-    flex: 0 0 auto;
-    margin-left: auto;
-  }
-  .summary,
-  .warnings {
-    order: 2;
-    flex: 1 1 100%;
-    margin-top: 0;
-  }
-}
-
-/* Narrower than the panel's two columns: each account stacks, and so does each limit. */
-@media (max-width: 720px) {
+/* Narrower than the page's two columns: each account stacks, and so does each limit. By the page's own width, since the sidebar takes some of the window's. */
+@container status (max-width: 720px) {
   .acct {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -592,46 +1106,74 @@ a {
 }
 
 /*
- * A phone: the brand and the buttons on the first line, then the summary and
- * the warnings one per line, each a full-size target. The header scrolls away
- * rather than sticking, since it is now tall, and the panel takes the full
- * width under it and grows with the page instead of scrolling inside itself.
+ * A phone: the sidebar becomes a drawer off the left edge, opened from the
+ * menu button, and the availability strip takes a line of its own under the
+ * brand so the one display stays in view with the drawer closed.
  */
 @media (max-width: 640px) {
+  .shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .topbar {
-    position: relative;
-    padding: 10px 16px 12px;
+    padding: 8px 12px;
   }
-  .summary,
-  .warnings {
-    flex-direction: column;
-    align-items: stretch;
+  .topbar .btn.menu {
+    display: inline-flex;
   }
-  .hdr-btn {
-    min-height: 44px;
-    border-radius: 10px;
-    white-space: normal;
-    text-align: left;
+  .status-strip {
+    display: flex;
   }
-  .topbar-right {
-    gap: 8px;
+  .status-strip[hidden] {
+    display: none;
   }
-  .topbar-right .btn.icon {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 40;
+    width: min(304px, 88vw);
+    height: 100vh;
+    height: 100dvh;
+    padding: 8px 10px 12px;
+    border-right: 1px solid var(--border);
+    box-shadow: 18px 0 40px rgba(0, 0, 0, 0.45);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 200ms ease, visibility 0s linear 200ms;
+  }
+  .sidebar.open {
+    transform: none;
+    visibility: visible;
+    transition: transform 200ms ease;
+  }
+  .sidebar .btn.side-toggle {
+    display: none;
+  }
+  .sidebar .btn.side-close {
+    display: inline-flex;
+  }
+  /* Outranks the page's own placement in column 2, declared further down. */
+  .shell > .view {
+    grid-column: 1;
+  }
+  .topbar-right .btn.icon,
+  .topbar .menu,
+  .side-close {
     width: 44px;
     height: 44px;
   }
-  .status-panel {
-    top: 100%;
-    right: 0;
-    left: 0;
-    width: auto;
-    max-height: none;
-    border-radius: 0 0 12px 12px;
-    border-left: none;
-    border-right: none;
+  .side-item {
+    min-height: 44px;
   }
-  .status-panel-body {
-    overflow: visible;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .sidebar.open {
+    transition: visibility 0s;
+  }
+  .side-disclose .side-chevron {
+    transition: none;
   }
 }
 
@@ -1107,9 +1649,20 @@ a {
  * reason this is not 1080px.
  */
 .view {
+  grid-column: 2;
+  grid-row: 2;
+  width: 100%;
   max-width: 1320px;
   margin: 0 auto;
   padding: 24px 22px 64px;
+  outline: none;
+}
+
+/* Focus lands on the title after a move between pages; the ring shows for the keyboard only. */
+h1[tabindex='-1']:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: 4px;
 }
 
 .page-head {

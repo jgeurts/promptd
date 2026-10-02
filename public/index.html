@@ -11,45 +11,95 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <a class="brand" href="#/">
-        <span class="dot"></span>
-        <span id="brand-name">promptd</span>
-      </a>
-      <div id="summary" class="summary" hidden></div>
-      <div class="topbar-right">
-        <a id="update-badge" class="badge-update" href="#/settings" hidden>Update available</a>
-        <button id="bell" class="btn small icon bell" type="button" title="Notifications" aria-label="Notifications">
-          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M4 6.6a4 4 0 0 1 8 0c0 3 .9 4 1.4 4.5H2.6C3.1 10.6 4 9.6 4 6.6Z" />
-            <path d="M6.5 13.3a1.7 1.7 0 0 0 3 0" />
-          </svg>
-          <span class="bell-marks" aria-hidden="true">
-            <span id="bell-dot" class="bell-dot" hidden></span>
-            <span id="bell-badge" class="bell-badge" hidden></span>
-          </span>
-        </button>
-        <span id="bell-status" class="sr-only" role="status" aria-atomic="true"></span>
-        <span id="activity-status" class="sr-only" role="status" aria-atomic="true"></span>
-        <a class="btn small icon" href="#/settings" title="Settings" aria-label="Settings">&#9881;</a>
-        <button id="feedback-open" class="btn small icon" type="button" title="Report a bug or suggestion" aria-label="Report a bug or suggestion">
-          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" />
-            <path d="M8 5.4v2.2" />
-            <path d="M8 9.1v.01" />
+    <a id="skip-link" class="skip-link" href="#view">Skip to content</a>
+    <div class="shell">
+      <header class="topbar">
+        <button id="menu" class="btn small icon menu" type="button" aria-label="Menu" aria-controls="sidebar" aria-expanded="false">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+            <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />
           </svg>
         </button>
-      </div>
-      <div id="warnings" class="warnings" role="group" aria-label="Needs attention" hidden></div>
-      <div id="status-panel" class="status-panel" role="dialog" aria-labelledby="status-panel-title" hidden>
-        <div class="status-panel-head">
-          <h2 id="status-panel-title" tabindex="-1">System status</h2>
-          <button id="status-panel-close" class="btn small icon" type="button" title="Close" aria-label="Close">&times;</button>
+        <a class="brand" href="#/">
+          <span class="dot"></span>
+          <span id="brand-name">promptd</span>
+        </a>
+        <div class="topbar-right">
+          <button id="bell" class="btn small icon bell" type="button" title="Notifications" aria-label="Notifications" aria-controls="drawer" aria-expanded="false">
+            <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 6.6a4 4 0 0 1 8 0c0 3 .9 4 1.4 4.5H2.6C3.1 10.6 4 9.6 4 6.6Z" />
+              <path d="M6.5 13.3a1.7 1.7 0 0 0 3 0" />
+            </svg>
+            <span class="bell-marks" aria-hidden="true">
+              <span id="bell-dot" class="bell-dot" hidden></span>
+              <span id="bell-badge" class="bell-badge" hidden></span>
+            </span>
+          </button>
+          <span id="bell-status" class="sr-only" role="status" aria-atomic="true"></span>
+          <span id="activity-status" class="sr-only" role="status" aria-atomic="true"></span>
         </div>
-        <div id="status-panel-body" class="status-panel-body"></div>
-      </div>
-      <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
-    </header>
+        <!-- On a phone the one availability display stays in view without opening the menu. -->
+        <a id="status-strip" class="status-strip" href="#/status" hidden></a>
+        <div id="status-announcer" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      </header>
+
+      <!--
+        The sidebar. One display of where work can still go, what is running,
+        the jobs, each project, each computer, then Settings and feedback. A
+        rail with the words hidden when collapsed; a drawer on a phone.
+      -->
+      <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+        <div class="sidebar-head">
+          <button id="sidebar-toggle" class="btn small icon side-toggle" type="button" aria-expanded="true" aria-controls="sidebar" aria-label="Collapse sidebar" title="Collapse sidebar">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M10 3 5 8l5 5" />
+            </svg>
+          </button>
+          <button id="sidebar-close" class="btn small icon side-close" type="button" aria-label="Close menu" title="Close menu">&times;</button>
+        </div>
+        <a id="avail" class="avail" href="#/status">
+          <span class="avail-rail" aria-hidden="true"></span>
+          <span class="avail-body"></span>
+          <span class="side-tip" role="tooltip" id="avail-tip"></span>
+        </a>
+        <nav class="side-nav" aria-label="Main">
+          <section class="side-group running" aria-labelledby="side-running-title">
+            <h2 id="side-running-title" class="side-title"><span class="side-label">Running now</span></h2>
+            <ul id="side-running" class="side-list"></ul>
+          </section>
+          <section class="side-group" aria-labelledby="side-jobs-title">
+            <h2 id="side-jobs-title" class="side-title"><span class="side-label">Jobs</span></h2>
+            <ul id="side-jobs" class="side-list"></ul>
+            <!-- When the Memory page lands here, its item goes after One-time, before the projects: add it to SIDE_PAGES in app.js. -->
+            <div id="side-projects" class="side-projects"></div>
+          </section>
+          <section class="side-group" aria-labelledby="side-nodes-title">
+            <h2 id="side-nodes-title" class="side-title"><span class="side-label">Nodes</span></h2>
+            <ul id="side-nodes" class="side-list"></ul>
+          </section>
+        </nav>
+        <div class="side-foot">
+          <a id="side-settings" class="side-item" href="#/settings" data-route="settings">
+            <span class="side-icon" aria-hidden="true">&#9881;</span>
+            <span class="side-label">Settings</span>
+            <span id="side-update" class="side-mark update" hidden><span class="sr-only">, update available</span></span>
+            <span class="side-tip" role="tooltip">Settings</span>
+          </a>
+          <button id="feedback-open" class="side-item" type="button">
+            <span class="side-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2Z" />
+                <path d="M8 5.4v2.2" />
+                <path d="M8 9.1v.01" />
+              </svg>
+            </span>
+            <span class="side-label">Report a bug</span>
+            <span class="side-tip" role="tooltip">Report a bug or suggestion</span>
+          </button>
+        </div>
+      </aside>
+
+      <main id="view" class="view" tabindex="-1"></main>
+    </div>
 
     <div id="drawer-backdrop" class="drawer-backdrop"></div>
     <aside id="drawer" class="drawer" aria-label="Notifications" aria-hidden="true">
@@ -93,7 +143,6 @@
       </form>
     </dialog>
 
-    <main id="view" class="view"></main>
 
     <div id="toasts" class="toasts"></div>
 
