@@ -5,17 +5,36 @@
   --border: #272c38;
   --text: #e6e9ef;
   --muted: #8d97a8;
+  /* The Server Color: identity only, the brand dot and the band across the top. Nothing interactive or stateful uses it. */
   --accent: #d97757;
-  --accent-soft: rgba(217, 119, 87, 0.14);
-  /* Text laid on the accent. The Server Color setting turns it white for a dark pick. */
-  --accent-ink: #1b1207;
-  --green: #4ec98a;
-  --red: #f0716a;
-  --amber: #e5b95c;
-  /* Borders a control is recognised by, each at least 3:1 against the header bar. */
+  /*
+   * Role tokens, each checked against the three backgrounds. A primary button
+   * and a selected row are neutral; green is healthy; amber is a warning, which
+   * includes a limit reached, since that is a hold rather than a failure; red
+   * is failure and error alone. Every state colour comes with a glyph and a word.
+   */
+  --primary-bg: #e7e3de;
+  --primary-ink: #161e24;
+  --primary-hover: #f6f2ee;
+  --selected-bg: var(--panel-2);
+  --selected-edge: var(--text);
+  --meter: #81adcc;
+  --meter-soft: rgba(129, 173, 204, 0.16);
+  --focus: #aad7ed;
+  --focus-soft: rgba(170, 215, 237, 0.18);
+  --ok: #57ad82;
+  --ok-edge: rgba(87, 173, 130, 0.4);
+  --warn: #ffcc66;
+  --warn-edge: rgba(255, 204, 102, 0.4);
+  --fail: #ff6161;
+  --fail-soft: rgba(255, 97, 97, 0.12);
+  --fail-edge: rgba(255, 97, 97, 0.4);
+  /* Decoration that is not a state: project folders, a run's retrospective, a tool call. */
+  --quiet: #9283a8;
+  /* The tint and the edge of a row with news. */
+  --unread-tint: rgba(231, 227, 222, 0.05);
+  /* Borders a control is recognised by, at least 3:1 against the header bar. */
   --control-border: #646d80;
-  --warn-border: #8a7240;
-  --ok-border: #3d8a63;
   --radius: 10px;
 }
 
@@ -60,8 +79,8 @@ a {
   z-index: 60;
   padding: 8px 14px;
   border-radius: 8px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--primary-bg);
+  color: var(--primary-ink);
   font-weight: 600;
 }
 
@@ -133,7 +152,7 @@ a {
   height: 9px;
   border: 2px solid var(--panel);
   border-radius: 50%;
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .update-dot[hidden] {
@@ -152,7 +171,7 @@ a {
   gap: 8px;
   min-height: 36px;
   padding: 4px 10px;
-  border: 1px solid var(--ok-border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
   color: var(--text);
   font-size: 12.5px;
@@ -160,11 +179,11 @@ a {
 }
 
 .status-strip.warning {
-  border-color: var(--warn-border);
+  border-color: var(--control-border);
 }
 
 .status-strip.critical {
-  border-color: rgba(240, 113, 106, 0.55);
+  border-color: var(--control-border);
 }
 
 .status-strip .glyph {
@@ -173,17 +192,17 @@ a {
 }
 
 .status-strip.ok .glyph {
-  color: var(--green);
+  color: var(--ok);
 }
 
 .status-strip.warning .glyph,
 .status-strip.warning .strip-text {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .status-strip.critical .glyph,
 .status-strip.critical .strip-text {
-  color: var(--red);
+  color: var(--fail);
 }
 
 .status-strip .strip-text {
@@ -291,8 +310,8 @@ a {
 }
 
 .side-item[aria-current='page'] {
-  background: var(--accent-soft);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--selected-bg);
+  box-shadow: inset 2px 0 0 var(--selected-edge);
   font-weight: 600;
 }
 
@@ -301,7 +320,7 @@ a {
 .status-page a:focus-visible,
 .status-page .btn:focus-visible,
 .status-page [tabindex='-1']:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -327,13 +346,18 @@ a {
   color: var(--text);
 }
 
+/* A project's folder is decoration, not a state. */
+[data-route^='project:'] .side-icon {
+  color: var(--quiet);
+}
+
 /* A node's online glyph is a filled dot, offline a hollow one, each with its word beside it. */
 .side-icon.online {
-  color: var(--green);
+  color: var(--ok);
 }
 
 .side-icon.offline {
-  color: var(--muted);
+  color: var(--fail);
 }
 
 .side-text {
@@ -375,8 +399,8 @@ a {
   min-width: 18px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--primary-bg);
+  color: var(--primary-ink);
   font-size: 11px;
   font-weight: 600;
   line-height: 18px;
@@ -405,7 +429,7 @@ a {
 }
 
 .side-mark.running {
-  color: var(--accent);
+  color: var(--ok);
 }
 
 .side-mark.updated::before,
@@ -414,11 +438,11 @@ a {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--primary-bg);
 }
 
 .side-mark.update::before {
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .side-mark[hidden] {
@@ -477,7 +501,7 @@ a {
 }
 
 .side-new input:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 1px;
 }
 
@@ -531,7 +555,7 @@ a {
 
 .side-status-link[aria-current='page'] {
   text-decoration: underline;
-  text-decoration-color: var(--accent);
+  text-decoration-color: var(--selected-edge);
   text-underline-offset: 3px;
 }
 
@@ -542,9 +566,9 @@ a {
   gap: 7px;
   margin: 0 0 2px;
   padding: 7px 8px;
-  border: 1px solid var(--ok-border);
+  border: 1px solid var(--control-border);
   border-radius: 8px;
-  color: var(--green);
+  color: var(--ok);
   font-size: 12.5px;
   font-weight: 600;
   line-height: 1.4;
@@ -556,13 +580,13 @@ a {
 }
 
 .side-alert.warning {
-  border-color: var(--warn-border);
-  color: var(--amber);
+  border-color: var(--control-border);
+  color: var(--warn);
 }
 
 .side-alert.critical {
-  border-color: rgba(240, 113, 106, 0.6);
-  color: var(--red);
+  border-color: var(--control-border);
+  color: var(--fail);
 }
 
 .side-alert .glyph {
@@ -629,7 +653,7 @@ a {
 .side-node-name:focus-visible,
 .side-alert:focus-visible,
 .side-status-link:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 
@@ -666,7 +690,7 @@ a {
 }
 
 .side-node-meta.stale {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 /* One limit on its own line: the name, the percentage used, a meter, and when it resets. Also the job form's Node field. */
@@ -698,20 +722,20 @@ a {
 
 .avail-lim.near .lim-name,
 .avail-lim.near .lim-pct {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .avail-lim.reached .lim-name,
 .avail-lim.reached .lim-pct {
-  color: var(--red);
+  color: var(--warn);
 }
 
 .lim-fill.near {
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .lim-fill.reached {
-  background: var(--red);
+  background: var(--warn);
 }
 
 
@@ -771,11 +795,11 @@ a {
 }
 
 .status-word.attention {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .status-word.clear {
-  color: var(--green);
+  color: var(--ok);
 }
 
 /* A section scrolled to from the sidebar clears the sticky header. */
@@ -829,13 +853,16 @@ a {
   overflow-wrap: anywhere;
 }
 
-.sp-item.warning,
+.sp-item.warning {
+  color: var(--warn);
+}
+
 .sp-item.offline {
-  color: var(--amber);
+  color: var(--fail);
 }
 
 .sp-item.critical {
-  color: var(--red);
+  color: var(--fail);
 }
 
 .sp-item.muted {
@@ -906,15 +933,15 @@ a {
 }
 
 .acct-status.reached {
-  color: var(--red);
+  color: var(--warn);
 }
 
 .acct-status.near {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .acct-status.ok {
-  color: var(--green);
+  color: var(--ok);
 }
 
 .acct-status.unknown {
@@ -962,13 +989,13 @@ a {
 .lim.near .lim-name,
 .lim.near .lim-flag-cell,
 .lim.near .lim-pct {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .lim.reached .lim-name,
 .lim.reached .lim-flag-cell,
 .lim.reached .lim-pct {
-  color: var(--red);
+  color: var(--warn);
 }
 
 .lim-meter {
@@ -983,15 +1010,15 @@ a {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: var(--green);
+  background: var(--meter);
 }
 
 .lim.near .lim-fill {
-  background: var(--amber);
+  background: var(--warn);
 }
 
 .lim.reached .lim-fill {
-  background: var(--red);
+  background: var(--warn);
 }
 
 .lim-reset {
@@ -1004,7 +1031,7 @@ a {
 }
 
 .acct-meta.stale {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 /* The Settings page's Nodes card, scrolled to from the status page, clears the sticky header. */
@@ -1152,8 +1179,8 @@ a {
   height: 16px;
   padding: 0 4px;
   border-radius: 999px;
-  background: var(--red);
-  color: #1b1207;
+  background: var(--warn);
+  color: var(--primary-ink);
   font-size: 10px;
   font-weight: 700;
   line-height: 16px;
@@ -1164,7 +1191,7 @@ a {
 .bell-dot {
   width: 9px;
   height: 9px;
-  border: 2px solid var(--amber);
+  border: 2px solid var(--primary-bg);
   border-radius: 50%;
   background: var(--panel);
 }
@@ -1267,12 +1294,12 @@ a {
 }
 
 .chip[aria-pressed='true'] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--selected-edge);
+  background: var(--selected-bg);
 }
 
 .chip-count {
-  color: var(--red);
+  color: var(--warn);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -1423,8 +1450,8 @@ a {
 
 /* Unread carries the accent edge; read is the same row without the emphasis. */
 .note.unread {
-  background: rgba(217, 119, 87, 0.06);
-  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--unread-tint);
+  box-shadow: inset 2px 0 0 var(--primary-bg);
 }
 
 /* `!` needs action, `~` worth knowing, `·` routine: a shape as well as a colour. */
@@ -1439,11 +1466,11 @@ a {
 }
 
 .note-glyph.action {
-  color: var(--red);
+  color: var(--warn);
 }
 
 .note-glyph.worth {
-  color: var(--amber);
+  color: var(--primary-bg);
 }
 
 .note-body {
@@ -1503,11 +1530,11 @@ a {
 }
 
 .metric-tile.warning .tile-value {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .metric-tile.critical .tile-value {
-  color: var(--red);
+  color: var(--fail);
 }
 
 /* What the top of the chart is worth, which a rate needs and a percentage says anyway. */
@@ -1532,7 +1559,7 @@ a {
 
 .spark-line {
   fill: none;
-  stroke: var(--accent);
+  stroke: var(--meter);
   stroke-width: 1.5;
   stroke-linejoin: round;
   stroke-linecap: round;
@@ -1540,7 +1567,7 @@ a {
 }
 
 .spark-area {
-  fill: var(--accent-soft);
+  fill: var(--meter-soft);
   stroke: none;
 }
 
@@ -1586,7 +1613,7 @@ a {
 .pop-note {
   margin-top: 6px;
   font-size: 11px;
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .pop-detail[hidden],
@@ -1611,7 +1638,7 @@ a {
 
 /* Focus lands on the title after a move between pages; the ring shows for the keyboard only. */
 h1[tabindex='-1']:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 4px;
   border-radius: 4px;
 }
@@ -1673,23 +1700,24 @@ h2 {
 }
 
 .btn.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--accent-ink);
+  background: var(--primary-bg);
+  border-color: var(--primary-bg);
+  color: var(--primary-ink);
   font-weight: 600;
 }
 
 .btn.primary:hover {
-  filter: brightness(1.08);
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
 }
 
 .btn.danger {
-  color: var(--red);
-  border-color: rgba(240, 113, 106, 0.4);
+  color: var(--fail);
+  border-color: var(--fail-edge);
 }
 
 .btn.danger:hover {
-  background: rgba(240, 113, 106, 0.12);
+  background: var(--fail-soft);
 }
 
 .btn:disabled {
@@ -1750,7 +1778,7 @@ h2 {
   background: var(--panel);
   border-color: var(--border);
   border-bottom: 1px solid var(--panel);
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 2px 0 var(--selected-edge);
 }
 
 /* How many jobs on a tab are updated since they were last opened. */
@@ -1760,8 +1788,8 @@ h2 {
   margin-left: 6px;
   padding: 0 6px;
   border-radius: 999px;
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--primary-bg);
+  color: var(--primary-ink);
   font-size: 11px;
   line-height: 18px;
   text-align: center;
@@ -1795,8 +1823,8 @@ h2 {
 }
 
 .sort-group .btn[aria-pressed='true'] {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--selected-edge);
+  background: var(--selected-bg);
   font-weight: 600;
 }
 
@@ -1821,7 +1849,7 @@ h2 {
 }
 
 tr.unread .unread-dot {
-  background: var(--accent);
+  background: var(--primary-bg);
 }
 
 /* Text in the text colour on the accent, so it reads whatever the server colour is. */
@@ -1830,9 +1858,9 @@ tr.unread .unread-dot {
   margin-left: 8px;
   vertical-align: 1px;
   padding: 0 7px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--control-border);
   border-radius: 999px;
-  background: var(--accent-soft);
+  background: var(--panel-2);
   color: var(--text);
   font-size: 11px;
   font-weight: 600;
@@ -1926,7 +1954,7 @@ tbody tr:hover {
 
 .delay-risk svg {
   display: block;
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .mono {
@@ -1954,7 +1982,7 @@ tbody tr:hover {
 }
 
 .pill.active {
-  color: var(--green);
+  color: var(--ok);
   border-color: rgba(78, 201, 138, 0.35);
 }
 
@@ -1963,8 +1991,8 @@ tbody tr:hover {
 }
 
 .pill.running {
-  color: var(--amber);
-  border-color: rgba(229, 185, 92, 0.4);
+  color: var(--ok);
+  border-color: var(--ok-edge);
 }
 
 .pill.running .led {
@@ -1973,16 +2001,16 @@ tbody tr:hover {
 
 /* Held by a pause: distinct from deactivated, which is the cron's own setting. */
 .pill.held {
-  color: var(--accent);
-  border-color: rgba(217, 119, 87, 0.4);
+  color: var(--warn);
+  border-color: var(--warn-edge);
 }
 
 /* Waiting on a usage limit. Amber like a live run because something is pending,
    dashed because nothing is actually executing yet. */
 .pill.delayed {
-  color: var(--amber);
+  color: var(--warn);
   border-style: dashed;
-  border-color: rgba(229, 185, 92, 0.5);
+  border-color: var(--warn-edge);
 }
 
 .pill.delayed .led {
@@ -1991,21 +2019,21 @@ tbody tr:hover {
 
 /* A finished-but-interrupted outcome: amber, and not pulsing like a live run. */
 .pill.warn {
-  color: var(--amber);
-  border-color: rgba(229, 185, 92, 0.4);
+  color: var(--warn);
+  border-color: var(--warn-edge);
 }
 
 /* Live run length: amber like a running run, but steady — the ticking digits
    are the movement. Tabular figures keep the column from twitching each second. */
 .pill.runtime {
-  color: var(--amber);
-  border-color: rgba(229, 185, 92, 0.4);
+  color: var(--ok);
+  border-color: var(--ok-edge);
   font-variant-numeric: tabular-nums;
 }
 
 .pill.failed {
-  color: var(--red);
-  border-color: rgba(240, 113, 106, 0.35);
+  color: var(--fail);
+  border-color: var(--fail-edge);
 }
 
 @keyframes pulse {
@@ -2097,8 +2125,8 @@ textarea.commands-input {
 input:focus,
 textarea:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-soft);
 }
 
 .hint {
@@ -2112,12 +2140,12 @@ textarea:focus {
 }
 
 .hint.ok {
-  color: var(--green);
+  color: var(--ok);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .hint.warn {
-  color: var(--amber);
+  color: var(--warn);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
@@ -2182,8 +2210,8 @@ input.narrow {
 
 .select:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-soft);
 }
 
 /* Holds a disabled button so the pause explanation can be hovered: pointer
@@ -2329,8 +2357,8 @@ input.narrow {
 
 .time-entry:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--focus);
+  box-shadow: 0 0 0 3px var(--focus-soft);
 }
 
 /* Working Directory picker */
@@ -2371,12 +2399,12 @@ input.narrow {
 
 .combo-item:hover,
 .combo-item.active {
-  background: var(--accent-soft);
+  background: var(--selected-bg);
   color: var(--text);
 }
 
 .combo-item.active {
-  box-shadow: inset 0 0 0 1px rgba(217, 119, 87, 0.45);
+  box-shadow: inset 0 0 0 1px var(--control-border);
 }
 
 /* Lifetime totals under the cron name on the logs page. Wraps rather than
@@ -2412,7 +2440,7 @@ input.narrow {
 
 .stat-sub {
   font-size: 11.5px;
-  color: var(--accent);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
   margin-top: 3px;
 }
@@ -2438,7 +2466,7 @@ input.narrow {
 .check input {
   width: 16px;
   height: 16px;
-  accent-color: var(--accent);
+  accent-color: var(--primary-bg);
 }
 
 fieldset.delay-grid {
@@ -2479,7 +2507,7 @@ fieldset.delay-grid {
   min-height: 24px;
   font: inherit;
   font-size: 12px;
-  color: var(--accent);
+  color: var(--text);
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
@@ -2487,7 +2515,7 @@ fieldset.delay-grid {
 }
 
 .setting-reset:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -2631,7 +2659,7 @@ fieldset.node-field {
   width: 16px;
   height: 16px;
   margin: 2px 0 0;
-  accent-color: var(--accent);
+  accent-color: var(--primary-bg);
 }
 
 .node-opt-body,
@@ -2656,7 +2684,7 @@ fieldset.node-field {
 
 /* Online is a filled dot, offline a hollow one, each with its word, as the sidebar draws them. */
 .node-state.online .glyph {
-  color: var(--green);
+  color: var(--ok);
 }
 
 .node-state.offline .glyph {
@@ -2668,15 +2696,15 @@ fieldset.node-field {
 }
 
 .node-meta.stale {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 .node-folder.ok {
-  color: var(--green);
+  color: var(--ok);
 }
 
 .node-folder.warn {
-  color: var(--amber);
+  color: var(--warn);
 }
 
 /* The last answer, while a new one is on its way. */
@@ -2687,12 +2715,12 @@ fieldset.node-field {
 /* The chosen card carries the accent, and the focus ring sits on the card rather than the dot, where the browser can put it there. */
 @supports selector(:has(a)) {
   .node-opt:has(input:checked) {
-    border-color: var(--accent);
+    border-color: var(--selected-edge);
   }
 
   .node-opt:has(input:focus-visible) {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px var(--accent-soft);
+    border-color: var(--focus);
+    box-shadow: 0 0 0 3px var(--focus-soft);
   }
 
   .node-opt input:focus-visible {
@@ -2743,7 +2771,7 @@ details.more-options[open] > summary::before {
 }
 
 details.more-options > summary:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
   border-radius: 8px;
 }
@@ -2780,9 +2808,9 @@ details.more-options > summary:focus-visible {
 }
 
 .error {
-  background: rgba(240, 113, 106, 0.1);
-  border: 1px solid rgba(240, 113, 106, 0.35);
-  color: #ffb4ae;
+  background: var(--fail-soft);
+  border: 1px solid var(--fail-edge);
+  color: var(--fail);
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 13px;
@@ -2828,8 +2856,8 @@ details.more-options > summary:focus-visible {
 }
 
 .run-item.selected {
-  background: var(--accent-soft);
-  border-left: 2px solid var(--accent);
+  background: var(--selected-bg);
+  border-left: 2px solid var(--selected-edge);
 }
 
 .run-item .when {
@@ -2852,7 +2880,7 @@ details.more-options > summary:focus-visible {
   background: none;
   border: none;
   border-bottom: 1px solid var(--border);
-  color: var(--amber);
+  color: var(--quiet);
   padding: 7px 13px 7px 25px;
   cursor: pointer;
   font: inherit;
@@ -2864,8 +2892,8 @@ details.more-options > summary:focus-visible {
 }
 
 .run-subitem.selected {
-  background: var(--accent-soft);
-  border-left: 2px solid var(--accent);
+  background: var(--selected-bg);
+  border-left: 2px solid var(--selected-edge);
 }
 
 /* A run's retrospective, set apart from the output it follows. */
@@ -2873,13 +2901,13 @@ details.more-options > summary:focus-visible {
   margin: 10px 0;
   padding: 10px 12px;
   border: 1px solid var(--border);
-  border-left: 3px solid var(--amber);
+  border-left: 3px solid var(--quiet);
   border-radius: 6px;
   background: var(--panel-2);
 }
 
 .log-retro-title {
-  color: var(--amber);
+  color: var(--quiet);
   font-weight: 600;
   margin-bottom: 6px;
 }
@@ -2971,8 +2999,8 @@ details.more-options > summary:focus-visible {
 }
 
 .toast.bad {
-  border-color: rgba(240, 113, 106, 0.5);
-  color: #ffb4ae;
+  border-color: var(--fail-edge);
+  color: var(--fail);
 }
 
 @keyframes toast-in {
@@ -3040,7 +3068,7 @@ details.more-options > summary:focus-visible {
 
 .queue-pos.running {
   border-color: transparent;
-  color: var(--accent);
+  color: var(--ok);
 }
 
 .queue-when {
@@ -3052,7 +3080,8 @@ details.more-options > summary:focus-visible {
 
 /* A name that goes somewhere reads as a link; the row is not clickable itself. */
 .queue-row .link:hover {
-  color: var(--accent);
+  color: var(--text);
+  text-decoration: underline;
 }
 
 .login {
@@ -3152,13 +3181,13 @@ tr.linked-row {
 
 /* An updated job: the drawer's unread edge, on the row's first cell. */
 tbody tr.unread {
-  background: rgba(217, 119, 87, 0.06);
+  background: var(--unread-tint);
 }
 
 tbody tr.unread:hover {
-  background: rgba(217, 119, 87, 0.1);
+  background: var(--unread-tint);
 }
 
 tbody tr.unread td:first-child {
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 2px 0 0 var(--primary-bg);
 }

@@ -3756,7 +3756,7 @@ async function renderSettings() {
       el('h3', { text: 'Server Color' }),
       el('div', { class: 'preset-row' }, [...swatches, el('span', { class: 'preset-sep' }), el('span', { class: 'preset-label', text: 'Custom' }), customColor]),
       el('div', { class: 'hint' }, [
-        'Colors the band across the top of every page, the dot beside the name, and the buttons and highlights. ',
+        'Colors the band across the top of every page and the dot beside the name, so each server is told apart at a glance. ',
         'Give each server its own and you can tell which one is open before reading anything. Orange is the default.',
       ]),
       ...updates,
@@ -4600,20 +4600,17 @@ const SERVER_COLORS = [
 ];
 const DEFAULT_SERVER_COLOR = SERVER_COLORS[0].hex;
 
-/** Recolors the accent, and the band across the header bar with it. Blank puts the default back. */
+/**
+ * Recolors the Server Color: the brand dot and the band across the header bar,
+ * which is all it is used for. Blank puts the default back.
+ */
 function setServerColor(hex) {
   const root = document.documentElement.style;
   if (!/^#[0-9a-f]{6}$/i.test(hex ?? '')) {
-    for (const name of ['--accent', '--accent-soft', '--accent-ink']) root.removeProperty(name);
+    root.removeProperty('--accent');
     return;
   }
-  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-  const [lr, lg, lb] = [r, g, b].map((v) => (v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4));
   root.setProperty('--accent', hex);
-  root.setProperty('--accent-soft', `rgba(${r}, ${g}, ${b}, 0.14)`);
-  // Dark text on a light pick and white on a dark one, so a primary button
-  // stays readable whatever custom color is chosen. 0.2 is where they cross.
-  root.setProperty('--accent-ink', 0.2126 * lr + 0.7152 * lg + 0.0722 * lb > 0.2 ? '#1b1207' : '#ffffff');
 }
 
 // ---- feedback ---------------------------------------------------------
