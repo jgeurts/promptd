@@ -50,10 +50,19 @@ function isFull(limit: UseFirstLimit): boolean {
 }
 
 /**
+ * The hub keys a computer that names its account `account:<id>`, and one that
+ * does not `unknown:<node id>`. An unknown one may share a known account's
+ * reading, which would count that week twice, so only named accounts compete.
+ */
+function isNamedAccount(accountKey: string | null): accountKey is string {
+  return Boolean(accountKey?.startsWith('account:'));
+}
+
+/**
  * The account to use first for work that starts at `at` (ms), or null when no
- * account stands out. Each candidate has a fresh reading whose weekly limit is
- * ok, has at least 10% left and resets after `at`, and whose 5-hour session is
- * not near or used up, unless it resets by `at`. The session only rules an
+ * account stands out. Each candidate is a named account with a fresh reading
+ * whose weekly limit has at least 10% left and resets after `at`, and whose
+ * 5-hour session is not near or used up, unless it resets by `at`. The session only rules an
  * account out: it resets every 5 hours, so ranking on it would move the pick
  * all day. The candidate whose week resets first is the pick when that is at
  * least a day before every other candidate's; with one candidate there is
@@ -62,7 +71,7 @@ function isFull(limit: UseFirstLimit): boolean {
 export function useFirst(computers: readonly UseFirstComputer[], at: number = Date.now()): UseFirstPick | null {
   const accounts = new Map<string, UseFirstComputer[]>();
   for (const computer of computers) {
-    if (!computer.online || !computer.accountKey) continue;
+    if (!computer.online || !isNamedAccount(computer.accountKey)) continue;
     accounts.set(computer.accountKey, [...(accounts.get(computer.accountKey) ?? []), computer]);
   }
   const candidates: UseFirstPick[] = [];
@@ -73,7 +82,7 @@ export function useFirst(computers: readonly UseFirstComputer[], at: number = Da
     const windows = reading.windows ?? reading.limits ?? [];
     const week = windows.find((limit) => kindOf(limit) === 'weekly_all');
     const resetsAt = week?.resetsAt ? Date.parse(week.resetsAt) : NaN;
-    if (!week || isFull(week) || !(resetsAt > at)) continue;
+    if (!week || !(resetsAt > at)) continue;
     const leftPercent = Math.max(0, 100 - (Number(week.usedPercent) || 0));
     if (leftPercent < USE_FIRST_MIN_LEFT) continue;
     const session = windows.find((limit) => kindOf(limit) === 'session');

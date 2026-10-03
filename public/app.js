@@ -1,7 +1,8 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 // The account to use first, from src/useFirst.ts: the sidebar marks it and a new one-time job's form picks it.
-import { useFirst } from '/shared/useFirst.js';
+// Caught, so a hub without the module costs only the pick, not the page.
+const { useFirst } = (await import('/shared/useFirst.js').catch(() => null)) ?? { useFirst: () => null };
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -2200,6 +2201,8 @@ function scheduledAtPicker(input) {
     if (!chooser.value) return;
     input.value = chooser.value;
     update();
+    // As a preset does, so whatever follows the field, like the Node field's pick, hears of it.
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   });
   // Typing in the field, or a preset button, moves the calendar with it.
   const syncChooser = () => {
@@ -2394,6 +2397,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null, pickAt = 
   // from the computer it picked, which keeps the two from undoing each other.
   let formPick = null; // { id, pick }
   let picking = Boolean(pickAt);
+  let latest = null; // the newest health poll, which outranks the readings /api/nodes answered with
   const chosen = () => byId.get(value || fallbackId) ?? null;
   const isOnline = (option) => computers.get(option.value)?.online ?? option.listing.online;
 
@@ -2574,6 +2578,13 @@ function nodePicker(selected, { onChange = () => {}, directory = null, pickAt = 
       checked: optionValue === value,
       'aria-labelledby': nameId,
       'aria-describedby': `${whyId} ${readingId}`,
+      // Any click is yours, on the checked radio too, which fires no change: the field stops picking,
+      // and its reason goes, since it is no longer kept true as the run time moves.
+      onclick: () => {
+        picking = false;
+        formPick = null;
+        paintWhy();
+      },
       onchange: () => {
         value = input.value;
         picking = false;
@@ -2602,6 +2613,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null, pickAt = 
 
   // The health poll keeps the cards current until the page lets the form go.
   const onHealth = (health) => {
+    latest = health;
     paintReadings(health.cluster);
     paintDefault(health.defaultNodeId);
     autoPick();
@@ -2618,7 +2630,9 @@ function nodePicker(selected, { onChange = () => {}, directory = null, pickAt = 
     .then((state) => {
       if (disposed) return;
       paint(state);
-      paintReadings(state.cluster);
+      // A health poll may have answered while this was out; its readings are newer.
+      if (latest) paintDefault(latest.defaultNodeId);
+      paintReadings(latest?.cluster ?? state.cluster);
       autoPick({ notify: false });
       onChange(chosen());
       settle();
@@ -2794,7 +2808,8 @@ async function renderJobForm(kind, id, duplicateOf) {
     runStartsAt = () => {
       if (asap.radio.checked) return Date.now();
       const at = new Date(inputs.scheduledAt.value.trim()).getTime();
-      return Number.isNaN(at) ? null : at;
+      // A time already past runs now.
+      return Number.isNaN(at) ? null : Math.max(at, Date.now());
     };
     inputs.scheduledAt.addEventListener('change', () => node.repick());
     scheduledAt = () => scheduledAtForSave(duplicateOf ? null : job?.scheduledAt, shownAtOpen, inputs.scheduledAt.value);
@@ -2817,6 +2832,8 @@ async function renderJobForm(kind, id, duplicateOf) {
   const save = async (event) => {
     event.preventDefault();
     errorBox.hidden = true;
+    // The Node field's pick, for the time this saves with, in case the field has not caught up.
+    node.repick();
     const payload = {
       prompt: inputs.prompt.value,
       name: inputs.name.value,

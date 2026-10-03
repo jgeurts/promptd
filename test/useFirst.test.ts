@@ -48,9 +48,10 @@ describe('the account to use first', () => {
     expect(useFirst(today, NOW)).toBeNull();
   });
 
-  it('skips a week with less than 10% left, or one near its hold line', () => {
+  it('skips a week with less than 10% left, and judges a week by what is left alone', () => {
     expect(useFirst(thursday([session(0, null), week(91, 17)]), NOW)).toBeNull();
-    expect(useFirst(thursday([session(0, null), week(80, 17, 'near')]), NOW)).toBeNull();
+    // A hold line set below 90% marks the week near, but 20% left still counts.
+    expect(useFirst(thursday([session(0, null), week(80, 17, 'near')]), NOW)?.accountKey).toBe('account:b');
     // 10% left still counts.
     expect(useFirst(thursday([session(0, null), week(90, 17)]), NOW)?.accountKey).toBe('account:b');
   });
@@ -76,6 +77,13 @@ describe('the account to use first', () => {
     expect(useFirst([{ ...computers[1]!, online: false }, computers[0]!, computers[2]!], NOW)).toBeNull();
     expect(useFirst([{ ...computers[1]!, reading: { stale: true, windows: [week(72, 17)] } }, computers[0]!, computers[2]!], NOW)).toBeNull();
     expect(useFirst([{ ...computers[1]!, accountKey: null }, computers[0]!, computers[2]!], NOW)).toBeNull();
+  });
+
+  it('never lets a computer that does not name its account compete, since it may share a named one\'s reading', () => {
+    // An older build on galaxy's account reports galaxy's reading without naming the account.
+    const twin = computer('old-mini', 'unknown:old-mini', [session(0, null), week(72, 17)]);
+    expect(useFirst([...thursday(), twin], NOW)?.nodeIds).toEqual(['galaxy']);
+    expect(useFirst([twin, thursday()[0]!], NOW)).toBeNull();
   });
 
   it('reads a limit\'s kind from its key when an older reading has no kind', () => {
