@@ -25,7 +25,7 @@ const publicFiles = Object.fromEntries(
 );
 // The modules the page imports from /shared/, compiled from src/ as a checkout's dist/ has them.
 const transpiler = new Bun.Transpiler({ loader: 'ts' });
-for (const name of ['naming', 'jobFormRules']) {
+for (const name of ['naming', 'jobFormRules', 'useFirst']) {
   publicFiles[`shared/${name}.js`] = transpiler.transformSync(fs.readFileSync(path.join(ROOT, 'src', `${name}.ts`), 'utf8'));
 }
 

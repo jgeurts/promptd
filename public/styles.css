@@ -727,6 +727,19 @@ a {
   white-space: nowrap;
 }
 
+/* The account to use first: an hourglass after the name, in the button colour. The hover says why. */
+.sn-use {
+  display: inline-flex;
+  flex: none;
+  align-self: center;
+  color: var(--primary-bg);
+}
+
+.sn-cell .sn-use {
+  margin-left: 4px;
+  vertical-align: -1px;
+}
+
 .sn-state {
   flex: none;
   margin-left: auto;
@@ -894,6 +907,19 @@ a {
 
 .tip-head b {
   font-size: 13px;
+}
+
+.tip-why {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.35;
+}
+
+.tip-why .glyph {
+  flex: none;
+  margin-top: 2px;
+  color: var(--primary-bg);
 }
 
 .tip-head span {
@@ -2968,6 +2994,25 @@ fieldset.node-field {
 .node-opt-name {
   font-weight: 600;
   overflow-wrap: anywhere;
+}
+
+/* Why the field picked this computer for a new one-time job; empty, and so gone, otherwise. */
+.node-why {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--primary-bg);
+  font-size: 12px;
+}
+
+.node-why .glyph {
+  display: inline-flex;
+  flex: none;
+  margin-top: 2px;
+}
+
+.node-why:empty {
+  display: none;
 }
 
 .node-state,

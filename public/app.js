@@ -1,5 +1,7 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
+// The account to use first, from src/useFirst.ts: the sidebar marks it and a new one-time job's form picks it.
+import { useFirst } from '/shared/useFirst.js';
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -2367,7 +2369,13 @@ function projectPicker(selected) {
  * `onChange` gets the listing of the node that would run it, once the nodes
  * load and on every pick; `directory` is the Working Directory input.
  */
-function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
+/**
+ * The Node field. `pickAt`, given for a new one-time job, returns when the job
+ * would start (ms), or null; the field then picks a computer on the account to
+ * use first, says why on its card, and follows the run time and the readings
+ * until you pick one yourself.
+ */
+function nodePicker(selected, { onChange = () => {}, directory = null, pickAt = null } = {}) {
   const group = uid('node');
   const list = el('div', { class: 'node-opts' }, [el('span', { class: 'node-meta', text: 'Loading the nodes…' })]);
   const note = el('div', { class: 'hint', text: 'The machine that runs this job. The default node is set on the Settings page.' });
@@ -2378,9 +2386,14 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
   let value = selected ?? '';
   let byId = new Map(); // the listings /api/nodes gave
   let fallbackId = '';
-  let options = []; // one per radio: { value, listing, name, reading, folder, root, drawn, online, flight, answer }
+  let options = []; // one per radio: { value, listing, input, name, why, reading, folder, root, drawn, online, flight, answer }
   let computers = new Map(); // by node id, from the last cluster summary seen
   let disposed = false;
+  // The computer the field picked and why, while it is the one checked; the
+  // field stops picking once you pick, or once a folder it was told is missing
+  // from the computer it picked, which keeps the two from undoing each other.
+  let formPick = null; // { id, pick }
+  let picking = Boolean(pickAt);
   const chosen = () => byId.get(value || fallbackId) ?? null;
   const isOnline = (option) => computers.get(option.value)?.online ?? option.listing.online;
 
@@ -2415,6 +2428,45 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       if (words) sayFolder(option, ...words);
     }
   };
+  // ---- the computer to use first
+  const folderMissing = (option) => Boolean(settledPath) && option.answer?.path === settledPath && option.answer.status === 'warn';
+  const paintWhy = () => {
+    for (const option of options) {
+      const shown = formPick && option.value === formPick.id && value === formPick.id;
+      option.why?.replaceChildren(
+        ...(shown
+          ? [el('span', { class: 'glyph', 'aria-hidden': 'true', html: ICONS.hourglass }), `Picked for you: its week resets first, with ${fmtUsed(formPick.pick.leftPercent)} left.`]
+          : []),
+      );
+    }
+  };
+  /** Checks a radio for you; `notify` tells the form, as a pick of yours would. */
+  const check = (next, notify) => {
+    value = next;
+    for (const option of options) option.input.checked = option.value === value;
+    if (notify) {
+      onChange(chosen());
+      settle();
+    }
+  };
+  /**
+   * Picks a computer on the account to use first, or goes back to the default
+   * node when there is none, it is the default node's, or the job starts after
+   * that week resets. A computer the folder is missing from is never picked,
+   * and finding that out ends the picking.
+   */
+  const autoPick = ({ notify = true } = {}) => {
+    if (!picking || disposed || !options.length) return;
+    const at = pickAt();
+    const pick = at === null ? null : useFirst([...computers.values()], at);
+    const mine = pick && !pick.nodeIds.includes(fallbackId) ? options.filter((option) => option.listing && pick.nodeIds.includes(option.value)) : [];
+    if (formPick && value === formPick.id && mine.some((option) => option.value === value && folderMissing(option))) picking = false;
+    const target = picking ? (mine.find((option) => !folderMissing(option))?.value ?? '') : '';
+    formPick = target ? { id: target, pick } : null;
+    if (target !== value) check(target, notify);
+    paintWhy();
+  };
+
   const askFolder = (option, path) => {
     const id = ++flights;
     option.flight = { id, path };
@@ -2430,6 +2482,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
         // The field settled elsewhere while this was out: ask once more, for where it settled.
         if (settledPath && path !== settledPath && isOnline(option)) askFolder(option, settledPath);
         paintFolders();
+        autoPick();
       });
   };
   /** Asks each online computer that has neither answered for the settled path nor been asked yet, then paints. */
@@ -2512,6 +2565,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
   // ---- the cards
   const option = (optionValue, label, listing) => {
     const nameId = uid('node-name');
+    const whyId = uid('node-why');
     const readingId = uid('node-reading');
     const input = el('input', {
       type: 'radio',
@@ -2519,19 +2573,24 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       value: optionValue,
       checked: optionValue === value,
       'aria-labelledby': nameId,
-      'aria-describedby': readingId,
+      'aria-describedby': `${whyId} ${readingId}`,
       onchange: () => {
         value = input.value;
+        picking = false;
+        formPick = null;
+        paintWhy();
         onChange(chosen());
         // A new job's folder follows the node, so the field has settled again once the form has moved it.
         settle();
       },
     });
     const name = el('span', { class: 'node-opt-name', id: nameId, text: label });
+    // Empty rather than hidden when there is nothing to say, since a description reads hidden text too.
+    const why = el('span', { class: 'node-why', id: whyId });
     const reading = el('span', { class: 'node-reading', id: readingId });
     const folder = el('span', { class: 'node-folder', hidden: 'hidden' });
-    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [name, reading, folder])]);
-    return { value: optionValue, listing, name, reading, folder, root, drawn: null, online: undefined, flight: null, answer: null };
+    const root = el('label', { class: 'node-opt' }, [input, el('span', { class: 'node-opt-body' }, [name, why, reading, folder])]);
+    return { value: optionValue, listing, input, name, why, reading, folder, root, drawn: null, online: undefined, flight: null, answer: null };
   };
   const paint = ({ nodes = [], defaultNodeId = '' }) => {
     byId = new Map(nodes.map((node) => [node.id, node]));
@@ -2545,6 +2604,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
   const onHealth = (health) => {
     paintReadings(health.cluster);
     paintDefault(health.defaultNodeId);
+    autoPick();
   };
   healthListeners.add(onHealth);
   const dispose = () => {
@@ -2559,6 +2619,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       if (disposed) return;
       paint(state);
       paintReadings(state.cluster);
+      autoPick({ notify: false });
       onChange(chosen());
       settle();
     })
@@ -2569,7 +2630,7 @@ function nodePicker(selected, { onChange = () => {}, directory = null } = {}) {
       note.className = 'hint warn';
     });
 
-  return { read: () => value, field, dispose };
+  return { read: () => value, field, dispose, repick: () => autoPick() };
 }
 
 /**
@@ -2676,8 +2737,12 @@ async function renderJobForm(kind, id, duplicateOf) {
       paintSummary();
     },
   });
+  // When the job would start, for the Node field's pick: now until the When field says otherwise.
+  let runStartsAt = () => Date.now();
   const node = nodePicker(job?.nodeId ?? '', {
     directory: inputs.workingDirectory,
+    // Only a new one-time job: an edit or a duplicate keeps its computer, and a cron outlives this week's quota.
+    pickAt: oneTime && !job ? () => runStartsAt() : null,
     onChange: (listing) => {
       followNodeDirectory(inputs.workingDirectory, listing, Boolean(job));
       settings.followNode(listing);
@@ -2719,12 +2784,19 @@ async function renderJobForm(kind, id, duplicateOf) {
       asapHint.hidden = !asap.radio.checked;
       settings.usageDelay.lock('session', asap.radio.checked ? 'on for As soon as possible' : null);
       paintSummary();
+      node.repick();
     };
     // The time field comes next in the tab order, so choosing At a time leaves the focus where it is.
     asap.radio.addEventListener('change', paintWhen);
     atTime.radio.addEventListener('change', paintWhen);
     paintWhen();
     asSoonAsPossible = () => asap.radio.checked;
+    runStartsAt = () => {
+      if (asap.radio.checked) return Date.now();
+      const at = new Date(inputs.scheduledAt.value.trim()).getTime();
+      return Number.isNaN(at) ? null : at;
+    };
+    inputs.scheduledAt.addEventListener('change', () => node.repick());
     scheduledAt = () => scheduledAtForSave(duplicateOf ? null : job?.scheduledAt, shownAtOpen, inputs.scheduledAt.value);
     whenField = el('fieldset', { class: 'field when' }, [el('legend', { text: 'When' }), asap.label, asapHint, atTime.label, timeField]);
   } else {
@@ -5501,6 +5573,7 @@ const ICONS = {
   offline: '○',
   warn: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2 14.2 13H1.8Z"/><path d="M8 6.4v3"/><path d="M8 11.3v.01"/></svg>',
   stop: '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 4.8v3.6"/><path d="M8 10.9v.01"/></svg>',
+  hourglass: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2h8M4 14h8"/><path d="M5 2c0 3.2 6 3.2 6 6s-6 2.8-6 6"/><path d="M11 2c0 3.2-6 3.2-6 6s6 2.8 6 6"/></svg>',
 };
 
 /**
@@ -5860,12 +5933,31 @@ function nodeMeta(node) {
   return null;
 }
 
-/** The row in words, for a screen reader: what the bars and the hover show to the eye. */
-function nodeWords(node) {
+/** Why a computer is the one to use first, said the same in the hover and to a screen reader. */
+function useFirstWords(pick) {
+  return `Its week resets first, ${fmtResets(pick.resetsAt)}, with ${fmtUsed(pick.leftPercent)} left.`;
+}
+
+/** The pick, when this computer is on its account. */
+function pickFor(node, pick) {
+  return pick?.nodeIds.includes(node.id) ? pick : null;
+}
+
+/** The hourglass after a computer's name when it is on the account to use first; the hover says why. */
+function useFirstMark(node, pick) {
+  return pickFor(node, pick) ? el('span', { class: 'sn-use', 'aria-hidden': 'true', html: ICONS.hourglass }) : null;
+}
+
+/** The row in words, for a screen reader: what the bars, the hourglass and the hover show to the eye. */
+function nodeWords(node, pick = null) {
   const windows = readingWindows(node);
   if (!node.online || !windows.length) return '';
-  return windows
-    .map((limit) => `${limitShortName(limit)} ${fmtUsed(limit.usedPercent)} used${limit.resetsAt ? `, resets ${fmtResets(limit.resetsAt)}` : ''}.`)
+  const mine = pickFor(node, pick);
+  return [
+    mine ? `Use first. ${useFirstWords(mine)}` : null,
+    ...windows.map((limit) => `${limitShortName(limit)} ${fmtUsed(limit.usedPercent)} used${limit.resetsAt ? `, resets ${fmtResets(limit.resetsAt)}` : ''}.`),
+  ]
+    .filter(Boolean)
     .join(' ');
 }
 
@@ -5881,7 +5973,7 @@ function runningMark(node) {
 }
 
 /** One computer as two bars, session over weekly, under its name and state. */
-function nodeBarsRow(node) {
+function nodeBarsRow(node, pick) {
   const state = nodeState(node);
   const windows = readingWindows(node);
   const meta = nodeMeta(node);
@@ -5889,6 +5981,7 @@ function nodeBarsRow(node) {
     el('a', { class: 'sn-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
       el('span', { class: 'sn-head' }, [
         el('span', { class: 'sn-name', text: shortHost(node.name) }),
+        useFirstMark(node, pick),
         runningMark(node),
         el('span', { class: 'sn-state', text: state.text }),
       ]),
@@ -5899,7 +5992,7 @@ function nodeBarsRow(node) {
           ])
         : null,
       meta ? el('span', { class: 'sn-meta', text: meta }) : null,
-      el('span', { class: 'sr-only', text: ` ${nodeWords(node)}` }),
+      el('span', { class: 'sr-only', text: ` ${nodeWords(node, pick)}` }),
     ]),
   ]);
 }
@@ -5938,15 +6031,15 @@ function ringCaption(node, state) {
 }
 
 /** One computer as two rings, its name and its state beneath. Offline draws no rings, the word in their place. */
-function nodeRingCell(node) {
+function nodeRingCell(node, pick) {
   const state = nodeState(node);
   const drawn = node.online && readingWindows(node).length;
   return el('li', { class: `sn-cell ${state.kind}` }, [
     el('a', { class: 'sn-link', href: `#/nodes/${encodeURIComponent(node.id)}`, 'data-route': `nodes:${node.id}`, 'data-key': `node:${node.id}`, 'data-node-id': node.id }, [
       drawn ? el('span', { class: 'sn-ring', html: ringsSvg(node, state) }) : el('span', { class: 'sn-ring empty', 'aria-hidden': 'true', text: node.online ? 'no reading' : 'offline' }),
-      el('span', { class: 'sn-name', text: shortHost(node.name) }),
+      el('span', { class: 'sn-name' }, [shortHost(node.name), useFirstMark(node, pick)]),
       el('span', { class: 'sn-state' }, [runningMark(node) ?? ringCaption(node, state)]),
-      el('span', { class: 'sr-only', text: ` ${state.text}. ${nodeWords(node)}` }),
+      el('span', { class: 'sr-only', text: ` ${state.text}. ${nodeWords(node, pick)}` }),
     ]),
   ]);
 }
@@ -5967,7 +6060,8 @@ function paintNodes() {
     sideNodesEl.replaceChildren(el('li', { class: 'sn-meta', text: 'No computers connected' }));
     sideKeysEl.hidden = true;
   } else {
-    sideNodesEl.replaceChildren(...computers.map(mode === 'rings' ? nodeRingCell : nodeBarsRow));
+    const pick = useFirst(computers);
+    sideNodesEl.replaceChildren(...computers.map((node) => (mode === 'rings' ? nodeRingCell : nodeBarsRow)(node, pick)));
     sideKeysEl.hidden = !computers.some((node) => node.online && readingWindows(node).length);
     sideKeysEl.replaceChildren(
       el('span', { class: 'key' }, [el('i', { class: 'session' }), mode === 'rings' ? 'inner: session' : 'session']),
@@ -5989,8 +6083,12 @@ function tipLines(node) {
   const state = nodeState(node);
   const windows = readingWindows(node);
   const session = windows.find((limit) => limitKind(limit) === 'session');
+  const pick = pickFor(node, useFirst(healthState.cluster.computers));
   const lines = [
     el('div', { class: 'tip-head' }, [el('b', { text: shortHost(node.name) }), el('span', { text: state.text })]),
+    pick
+      ? el('div', { class: 'tip-why' }, [el('span', { class: 'glyph', html: ICONS.hourglass }), el('span', {}, [el('b', { text: 'Use first.' }), ` ${useFirstWords(pick)}`])])
+      : null,
     ...windows.map((limit) =>
       el('div', { class: 'tip-lim' }, [
         el('span', { class: 'tip-lim-head' }, [el('span', { text: limitShortName(limit) }), el('span', { class: 'tip-pct', text: fmtUsed(limit.usedPercent) })]),
@@ -6005,7 +6103,7 @@ function tipLines(node) {
     Number.isFinite(session?.waitsAt) ? `Jobs set to wait for usage hold at ${session.waitsAt}%` : null,
   ].filter(Boolean);
   if (notes.length) lines.push(el('div', { class: 'tip-notes' }, notes.map((note) => el('span', { text: note }))));
-  return lines;
+  return lines.filter(Boolean);
 }
 
 /** Shows the details beside a computer's row, inside the window, or hides them for a row that has none. */
