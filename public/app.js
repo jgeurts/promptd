@@ -4,11 +4,17 @@ import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 // Loaded beside the page rather than before it, so a hub without the module, or a slow answer, costs only the
 // pick: until it arrives nothing is picked, and the sidebar redraws once it does.
 let useFirst = () => null;
+let useFirstLoaded = false; // part of the sidebar's computers key, so their redraw picks the rule up
 import('/shared/useFirst.js')
   .then((module) => {
     useFirst = module.useFirst;
-    // Arriving before the page has started, this redraw throws and is dropped; the first paint uses the rule.
-    if (healthState?.cluster) paintNodes();
+    useFirstLoaded = true;
+    // The sidebar redraws as it does for new health, keeping focus and the current page, and an open
+    // Node field repicks. Arriving before the page has started, this throws and is dropped; the first
+    // paint uses the rule.
+    if (!healthState) return;
+    paintShell();
+    for (const listener of healthListeners) listener(healthState);
   })
   .catch(() => {});
 
@@ -6365,7 +6371,7 @@ function paintShell() {
   const strip = stripAlerts(alerts);
   if (changed('strip', [strip, cluster.nodes.online, cluster.nodes.total])) paintStrip(strip);
   if (changed('running', (healthState.runningJobs ?? []).map((run) => [run.cronId, run.cronName, run.kind, run.nodeId, run.nodeName, run.startedAt]))) paintRunning();
-  if (changed('nodes', [cluster.computers, minute, statusView()])) paintNodes();
+  if (changed('nodes', [cluster.computers, minute, statusView(), useFirstLoaded])) paintNodes();
   if (changed('banner', [fullDisks().map((disk) => [disk.nodeId, disk.nodeName, Math.round(disk.value), diskLevel(disk)])])) paintDiskBanner();
   syncCurrent();
   if (focused) sidebarEl.querySelector(`[data-key="${CSS.escape(focused)}"]`)?.focus({ preventScroll: true });
