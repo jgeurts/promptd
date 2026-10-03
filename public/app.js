@@ -1,8 +1,16 @@
 // What the one-time form sends on save, from the hub's own build of src/jobFormRules.ts.
 import { isActiveForSave, scheduledAtForSave } from '/shared/jobFormRules.js';
 // The account to use first, from src/useFirst.ts: the sidebar marks it and a new one-time job's form picks it.
-// Caught, so a hub without the module costs only the pick, not the page.
-const { useFirst } = (await import('/shared/useFirst.js').catch(() => null)) ?? { useFirst: () => null };
+// Loaded beside the page rather than before it, so a hub without the module, or a slow answer, costs only the
+// pick: until it arrives nothing is picked, and the sidebar redraws once it does.
+let useFirst = () => null;
+import('/shared/useFirst.js')
+  .then((module) => {
+    useFirst = module.useFirst;
+    // Arriving before the page has started, this redraw throws and is dropped; the first paint uses the rule.
+    if (healthState?.cluster) paintNodes();
+  })
+  .catch(() => {});
 
 const view = document.getElementById('view');
 const toastsEl = document.getElementById('toasts');
@@ -2832,8 +2840,11 @@ async function renderJobForm(kind, id, duplicateOf) {
   const save = async (event) => {
     event.preventDefault();
     errorBox.hidden = true;
-    // The Node field's pick, for the time this saves with, in case the field has not caught up.
+    // The Node field's pick for the time this saves with, in case it has not caught up. A pick that moves
+    // here stops the save, so what is sent is what you saw.
+    const shownNode = node.read();
     node.repick();
+    if (node.read() !== shownNode) return showError('The Node field changed its pick for this time. Check it, then save again.');
     const payload = {
       prompt: inputs.prompt.value,
       name: inputs.name.value,
